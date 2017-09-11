@@ -7793,14 +7793,16 @@ static void mdbx_xcursor_init1(MDBX_cursor *mc, MDBX_node *node) {
     mx->mx_cursor.mc_flags = C_SUB;
   } else {
     MDBX_page *fp = NODEDATA(node);
-    mx->mx_db.md_xsize = 0;
     mx->mx_db.md_flags = 0;
     mx->mx_db.md_depth = 1;
+    mx->mx_db.md_xsize = 0;
+    mx->mx_db.md_root = fp->mp_pgno;
     mx->mx_db.md_branch_pages = 0;
     mx->mx_db.md_leaf_pages = 1;
     mx->mx_db.md_overflow_pages = 0;
+    mx->mx_db.md_seq = 0;
     mx->mx_db.md_entries = NUMKEYS(fp);
-    mx->mx_db.md_root = fp->mp_pgno;
+    mx->mx_db.md_merkle = 0;
     mx->mx_cursor.mc_snum = 1;
     mx->mx_cursor.mc_top = 0;
     mx->mx_cursor.mc_flags = C_INITIALIZED | C_SUB;
@@ -10375,13 +10377,16 @@ int mdbx_drop(MDBX_txn *txn, MDBX_dbi dbi, int del) {
   } else {
     /* reset the DB record, mark it dirty */
     txn->mt_dbflags[dbi] |= DB_DIRTY;
+    txn->mt_dbs[dbi].md_flags = 0;
     txn->mt_dbs[dbi].md_depth = 0;
+    txn->mt_dbs[dbi].md_xsize = 0;
+    txn->mt_dbs[dbi].md_root = P_INVALID;
     txn->mt_dbs[dbi].md_branch_pages = 0;
     txn->mt_dbs[dbi].md_leaf_pages = 0;
     txn->mt_dbs[dbi].md_overflow_pages = 0;
-    txn->mt_dbs[dbi].md_entries = 0;
-    txn->mt_dbs[dbi].md_root = P_INVALID;
     txn->mt_dbs[dbi].md_seq = 0;
+    txn->mt_dbs[dbi].md_entries = 0;
+    txn->mt_dbs[dbi].md_merkle = 0;
 
     txn->mt_flags |= MDBX_TXN_DIRTY;
   }
