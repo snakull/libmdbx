@@ -1,7 +1,7 @@
 /* copy_ctx_.c - memory-mapped database backup tool */
 
 /*
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -44,7 +44,7 @@ static void signal_handler(int sig) {
 
 int main(int argc, char *argv[]) {
   int rc;
-  MDBX_milieu *bk = NULL;
+  MDBX_env_t *env = NULL;
   const char *progname = argv[0], *act;
   unsigned flags = MDBX_RDONLY;
   unsigned cpflags = 0;
@@ -55,8 +55,7 @@ int main(int argc, char *argv[]) {
     else if (argv[1][1] == 'c' && argv[1][2] == '\0')
       cpflags |= MDBX_CP_COMPACT;
     else if (argv[1][1] == 'V' && argv[1][2] == '\0') {
-      printf("%s (%s, build %s)\n", mdbx_version.git.describe,
-             mdbx_version.git.datetime, mdbx_build.datetime);
+      printf("%s (%s, build %s)\n", mdbx_version.git.describe, mdbx_version.git.datetime, mdbx_build.datetime);
       exit(EXIT_SUCCESS);
     } else
       argc = 0;
@@ -81,9 +80,9 @@ int main(int argc, char *argv[]) {
 #endif /* !WINDOWS */
 
   act = "opening databook";
-  rc = mdbx_bk_init(&bk);
+  rc = mdbx_init(&env);
   if (rc == MDBX_SUCCESS) {
-    rc = mdbx_bk_open(bk, argv[1], flags, 0640);
+    rc = mdbx_open(env, argv[1], flags, 0640);
   }
   if (rc == MDBX_SUCCESS) {
     act = "copying";
@@ -94,14 +93,13 @@ int main(int argc, char *argv[]) {
 #else
       fd = fileno(stdout);
 #endif
-      rc = mdbx_bk_copy2fd(bk, fd, cpflags);
+      rc = mdbx_bk_copy2fd(env, fd, cpflags);
     } else
-      rc = mdbx_bk_copy(bk, argv[2], cpflags);
+      rc = mdbx_bk_copy(env, argv[2], cpflags);
   }
   if (rc)
-    fprintf(stderr, "%s: %s failed, error %d (%s)\n", progname, act, rc,
-            mdbx_strerror(rc));
-  mdbx_bk_shutdown(bk);
+    fprintf(stderr, "%s: %s failed, error %d (%s)\n", progname, act, rc, mdbx_strerror(rc));
+  mdbx_shutdown(env);
 
   return rc ? EXIT_FAILURE : EXIT_SUCCESS;
 }

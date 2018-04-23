@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -19,28 +19,30 @@
 void __noreturn usage(void);
 
 #ifdef __GNUC__
-#define __printf_args(format_index, first_arg)                                 \
-  __attribute__((format(printf, format_index, first_arg)))
+#define __printf_args(format_index, first_arg) __attribute__((format(printf, format_index, first_arg)))
 #else
 #define __printf_args(format_index, first_arg)
 #endif
 
 void __noreturn __printf_args(1, 2) failure(const char *fmt, ...);
 
-void __noreturn failure_perror(const char *what, int errnum);
-const char *test_strerror(int errnum);
+void __noreturn failure_perror(const char *what, MDBX_error_t errnum);
+static inline void failure_perror(const char *what, int errnum) { failure_perror(what, (MDBX_error_t)errnum); }
+
+const char *test_strerror(MDBX_error_t errnum);
+static inline const char *test_strerror(int errnum) { return test_strerror((MDBX_error_t)errnum); }
 
 namespace logging {
 
 enum loglevel {
-  extra,
-  trace,
-  verbose,
-  info,
-  notice,
-  warning,
-  error,
-  failure,
+  extra = MDBX_LOGLEVEL_EXTRA,
+  trace = MDBX_LOGLEVEL_TRACE,
+  verbose = MDBX_LOGLEVEL_VERBOSE,
+  info = MDBX_LOGLEVEL_INFO,
+  notice = MDBX_LOGLEVEL_NOTICE,
+  warning = MDBX_LOGLEVEL_WARNING,
+  error = MDBX_LOGLEVEL_ERROR,
+  failure = MDBX_LOGLEVEL_FATAL,
 };
 
 const char *level2str(const loglevel level);
@@ -48,8 +50,7 @@ void setup(loglevel level, const std::string &prefix);
 void setup(const std::string &prefix);
 
 bool output(const loglevel priority, const char *format, va_list ap);
-bool __printf_args(2, 3)
-    output(const loglevel priority, const char *format, ...);
+bool __printf_args(2, 3) output(const loglevel priority, const char *format, ...);
 bool feed(const char *format, va_list ap);
 bool __printf_args(1, 2) feed(const char *format, ...);
 
@@ -81,6 +82,7 @@ void __printf_args(1, 2) log_warning(const char *msg, ...);
 void __printf_args(1, 2) log_error(const char *msg, ...);
 
 void log_trouble(const char *where, const char *what, int errnum);
+void log_flush(void);
 bool log_enabled(const logging::loglevel priority);
 
 #ifdef _DEBUG

@@ -1,5 +1,5 @@
-﻿/*
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>
+/*
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -12,21 +12,21 @@
  * <http://www.OpenLDAP.org/license.html>. */
 
 #pragma once
+#include "config.h"
+
 /* *INDENT-OFF* */
 /* clang-format off */
 
-#ifndef MDBX_DEBUG
-#   define MDBX_DEBUG 0
-#endif
+/*----------------------------------------------------------------------------*/
+/* lck stuff */
 
-#if MDBX_DEBUG
-#   undef NDEBUG
-#endif
-
-/* Features under development */
-#ifndef MDBX_DEVEL
-#   define MDBX_DEVEL 1
-#endif
+#if defined(_WIN32) || defined(_WIN64)
+#   undef MDBX_OSAL_LOCK
+#   define MDBX_OSAL_LOCK_SIGN UINT32_C(0xF10C)
+#else
+#   define MDBX_OSAL_LOCK pthread_mutex_t
+#   define MDBX_OSAL_LOCK_SIGN UINT32_C(0x8017)
+#endif /* MDBX_OSAL_LOCK */
 
 /*----------------------------------------------------------------------------*/
 
@@ -45,21 +45,73 @@
 #if _MSC_VER > 1800
 #   pragma warning(disable : 4464) /* relative include path contains '..' */
 #endif
-#pragma warning(disable : 4710) /* 'xyz': function not inlined */
-#pragma warning(disable : 4711) /* function 'xyz' selected for automatic inline expansion */
-#pragma warning(disable : 4201) /* nonstandard extension used : nameless struct / union */
-#pragma warning(disable : 4706) /* assignment within conditional expression */
+#pragma warning(disable : 4710) /* 'foo': function not inlined */
+#pragma warning(disable : 4711) /* function 'bar' selected for automatic inline expansion */
+#pragma warning(disable : 4702) /* unreachable code */
 #pragma warning(disable : 4127) /* conditional expression is constant */
-#pragma warning(disable : 4324) /* 'xyz': structure was padded due to alignment specifier */
 #pragma warning(disable : 4310) /* cast truncates constant value */
 #pragma warning(disable : 4820) /* bytes padding added after data member for aligment */
-#pragma warning(disable : 4548) /* expression before comma has no effect; expected expression with side - effect */
+#pragma warning(disable : 4201) /* nonstandard extension used : nameless struct / union */
+#pragma warning(disable : 4204) /* nonstandard extension used: non-constant aggregate initializer */
+#pragma warning(disable : 4221) /* nonstandard extension used: 'foo': cannot be initialized using address of automatic variable 'bar' */
+#pragma warning(disable : 4214) /* nonstandard extension used: bit field types other than int */
 #endif                          /* _MSC_VER (warnings) */
 
 #include "../mdbx.h"
 #include "./defs.h"
-#include "./osal.h"
-#include "./ualb.h"
+
+#if defined(__GNUC__) && !__GNUC_PREREQ(4,2)
+    /* Actualy libmdbx was not tested with compilers older than GCC from RHEL6.
+     * But you could remove this #warning and try to continue at your own risk.
+     * In such case please don't rise up an issues related ONLY to old compilers. */
+#   warning "libmdbx required GCC >= 4.2"
+#endif
+
+#if defined(__clang__) && !__CLANG_PREREQ(3,8)
+    /* Actualy libmdbx was not tested with CLANG older than 3.8.
+     * But you could remove this #warning and try to continue at your own risk.
+     * In such case please don't rise up an issues related ONLY to old compilers. */
+#   warning "libmdbx required CLANG >= 3.8"
+#endif
+
+#if defined(__GLIBC__) && !__GLIBC_PREREQ(2,12)
+    /* Actualy libmdbx was not tested with something older than glibc 2.12 (from RHEL6).
+     * But you could remove this #warning and try to continue at your own risk.
+     * In such case please don't rise up an issues related ONLY to old systems. */
+#   warning "libmdbx required at least GLIBC 2.12."
+#endif
+
+#ifdef __SANITIZE_THREAD__
+#   warning "libmdbx don't compatible with ThreadSanitizer, you will get a lot of false-positive issues."
+#endif /* __SANITIZE_THREAD__ */
+
+#if __has_warning("-Wconstant-logical-operand")
+#   if defined(__clang__)
+#       pragma clang diagnostic ignored "-Wconstant-logical-operand"
+#   elif defined(__GNUC__)
+#       pragma GCC diagnostic ignored "-Wconstant-logical-operand"
+#   else
+#      pragma warning disable "constant-logical-operand"
+#   endif
+#endif /* -Wconstant-logical-operand */
+
+#if defined(__LCC__) && (__LCC__ <= 121)
+    /* bug #2798 */
+#   pragma diag_suppress alignment_reduction_ignored
+#elif defined(__ICC)
+#   pragma warning(disable: 3453 1366)
+#elif __has_warning("-Walignment-reduction-ignored")
+#   if defined(__clang__)
+#       pragma clang diagnostic ignored "-Walignment-reduction-ignored"
+#   elif defined(__GNUC__)
+#       pragma GCC diagnostic ignored "-Walignment-reduction-ignored"
+#   else
+#       pragma warning disable "alignment-reduction-ignored"
+#   endif
+#endif /* -Walignment-reduction-ignored */
+
+#include "osal.h"
+#include "ualb.h"
 
 /* *INDENT-ON* */
 /* clang-format on */
@@ -122,6 +174,7 @@ typedef uint64_t txnid_t;
  * Since memory pages are typically 4 or 8KB in size, 12-13 bits,
  * this is plenty. */
 typedef uint16_t indx_t;
+#define INDX_MAX UINT16_MAX
 
 typedef uint64_t checksum_t;
 
@@ -194,22 +247,24 @@ typedef struct MDBX_reader {
   volatile MDBX_tid_t mr_tid;
 
   /* cache line alignment */
-  uint8_t pad[MDBX_CACHELINE_SIZE -
-              (sizeof(txnid_t) + sizeof(MDBX_pid_t) + sizeof(MDBX_tid_t)) %
-                  MDBX_CACHELINE_SIZE];
-} __cache_aligned MDBX_reader;
+  uint8_t alignment_pad[MDBX_CACHELINE_SIZE -
+                        (sizeof(txnid_t) + sizeof(MDBX_pid_t) + sizeof(MDBX_tid_t)) % MDBX_CACHELINE_SIZE];
+} MDBX_reader_t;
 
 /* Information about a single associative array in the databook. */
-typedef struct aatree_ {
-  uint16_t aa_flags16;      /* see AA flags */
-  uint16_t aa_depth16;      /* stat: depth of this tree */
-  uint32_t aa_xsize32;      /* pagesize or keysize for DFL pages */
-  pgno_t aa_root;           /* the root page of this tree */
-  pgno_t aa_branch_pages;   /* stat: number of internal pages */
+typedef struct aatree {
+  uint16_t aa_flags16; /* see AA flags */
+  uint16_t aa_depth16; /* stat: depth of this tree */
+  uint32_t aa_xsize32; /* pagesize or keysize for DFL pages */
+  /* uint64_t boundary -----------------------------------------------------*/
+  pgno_t aa_root;         /* the root page of this tree */
+  pgno_t aa_branch_pages; /* stat: number of internal pages */
+  /* uint64_t boundary -----------------------------------------------------*/
   pgno_t aa_leaf_pages;     /* stat: number of leaf pages */
   pgno_t aa_overflow_pages; /* stat: number of overflow pages */
-  uint64_t aa_entries;      /* stat: number of data items */
-  uint64_t aa_genseq;       /* AA sequence counter */
+  /* uint64_t boundary -----------------------------------------------------*/
+  uint64_t aa_entries; /* stat: number of data items */
+  uint64_t aa_genseq;  /* AA sequence counter */
   txnid_t aa_created;
   checksum_t aa_merkle; /* Merkle tree checksum */
 } aatree_t;
@@ -217,36 +272,40 @@ typedef struct aatree_ {
 /* Meta page content.
  * A meta page is the start point for accessing a databook snapshot.
  * Pages 0-1 are meta pages. Transaction N writes meta page (N % 2). */
-typedef struct meta_ {
+typedef struct meta {
   /* Stamp identifying this as an MDBX file.
    * It must be set to MDBX_MAGIC with MDBX_DATA_VERSION. */
   uint64_t mm_magic_and_version;
 
+  /* uint64_t boundary -----------------------------------------------------*/
   /* txnid that committed this page, the first of a two-phase-update pair */
   volatile txnid_t mm_txnid_a;
 
-  uint16_t mm_extra_flags16; /* extra databook flags, zero (nothing) for now */
-  uint8_t mm_validator_id8;  /* ID of checksum and page validation method,
-                             * zero (nothing) for now */
-  uint8_t mm_extra_pagehdr8; /* extra bytes in the page header,
-                             * zero (nothing) for now */
+  /* uint64_t boundary -----------------------------------------------------*/
+  uint32_t mm_reserved32; /* reserved */
 
   struct {
     uint16_t grow16;   /* datafile growth step in pages */
     uint16_t shrink16; /* datafile shrink threshold in pages */
+                       /* ------------------------------- uint64_t boundary */
     pgno_t lower;      /* minimal size of datafile in pages */
     pgno_t upper;      /* maximal size of datafile in pages */
+                       /* ------------------------------- uint64_t boundary */
     pgno_t now;        /* current size of datafile in pages */
     pgno_t next;       /* first unused page in the datafile,
                         * but actually the file may be shorter. */
   } mm_geo;
 
+  /* uint64_t boundary -----------------------------------------------------*/
   aatree_t mm_aas[CORE_AAH]; /* first is GACO space, 2nd is main AA */
                              /* The size of pages used in this AA */
 #define mm_psize32 mm_aas[MDBX_GACO_AAH].aa_xsize32
+/* Extra databook flags, zero for now */
+#define mm_extra_flags16 mm_aas[MDBX_GACO_AAH].aa_flags16
 /* Any persistent databook flags, see mdbx_book */
-#define mm_flags16 mm_aas[MDBX_GACO_AAH].aa_flags16
+#define mm_db_flags16 mm_aas[MDBX_MAIN_AAH].aa_flags16
   MDBX_canary_t mm_canary;
+/* uint64_t boundary -------------------------------------------------------*/
 
 #define MDBX_DATASIGN_NONE 0u
 #define MDBX_DATASIGN_WEAK 1u
@@ -256,12 +315,13 @@ typedef struct meta_ {
 #define META_IS_STEADY(meta) SIGN_IS_STEADY((meta)->mm_datasync_sign)
   volatile checksum_t mm_datasync_sign;
 
+  /* uint64_t boundary -----------------------------------------------------*/
   /* txnid that committed this page, the second of a two-phase-update pair */
   volatile txnid_t mm_txnid_b;
 } meta_t;
 
 /* Page flags, e.g. page_t.mp_flags */
-enum mp_flags_t {
+typedef enum mp_flags {
   /* page type flags */
   P_BRANCH = 1 << 0 /* branch page */,
   P_LEAF = 1 << 1 /* leaf page */,
@@ -273,7 +333,7 @@ enum mp_flags_t {
   P_DIRTY = 1 << 8 /* dirty page, also set for P_SUBP pages */,
   P_LOOSE = 1 << 9 /* page was dirtied then freed, can be reused */,
   P_KEEP = 1 << 10 /* leave this page alone during spill */,
-};
+} mp_flags_t;
 
 /* Common header for all page types.
  *
@@ -293,13 +353,14 @@ enum mp_flags_t {
  * Each non-metapage up to meta_t.mm_last_pg is reachable exactly once
  * in the snapshot: Either used by a associative array or listed in a GACO
  * record. */
-typedef struct page_ {
+typedef struct page {
   union {
-    struct page_ *mp_next;    /* for in-memory list of freed pages,
-                                   * must be first field, see NEXT_LOOSE_PAGE */
+    struct page *mp_next;     /* for in-memory list of freed pages,
+                                * must be first field, see NEXT_LOOSE_PAGE */
     checksum_t page_checksum; /* checksum of page content or a txnid during
-                            * which the page has been updated */
+                               * which the page has been updated */
   };
+  /* uint64_t boundary -----------------------------------------------------*/
   uint16_t mp_leaf2_ksize16; /* key size if this is a DFL page */
   uint16_t mp_flags16;
   union {
@@ -309,12 +370,18 @@ typedef struct page_ {
     };
     uint32_t mp_pages; /* number of overflow pages */
   };
+
+  /* uint64_t boundary -----------------------------------------------------*/
   pgno_t mp_pgno; /* page number */
 
   /* dynamic size */
   union {
     indx_t mp_ptrs[1];
-    meta_t mp_meta;
+    struct {
+      uint32_t mp_meta_alignment_pad;
+      /* uint64_t boundary- ------------------------------------------------*/
+      meta_t mp_meta;
+    };
     uint8_t mp_data[1];
   };
 } page_t;
@@ -345,9 +412,8 @@ typedef struct page_ {
 #else
 #define MAX_MAPSIZE32 UINT32_C(0x7ff80000)
 #endif
-#define MAX_MAPSIZE64                                                          \
-  ((sizeof(pgno_t) > 4) ? UINT64_C(0x7fffFFFFfff80000)                         \
-                        : MAX_PAGENO * (uint64_t)MAX_PAGESIZE)
+#define MAX_MAPSIZE64                                                                                         \
+  ((sizeof(pgno_t) > 4) ? UINT64_C(0x7fffFFFFfff80000) : MAX_PAGENO * (uint64_t)MAX_PAGESIZE)
 
 #define MAX_MAPSIZE ((sizeof(size_t) < 8) ? MAX_MAPSIZE32 : MAX_MAPSIZE64)
 
@@ -357,69 +423,72 @@ typedef struct MDBX_lockinfo {
   /* Stamp identifying this as an MDBX file.
    * It must be set to MDBX_MAGIC with with MDBX_LOCK_VERSION. */
   uint64_t li_magic_and_version;
-
+  /* uint64_t boundary -----------------------------------------------------*/
   /* Format of this lock file. Must be set to MDBX_LOCK_FORMAT. */
   uint32_t li_os_and_format;
-
   /* Flags which databook was opened. */
   volatile uint32_t li_regime;
-
-  volatile uint64_t
-      li_autosync_threshold; /* Treshold to force synchronous flush */
-
-  uint8_t li_pad1[MDBX_CACHELINE_SIZE - sizeof(uint64_t) - sizeof(uint32_t) -
-                  sizeof(uint32_t) - sizeof(uint64_t)];
-
-/*------------------------------------------------------------- cacheline */
+  /* uint64_t boundary -----------------------------------------------------*/
+  volatile uint32_t li_autosync_threshold; /* Treshold to force synchronous flush */
+  volatile uint32_t li_reserved32;         /* reserved */
+  /* uint64_t boundary -----------------------------------------------------*/
+  uint8_t li_alignment_pad1[MDBX_CACHELINE_SIZE - sizeof(uint64_t /* li_magic_and_version */) -
+                            sizeof(uint32_t /* li_os_and_format */) - sizeof(uint32_t /* li_regime */) -
+                            sizeof(uint64_t /* li_autosync_threshold */)];
 #ifdef MDBX_OSAL_LOCK
-  MDBX_OSAL_LOCK li_wmutex;
+  /*------------------------------------------------------------- cacheline */
+  union {
+    /* Mutex protecting write access to the database. */
+    MDBX_OSAL_LOCK li_wmutex;
+    uint64_t li_wmutex_pad[(sizeof(MDBX_OSAL_LOCK) + 7) / 8];
+  };
 #endif
-
+  /* uint64_t boundary -----------------------------------------------------*/
   volatile txnid_t li_oldest;
+  volatile uint64_t li_dirty_volume; /* Total dirty/non-sync'ed bytes since the last
+                                        mdbx_sync() */
+  /* uint64_t boundary -----------------------------------------------------*/
 
-  volatile uint64_t
-      li_dirty_volume; /* Total dirty/non-sync'ed bytes since the last
-                          mdbx_bk_sync() */
-  uint8_t li_pad2[MDBX_CACHELINE_SIZE
+  uint8_t li_alignment_pad2[MDBX_CACHELINE_SIZE
 #ifdef MDBX_OSAL_LOCK
-                  - sizeof(MDBX_OSAL_LOCK)
+                            - ((sizeof(MDBX_OSAL_LOCK) + 7) & ~7 /* li_wmutex */)
 #endif
-                  - sizeof(txnid_t) - sizeof(uint64_t)];
+                            - sizeof(txnid_t /* li_oldest */) - sizeof(uint64_t /* li_dirty_volume */)];
 
-/*------------------------------------------------------------- cacheline */
 #ifdef MDBX_OSAL_LOCK
-  /* Mutex protecting access to this table. */
-  MDBX_OSAL_LOCK li_rmutex;
+  /*------------------------------------------------------------- cacheline */
+  union {
+    /* Mutex protecting readers registration access to this table. */
+    MDBX_OSAL_LOCK li_rmutex;
+    uint64_t li_rmutex_pad[(sizeof(MDBX_OSAL_LOCK) + 7) / 8];
+  };
 #endif
 
   /* The number of slots that have been used in the reader table.
    * This always records the maximum count, it is not decremented
    * when readers release their slots. */
   volatile uint32_t li_numreaders;
-  volatile uint32_t li_reader_finished_flag;
+  volatile uint32_t li_readers_refresh_flag;
 
-  uint8_t li_pad3[MDBX_CACHELINE_SIZE
+  uint8_t li_alignment_pad3[MDBX_CACHELINE_SIZE
 #ifdef MDBX_OSAL_LOCK
-                  - sizeof(MDBX_OSAL_LOCK)
+                            - ((sizeof(MDBX_OSAL_LOCK) + 7) & ~7 /* li_rmutex */)
 #endif
-                  - sizeof(uint32_t) - sizeof(uint32_t)];
+                            - sizeof(uint32_t /* li_numreaders */) -
+                            sizeof(uint32_t /* li_readers_refresh_flag */)];
 
   /*------------------------------------------------------------- cacheline */
-  MDBX_reader li_readers[1];
-} MDBX_lockinfo;
+  MDBX_reader_t li_readers[1];
+} MDBX_lockinfo_t;
 
-#ifdef _MSC_VER
 #pragma pack(pop)
-#endif /* MSVC: Enable aligment */
 
-#define MDBX_LOCKINFO_WHOLE_SIZE                                               \
-  ((sizeof(MDBX_lockinfo) + MDBX_CACHELINE_SIZE - 1) &                         \
-   ~((size_t)MDBX_CACHELINE_SIZE - 1))
+#define MDBX_LOCKINFO_WHOLE_SIZE                                                                              \
+  ((sizeof(MDBX_lockinfo_t) + MDBX_CACHELINE_SIZE - 1) & ~((size_t)MDBX_CACHELINE_SIZE - 1))
 
 /* Lockfile format signature: version, features and field layout */
-#define MDBX_LOCK_FORMAT                                                       \
-  ((MDBX_OSAL_LOCK_SIGN << 16) +                                               \
-   (uint16_t)(MDBX_LOCKINFO_WHOLE_SIZE + MDBX_CACHELINE_SIZE - 1))
+#define MDBX_LOCK_FORMAT                                                                                      \
+  ((MDBX_OSAL_LOCK_SIGN << 16) + (uint16_t)(MDBX_LOCKINFO_WHOLE_SIZE + MDBX_CACHELINE_SIZE - 1))
 
 #define MDBX_DATA_MAGIC ((MDBX_MAGIC << 8) + MDBX_DATA_VERSION)
 
@@ -443,13 +512,13 @@ typedef pgno_t *MDBX_PNL;
 #define MDBX_PNL_DISORDERED(first, last) ((first) <= (last))
 #endif
 
-/* List of txnid, only for MDBX_milieu.mt_lifo_reclaimed */
+/* List of txnid, only for MDBX_env_t.mt_lifo_reclaimed */
 typedef txnid_t *MDBX_TXL;
 
 /* An ID2 is an ID/pointer pair. */
 typedef struct MDBX_ID2 {
-  pgno_t mid; /* The ID */
-  void *mptr; /* The pointer */
+  pgno_t mid;   /* The ID */
+  page_t *mptr; /* The pointer */
 } MDBX_ID2;
 
 /* An ID2L is an ID2 List, a sorted array of ID2s.
@@ -460,8 +529,8 @@ typedef MDBX_ID2 *MDBX_ID2L;
 
 /* PNL sizes - likely should be even bigger
  * limiting factors: sizeof(pgno_t), thread stack size */
-#define MDBX_PNL_LOGN                                                          \
-  16 /* MDBX_PNL_DB_SIZE = 2^16, MDBX_PNL_UM_SIZE = 2^17                       \
+#define MDBX_PNL_LOGN                                                                                         \
+  16 /* MDBX_PNL_DB_SIZE = 2^16, MDBX_PNL_UM_SIZE = 2^17                                                      \
         */
 #define MDBX_PNL_DB_SIZE (1 << MDBX_PNL_LOGN)
 #define MDBX_PNL_UM_SIZE (1 << (MDBX_PNL_LOGN + 1))
@@ -484,7 +553,7 @@ typedef MDBX_ID2 *MDBX_ID2L;
 /* Environmant AA-handle context.
  * The information here is mostly static/read-only. There is
  * only a single copy of this record in the open environment. */
-typedef struct env_aah_ {
+typedef struct env_aah {
   uint16_t ax_refcounter16;
   uint16_t ax_flags16;
   union {
@@ -497,28 +566,33 @@ typedef struct env_aah_ {
     };
     uint32_t ax_aah;
   };
-  MDBX_comparer *ax_kcmp; /* function for comparing keys */
-  MDBX_comparer *ax_dcmp; /* function for comparing data items */
+  MDBX_comparer_t *ax_kcmp; /* function for comparing keys */
+  MDBX_comparer_t *ax_dcmp; /* function for comparing data items */
   txnid_t ax_since;
   txnid_t ax_until;
-  MDBX_iov ax_ident; /* name of the associative array */
+  MDBX_iov_t ax_ident; /* name of the associative array */
 } ahe_t;
 
 /* Transaction AA-handle context. */
-typedef struct txn_aah_ {
+typedef struct txn_aah {
   struct {
-    uint16_t flags16;      /* see AA flags */
-    uint16_t depth16;      /* stat: depth of this tree */
-    uint32_t xsize32;      /* pagesize or keysize for DFL pages */
-    pgno_t root;           /* the root page of this tree */
-    pgno_t branch_pages;   /* stat: number of internal pages */
+    uint16_t depth16; /* stat: depth of this tree */
+    uint16_t flags16; /* see AA flags */
+    uint32_t xsize32; /* pagesize or keysize for DFL pages */
+    /* uint64_t boundary ---------------------------------------------------*/
+    pgno_t root;         /* the root page of this tree */
+    pgno_t branch_pages; /* stat: number of internal pages */
+    /* uint64_t boundary ---------------------------------------------------*/
     pgno_t leaf_pages;     /* stat: number of leaf pages */
     pgno_t overflow_pages; /* stat: number of overflow pages */
-    uint64_t entries;      /* stat: number of data items */
-    uint64_t genseq;       /* AA sequence counter */
+    /* uint64_t boundary ---------------------------------------------------*/
+    uint64_t entries; /* stat: number of data items */
+    uint64_t genseq;  /* AA sequence counter */
+    /* uint64_t boundary ---------------------------------------------------*/
     txnid_t created;
   } aa;
 
+  /* uint64_t boundary -----------------------------------------------------*/
   ahe_t *ahe;
 
   struct {
@@ -530,39 +604,43 @@ typedef struct txn_aah_ {
   } ah;
 } aht_t;
 
-static int aa_db2txn(const aatree_t *src, aht_t *aht);
-static void aa_txn2db(const aht_t *aht, aatree_t *dst);
-static MDBX_aah bk_ahe2aah(struct MDBX_milieu_ *bk, ahe_t *ahe);
-
-typedef struct ahe_rc_ {
+typedef struct ahe_rc {
   ahe_t *ahe;
   int err;
 } ahe_rc_t;
 
-typedef struct aht_rc_ {
+typedef struct aht_rc {
   aht_t *aht;
   int err;
 } aht_rc_t;
 
-typedef struct cursor_ cursor_t;
-typedef struct subcursor_ subcursor_t;
+typedef struct node node_t;
+typedef struct cursor cursor_t;
+typedef struct subcursor subcur_t;
+
+typedef struct node_rc {
+  node_t *node;
+  bool exact;
+} node_rc_t;
 
 /* A databook transaction.
  * Every operation requires a transaction handle. */
-struct MDBX_txn_ {
+struct MDBX_txn {
 #define MDBX_MT_SIGNATURE UINT32_C(0x93D53A31)
-  size_t mt_signature;
-  MDBX_txn *mt_parent; /* parent of a nested txn */
+  MDXB_txn_base_t base;
+#define mt_signature base.signature
+#define mt_env base.env
+#define mt_txnid base.txnid
+
+  MDBX_txn_t *mt_parent; /* parent of a nested txn */
   /* Nested txn under this txn, set together with flag MDBX_TXN_HAS_CHILD */
-  MDBX_txn *mt_child;
+  MDBX_txn_t *mt_child;
   pgno_t mt_next_pgno; /* next unallocated page */
   pgno_t mt_end_pgno;  /* corresponding to the current size of datafile */
-  /* The ID of this transaction. IDs are integers incrementing from 1.
-   * Only committed write transactions increment the ID. If a transaction
-   * aborts, the ID may be re-used by the next writer. */
-  txnid_t mt_txnid;
-  MDBX_milieu *mt_book; /* the databook */
-                        /* The list of reclaimed txns from GACO */
+                       /* The ID of this transaction. IDs are integers incrementing from 1.
+                        * Only committed write transactions increment the ID. If a transaction
+                        * aborts, the ID may be re-used by the next writer. */
+  /* The list of reclaimed txns from GACO */
   MDBX_TXL mt_lifo_reclaimed;
   /* The list of pages that became unused during this transaction. */
   MDBX_PNL mt_befree_pages;
@@ -579,12 +657,12 @@ struct MDBX_txn_ {
     /* For write txns: Modified pages. Sorted when not MDBX_WRITEMAP. */
     MDBX_ID2L mt_rw_dirtylist;
     /* For read txns: This thread/txn's reader table slot, or NULL. */
-    MDBX_reader *mt_ro_reader;
+    MDBX_reader_t *mt_ro_reader;
   };
   /* Array of txn_aah_t records for each known AA */
   aht_t *txn_aht_array;
   /* In write txns, array of cursors for each AA */
-  MDBX_cursor **mt_cursors;
+  MDBX_cursor_t **mt_cursors;
 
   /* Number of AAH records in use, or 0 when the txn is finished.
    * This number only ever increments until the txn finishes; we
@@ -592,7 +670,7 @@ struct MDBX_txn_ {
   unsigned txn_ah_num;
 
   /* Transaction Flags */
-  unsigned mt_flags;
+  MDBX_flags_t mt_flags;
 
   /* dirtylist room: Array size - dirty pages visible to this txn.
    * Includes ancestor txns' dirty pages not hidden by other txns'
@@ -604,8 +682,8 @@ struct MDBX_txn_ {
   MDBX_canary_t mt_canary;
 };
 
-/* State of GACO old pages, stored in the MDBX_milieu */
-typedef struct pgstate_ {
+/* State of GACO old pages, stored in the MDBX_env_t */
+typedef struct pgstate {
   MDBX_PNL mf_reclaimed_pglist; /* Reclaimed GACO pages, or NULL before use */
   txnid_t mf_last_reclaimed;    /* ID of last used record, or 0 if
                                    !mf_reclaimed_pglist */
@@ -613,9 +691,9 @@ typedef struct pgstate_ {
 
 /* Nested transaction */
 typedef struct nested_txn {
-  MDBX_txn mnt_txn;      /* the transaction */
+  MDBX_txn_t mnt_txn;    /* the transaction */
   pgstate_t mnt_pgstate; /* parent transaction's saved freestate */
-} nested_txn;
+} nested_txn_t;
 
 /* Enough space for 2^32 nodes with minimum of 2 keys per node. I.e., plenty.
  * At 4 keys per node, enough for 2^64 nodes, so there's probably no need to
@@ -629,13 +707,12 @@ typedef struct nested_txn {
  * track their cursors and keep them up to date when data moves.
  * Exception: An xcursor's pointer to a P_SUBP page can be stale.
  * (A node with NODE_DUP but no NODE_SUBTREE contains a subpage). */
-struct cursor_ {
-  /* The AA-handle for this cursor */
-  aht_t *mc_aht;
+struct cursor {
+  aht_t *mc_aht /* The AA-handle for this cursor */;
   /* The transaction that owns this cursor */
-  MDBX_txn *mc_txn;
-  unsigned mc_snum; /* number of pushed pages */
-  unsigned mc_top;  /* index of top page, normally mc_snum-1 */
+  MDBX_txn_t *mc_txn /* TODO: use txn field from MDXB_txn_base_t */;
+  unsigned mc_snum /* number of pushed pages */;
+  unsigned mc_top /* index of top page, normally mc_snum-1 */;
 
   union {
     struct {
@@ -645,8 +722,8 @@ struct cursor_ {
     unsigned mc_kind_and_state;
   };
 
-  page_t *mc_pg[CURSOR_STACK]; /* stack of pushed pages */
-  indx_t mc_ki[CURSOR_STACK];  /* stack of page indices */
+  page_t *mc_pg[CURSOR_STACK] /* stack of pushed pages */;
+  indx_t mc_ki[CURSOR_STACK] /* stack of page indices */;
 };
 
 enum /* Cursor flags. */ {
@@ -665,7 +742,7 @@ enum /* Cursor flags. */ {
  * We could have gone to a fully recursive design, with arbitrarily
  * deep nesting of sub-AAs. But for now we only handle these
  * levels - main AA, optional sub-AA, sorted-duplicate AA. */
-struct subcursor_ {
+struct subcursor {
   /* A sub-cursor for traversing the dup-aa */
   cursor_t mx_cursor;
   /* The pseudo AA-handle for this dup-aa cursor */
@@ -673,41 +750,29 @@ struct subcursor_ {
   ahe_t mx_ahe_body;
 };
 
-struct MDBX_cursor_ {
+struct MDBX_cursor {
 #define MDBX_MC_SIGNATURE UINT32_C(0xFE05D5B1)
 #define MDBX_MC_READY4CLOSE UINT32_C(0x2817A047)
 #define MDBX_MC_WAIT4EOT UINT32_C(0x90E297A7)
 #define MDBX_MC_BACKUP UINT32_C(0x82FF6E47)
-  uint32_t mc_signature;
+  MDBX_cursor_base_t mc_base;
+#define mc_signature mc_base.signature
+
   /* Next cursor on this AA in this txn */
-  MDBX_cursor *mc_next;
+  MDBX_cursor_t *mc_next;
   /* Backup of the original cursor if this cursor is a shadow */
-  MDBX_cursor *mc_backup;
+  MDBX_cursor_t *mc_backup;
   cursor_t primal;
-  subcursor_t subordinate;
+  subcur_t subcursor;
 };
 
-/* Check if there is an inited xcursor, so XCURSOR_REFRESH() is proper */
-#define XCURSOR_INITED(mc)                                                     \
-  ((mc)->subordinate.mx_cursor.mc_state8 & C_INITIALIZED)
-
-/* Update the sub-cursor's sub-page pointer, if any, in mc.
- * Needed when the node which contains the sub-page may have moved.
- * Called with leaf page mp = mc->mc_pg[top]. */
-#define XCURSOR_REFRESH(mc, top, mp)                                           \
-  do {                                                                         \
-    page_t *xr_pg = (mp);                                                      \
-    if (!XCURSOR_INITED(mc) || (mc)->mc_ki[top] >= page_numkeys(xr_pg))        \
-      break;                                                                   \
-    node_t *xr_node = node_ptr(xr_pg, (mc)->mc_ki[top]);                       \
-    if ((xr_node->node_flags8 & (NODE_DUP | NODE_SUBTREE)) == NODE_DUP)        \
-      (mc)->subordinate.mx_cursor.mc_pg[0] = NODEDATA(xr_node);                \
-  } while (0)
-
 /* The databook. */
-struct MDBX_milieu_ {
+struct MDBX_env {
 #define MDBX_ME_SIGNATURE UINT32_C(0x9A899641)
-  size_t me_signature;
+  MDXB_env_base_t me_base;
+#define me_signature me_base.signature
+#define me_userctx me_base.userctx
+
   mdbx_mmap_t me_dxb_mmap; /* The main data file */
 #define me_map me_dxb_mmap.dxb
 #define me_dxb_fd me_dxb_mmap.fd
@@ -716,21 +781,21 @@ struct MDBX_milieu_ {
 #define me_lck_fd me_lck_mmap.fd
 #define me_lck me_lck_mmap.lck
 
-  uint32_t me_flags32;    /* see mdbx_book */
-  unsigned me_psize;      /* databook page size, inited from me_os_psize */
-  unsigned me_psize2log;  /* log2 of databook page size */
-  unsigned me_os_psize;   /* OS page size, from mdbx_syspagesize() */
-  unsigned me_maxreaders; /* size of the reader table */
+  MDBX_flags_t me_flags32; /* see mdbx_book */
+  unsigned me_psize;       /* databook page size, inited from me_os_psize */
+  unsigned me_psize2log;   /* log2 of databook page size */
+  unsigned me_os_psize;    /* OS page size, from mdbx_syspagesize() */
+  unsigned me_maxreaders;  /* size of the reader table */
   /* Max MDBX_lockinfo.li_numreaders of interest to mdbx_bk_close() */
   unsigned me_close_readers;
   mdbx_fastmutex_t me_aah_lock;
   unsigned env_ah_num;         /* number of AAs opened */
   unsigned env_ah_max;         /* size of the AA table */
-  MDBX_pid_t me_pid;           /* process ID of this bk */
+  MDBX_pid_t me_pid;           /* process ID of this env */
   mdbx_thread_key_t me_txkey;  /* thread-key for readers */
   void *me_pagebuf;            /* scratch area for DUPSORT put() */
-  MDBX_txn *me_current_txn;    /* current write transaction */
-  MDBX_txn *me_wpa_txn;        /* prealloc'd write transaction */
+  MDBX_txn_t *me_current_txn;  /* current write transaction */
+  MDBX_txn_t *me_wpa_txn;      /* prealloc'd write transaction */
   ahe_t *env_ahe_array;        /* array of AA-handles info */
   volatile txnid_t *me_oldest; /* ID of oldest reader last time we looked */
   pgstate_t me_pgstate;        /* state of old pages from GACO */
@@ -745,11 +810,12 @@ struct MDBX_milieu_ {
   unsigned me_maxfree_1pg;
   /* Max size of a node on a page */
   unsigned me_nodemax;
-  unsigned me_keymax;                 /* max size of a key */
-  MDBX_pid_t me_live_reader;          /* have liveness lock in reader table */
-  void *me_userctx;                   /* User-settable context */
-  MDBX_rbr_callback *me_callback_rbr; /* Callback for kicking laggard readers */
+  unsigned me_keymax;        /* max size of a key */
+  MDBX_pid_t me_live_reader; /* have liveness lock in reader table */
   txnid_t me_oldest_stub;
+  MDBX_rbr_callback_t *me_callback_rbr; /* Callback for kicking laggard readers */
+
+  MDBX_ops_t ops;
 
   struct {
     size_t lower;  /* minimal size of datafile */
@@ -757,15 +823,23 @@ struct MDBX_milieu_ {
     size_t now;    /* current size of datafile */
     size_t grow;   /* step to grow datafile */
     size_t shrink; /* threshold to shrink datafile */
-  } me_bookgeo;    /* */
+  } me_geo;        /* */
+
+#if defined(_WIN32) || defined(_WIN64)
+  SRWLOCK me_remap_guard;
+  /* Workaround for LockFileEx and WriteFile multithread bug */
+  CRITICAL_SECTION me_windowsbug_lock;
+#else
+  mdbx_fastmutex_t me_remap_guard;
+#endif
 
   char *me_pathname_lck; /* pathname of the LCK file */
   char *me_pathname_dxb; /* pathname of the DXB file */
   char *me_pathname_ovf; /* pathname of the OVF file */
   char *me_pathname_buf; /* buffer for all pathnames */
 
-#if MDBX_DEBUG
-  MDBX_assert_func *me_assert_func; /*  Callback for assertion failures */
+#if MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_CONFIG_DBG_ASSERTIONS
+  MDBX_assert_callback_t *me_assert_func; /*  Callback for assertion failures */
 #endif
 #ifdef USE_VALGRIND
   int me_valgrind_handle;
@@ -773,147 +847,13 @@ struct MDBX_milieu_ {
 };
 
 /*----------------------------------------------------------------------------*/
-/* Debug and Logging stuff */
-
-extern int mdbx_runtime_flags;
-extern MDBX_debug_func *mdbx_debug_logger;
-extern txnid_t mdbx_debug_edge;
-
-void mdbx_debug_log(int type, const char *function, int line, const char *fmt,
-                    ...)
-#if defined(__GNUC__) || __has_attribute(format)
-    __attribute__((format(printf, 4, 5)))
-#endif
-    ;
-
-void mdbx_panic(const char *fmt, ...)
-#if defined(__GNUC__) || __has_attribute(format)
-    __attribute__((format(printf, 1, 2)))
-#endif
-    ;
-
-#if MDBX_DEBUG
-
-#define mdbx_assert_enabled() unlikely(mdbx_runtime_flags &MDBX_DBG_ASSERT)
-
-#define audit_enabled() unlikely(mdbx_runtime_flags &MDBX_DBG_AUDIT)
-
-#define mdbx_debug_enabled(type)                                               \
-  unlikely(mdbx_runtime_flags &(type & (MDBX_DBG_TRACE | MDBX_DBG_EXTRA)))
-
-#else
-#define mdbx_debug_enabled(type) (0)
-#define audit_enabled() (0)
-#ifndef NDEBUG
-#define mdbx_assert_enabled() (1)
-#else
-#define mdbx_assert_enabled() (0)
-#endif /* NDEBUG */
-#endif /* MDBX_DEBUG */
-
-#define mdbx_print(fmt, ...)                                                   \
-  mdbx_debug_log(MDBX_DBG_PRINT, NULL, 0, fmt, ##__VA_ARGS__)
-
-#define mdbx_trace(fmt, ...)                                                   \
-  do {                                                                         \
-    if (mdbx_debug_enabled(MDBX_DBG_TRACE))                                    \
-      mdbx_debug_log(MDBX_DBG_TRACE, __FUNCTION__, __LINE__, fmt "\n",         \
-                     ##__VA_ARGS__);                                           \
-  } while (0)
-
-#define mdbx_verbose(fmt, ...)                                                 \
-  do {                                                                         \
-    if (mdbx_debug_enabled(MDBX_DBG_TRACE /* FIXME */))                        \
-      mdbx_debug_log(MDBX_DBG_TRACE /* FIXME */, __FUNCTION__, __LINE__,       \
-                     fmt "\n", ##__VA_ARGS__);                                 \
-  } while (0)
-
-#define mdbx_info(fmt, ...)                                                    \
-  do {                                                                         \
-    if (mdbx_debug_enabled(MDBX_DBG_TRACE /* FIXME */))                        \
-      mdbx_debug_log(MDBX_DBG_TRACE /* FIXME */, __FUNCTION__, __LINE__,       \
-                     fmt "\n", ##__VA_ARGS__);                                 \
-  } while (0)
-
-#define mdbx_notice(fmt, ...)                                                  \
-  do {                                                                         \
-    if (mdbx_debug_enabled(MDBX_DBG_TRACE /* FIXME */))                        \
-      mdbx_debug_log(MDBX_DBG_TRACE /* FIXME */, __FUNCTION__, __LINE__,       \
-                     fmt "\n", ##__VA_ARGS__);                                 \
-  } while (0)
-
-#define mdbx_warning(fmt, ...)                                                 \
-  do {                                                                         \
-    if (mdbx_debug_enabled(MDBX_DBG_TRACE /* FIXME */))                        \
-      mdbx_debug_log(MDBX_DBG_TRACE /* FIXME */, __FUNCTION__, __LINE__,       \
-                     fmt "\n", ##__VA_ARGS__);                                 \
-  } while (0)
-
-#define mdbx_error(fmt, ...)                                                   \
-  do {                                                                         \
-    if (mdbx_debug_enabled(MDBX_DBG_TRACE /* FIXME */))                        \
-      mdbx_debug_log(MDBX_DBG_TRACE /* FIXME */, __FUNCTION__, __LINE__,       \
-                     fmt "\n", ##__VA_ARGS__);                                 \
-  } while (0)
-
-#define mdbx_fatal(fmt, ...)                                                   \
-  do {                                                                         \
-    if (mdbx_debug_enabled(MDBX_DBG_TRACE /* FIXME */))                        \
-      mdbx_debug_log(MDBX_DBG_TRACE /* FIXME */, __FUNCTION__, __LINE__,       \
-                     fmt "\n", ##__VA_ARGS__);                                 \
-  } while (0)
-
-#define mdbx_debug(fmt, ...)                                                   \
-  do {                                                                         \
-    if (mdbx_debug_enabled(MDBX_DBG_TRACE))                                    \
-      mdbx_debug_log(MDBX_DBG_TRACE, __FUNCTION__, __LINE__, fmt "\n",         \
-                     ##__VA_ARGS__);                                           \
-  } while (0)
-
-#define mdbx_debug_print(fmt, ...)                                             \
-  do {                                                                         \
-    if (mdbx_debug_enabled(MDBX_DBG_TRACE))                                    \
-      mdbx_debug_log(MDBX_DBG_TRACE, NULL, 0, fmt, ##__VA_ARGS__);             \
-  } while (0)
-
-#define mdbx_debug_extra(fmt, ...)                                             \
-  do {                                                                         \
-    if (mdbx_debug_enabled(MDBX_DBG_EXTRA))                                    \
-      mdbx_debug_log(MDBX_DBG_EXTRA, __FUNCTION__, __LINE__, fmt,              \
-                     ##__VA_ARGS__);                                           \
-  } while (0)
-
-#define mdbx_debug_extra_print(fmt, ...)                                       \
-  do {                                                                         \
-    if (mdbx_debug_enabled(MDBX_DBG_EXTRA))                                    \
-      mdbx_debug_log(MDBX_DBG_EXTRA, NULL, 0, fmt, ##__VA_ARGS__);             \
-  } while (0)
-
-#define mdbx_ensure_msg(bk, expr, msg)                                         \
-  do {                                                                         \
-    if (unlikely(!(expr)))                                                     \
-      mdbx_assert_fail(bk, msg, __FUNCTION__, __LINE__);                       \
-  } while (0)
-
-#define mdbx_ensure(bk, expr) mdbx_ensure_msg(bk, expr, #expr)
-
-/* assert(3) variant in databook context */
-#define mdbx_assert(bk, expr)                                                  \
-  do {                                                                         \
-    if (mdbx_assert_enabled())                                                 \
-      mdbx_ensure(bk, expr);                                                   \
-  } while (0)
-
-#define MDBX_IS_ERROR(rc)                                                      \
-  ((rc) != MDBX_RESULT_TRUE && (rc) != MDBX_RESULT_FALSE)
 
 /* Internal error codes, not exposed outside libmdbx */
 #define MDBX_NO_ROOT (MDBX_LAST_ERRCODE + 10)
 
 /* Debuging output value of a cursor AAH: Negative in a sub-cursor. */
-#define DAAH(mc)                                                               \
-  (((mc)->mc_kind8 & S_SUBCURSOR) ? -(int)(mc)->mc_aht->ahe->ax_ord16          \
-                                  : (int)(mc)->mc_aht->ahe->ax_ord16)
+#define DAAH(mc)                                                                                              \
+  (((mc)->mc_kind8 & S_SUBCURSOR) ? -(int)(mc)->mc_aht->ahe->ax_ord16 : (int)(mc)->mc_aht->ahe->ax_ord16)
 
 /* Key size which fits in a DKBUF. */
 #define DKBUF_MAXKEYSIZE 511 /* FIXME */
@@ -921,13 +861,21 @@ void mdbx_panic(const char *fmt, ...)
 #if MDBX_DEBUG
 #define DKBUF char _kbuf[DKBUF_MAXKEYSIZE * 4 + 2]
 #define DKEY(x) mdbx_dump_iov(x, _kbuf, DKBUF_MAXKEYSIZE * 2 + 1)
-#define DVAL(x)                                                                \
-  mdbx_dump_iov(x, _kbuf + DKBUF_MAXKEYSIZE * 2 + 1, DKBUF_MAXKEYSIZE * 2 + 1)
+#define DVAL(x) mdbx_dump_iov(x, _kbuf + DKBUF_MAXKEYSIZE * 2 + 1, DKBUF_MAXKEYSIZE * 2 + 1)
 #else
 #define DKBUF ((void)(0))
 #define DKEY(x) ("-")
 #define DVAL(x) ("-")
 #endif
+
+static inline char cmp2char(ptrdiff_t cmp) {
+  if (cmp < 0)
+    return '<';
+  else if (cmp > 0)
+    return '>';
+  else
+    return '=';
+}
 
 /* An invalid page number.
  * Mainly used to denote an empty tree. */
@@ -954,21 +902,18 @@ void mdbx_panic(const char *fmt, ...)
 static inline void *page_data(page_t *page) { return &page->mp_data; }
 
 /* Number of nodes on a page */
-static inline unsigned page_numkeys(page_t *page) {
-  return page->mp_lower >> 1;
-}
+static inline indx_t page_numkeys(const page_t *page) { return page->mp_lower >> 1; }
 
 /* The amount of space remaining in the page */
-static inline indx_t page_spaceleft(page_t *page) {
+static inline indx_t page_spaceleft(const page_t *page) {
   int diff = page->mp_upper - page->mp_lower;
   assert(diff >= 0 && diff <= UINT16_MAX);
-  return diff;
+  return (indx_t)diff;
 }
 
 /* The percentage of space used in the page, in tenths of a percent. */
-#define PAGEFILL(bk, p)                                                        \
-  (1024UL * ((bk)->me_psize - PAGEHDRSZ - page_spaceleft(p)) /                 \
-   ((bk)->me_psize - PAGEHDRSZ))
+#define PAGEFILL(env, p)                                                                                      \
+  (1024UL * ((env)->me_psize - PAGEHDRSZ - page_spaceleft(p)) / ((env)->me_psize - PAGEHDRSZ))
 /* The minimum page fill factor, in tenths of a percent.
  * Pages emptier than this are candidates for merging. */
 #define FILL_THRESHOLD 256
@@ -985,9 +930,9 @@ static inline indx_t page_spaceleft(page_t *page) {
 #define IS_SUBP(p) F_ISSET((p)->mp_flags16, P_SUBP)
 
 /* The number of overflow pages needed to store the given size. */
-#define OVPAGES(bk, size) (bytes2pgno(bk, PAGEHDRSZ - 1 + (size)) + 1)
+#define OVPAGES(env, size) (bytes2pgno(env, PAGEHDRSZ - 1 + (size)) + 1)
 
-/* Link in MDBX_txn.mt_loose_pages list.
+/* Link in MDBX_txn_t.mt_loose_pages list.
  * Kept outside the page header, which is needed when reusing the page. */
 #define NEXT_LOOSE_PAGE(p) (*(page_t **)((p) + 2))
 
@@ -999,8 +944,7 @@ enum mdbx_node_flags {
   MDBX_NODE_FLAGS = NODE_BIG | NODE_SUBTREE | NODE_DUP,
 
   /* valid flags for mdbx_node_add() */
-  NODE_ADD_FLAGS =
-      (NODE_DUP | NODE_SUBTREE | MDBX_IUD_RESERVE | MDBX_IUD_APPEND),
+  NODE_ADD_FLAGS = (NODE_DUP | NODE_SUBTREE | MDBX_IUD_RESERVE | MDBX_IUD_APPEND),
 };
 
 /* Header for a single key/data pair within a page.
@@ -1016,7 +960,7 @@ enum mdbx_node_flags {
  * data part is the page number of an overflow page with actual data.
  * NODE_DUP and NODE_SUBTREE can be combined giving duplicate data
  * in a sub-page/sub-AA, and named AAs (just NODE_SUBTREE). */
-typedef struct node_ {
+typedef struct node {
   union {
     struct {
       union {
@@ -1047,7 +991,7 @@ typedef struct node_ {
 #define LEAFSIZE(k, d) (NODESIZE + (k)->iov_len + (d)->iov_len)
 
 /* Address of node i in page p */
-static __inline node_t *node_ptr(page_t *p, unsigned i) {
+static inline node_t *node_ptr(page_t *p, unsigned i) {
   assert(page_numkeys(p) > (unsigned)(i));
   return (node_t *)((char *)(p) + (p)->mp_ptrs[i] + PAGEHDRSZ);
 }
@@ -1059,50 +1003,46 @@ static __inline node_t *node_ptr(page_t *p, unsigned i) {
 #define NODEDATA(node) (void *)((char *)(node)->mn_data + (node)->mn_ksize16)
 
 /* Get the page number pointed to by a branch node */
-static __inline pgno_t node_get_pgno(const node_t *node) {
+static inline pgno_t node_get_pgno(const node_t *node) {
   pgno_t pgno;
   if (UNALIGNED_OK && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__) {
     pgno = node->mn_ksize_and_pgno;
     if (sizeof(pgno_t) > 4)
       pgno &= MAX_PAGENO;
   } else {
-    pgno = get_le32_aligned16(&node->mn_ksize_and_pgno);
+    pgno = get_le32_aligned2(&node->mn_ksize_and_pgno);
     if (sizeof(pgno_t) > 4) {
-      uint64_t high =
-          get_le16_aligned((const uint16_t *)&node->mn_ksize_and_pgno + 2);
-      pgno |= high << 32;
+      uint64_t high = get_le16_aligned((const uint16_t *)&node->mn_ksize_and_pgno + 2);
+      pgno |= (pgno_t)(high << 32);
     }
   }
-  assert(pgno == (get_le64_aligned16(&node->mn_ksize_and_pgno) & MAX_PAGENO));
+  assert(pgno == (get_le64_aligned2(&node->mn_ksize_and_pgno) & MAX_PAGENO));
   return pgno;
 }
 
 /* Set the page number in a branch node */
-static __inline void node_set_pgno(node_t *node, pgno_t pgno) {
+static inline void node_set_pgno(node_t *node, pgno_t pgno) {
   assert(pgno <= MAX_PAGENO);
 
   if (UNALIGNED_OK && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__) {
     if (sizeof(pgno_t) > 4)
-      pgno |= ((uint64_t)node->mn_ksize16) << 48;
+      pgno |= (pgno_t)(((uint64_t)node->mn_ksize16) << 48);
     node->mn_ksize_and_pgno = pgno;
   } else {
-    set_le32_aligned16(&node->mn_ksize_and_pgno, (uint32_t)pgno);
+    set_le32_aligned2(&node->mn_ksize_and_pgno, (uint32_t)pgno);
     if (sizeof(pgno_t) > 4)
-      set_le16_aligned((uint16_t *)&node->mn_ksize_and_pgno + 2,
-                       (uint16_t)((uint64_t)pgno >> 32));
+      set_le16_aligned((uint16_t *)&node->mn_ksize_and_pgno + 2, (uint16_t)((uint64_t)pgno >> 32));
   }
-  assert(pgno == (get_le64_aligned16(&node->mn_ksize_and_pgno) & MAX_PAGENO));
+  assert(pgno == (get_le64_aligned2(&node->mn_ksize_and_pgno) & MAX_PAGENO));
 }
 
 /* Get the size of the data in a leaf node */
-static __inline size_t node_get_datasize(const node_t *node) {
-  return get_le32_aligned16(&node->mn_dsize);
-}
+static inline size_t node_get_datasize(const node_t *node) { return get_le32_aligned2(&node->mn_dsize); }
 
 /* Set the size of the data for a leaf node */
-static __inline void node_set_datasize(node_t *node, size_t size) {
+static inline void node_set_datasize(node_t *node, size_t size) {
   assert(size < INT_MAX);
-  set_le32_aligned16(&node->mn_dsize, (uint32_t)size);
+  set_le32_aligned2(&node->mn_dsize, (uint32_t)size);
 }
 
 /* The size of a key in a node */
@@ -1114,19 +1054,19 @@ static __inline void node_set_datasize(node_t *node, size_t size) {
 #define DFLKEY(p, i, ks) ((char *)(p) + PAGEHDRSZ + ((i) * (ks)))
 
 /* Set the node's key into keyptr, if requested. */
-#define MDBX_GET_KEY(node, keyptr)                                             \
-  do {                                                                         \
-    if ((keyptr) != NULL) {                                                    \
-      (keyptr)->iov_len = node_get_keysize(node);                              \
-      (keyptr)->iov_base = NODEKEY(node);                                      \
-    }                                                                          \
+#define MDBX_GET_KEY(node, keyptr)                                                                            \
+  do {                                                                                                        \
+    if ((keyptr) != NULL) {                                                                                   \
+      (keyptr)->iov_len = node_get_keysize(node);                                                             \
+      (keyptr)->iov_base = NODEKEY(node);                                                                     \
+    }                                                                                                         \
   } while (0)
 
 /* Set the node's key into key. */
-#define MDBX_GET_KEY2(node, key)                                               \
-  do {                                                                         \
-    key.iov_len = node_get_keysize(node);                                      \
-    key.iov_base = NODEKEY(node);                                              \
+#define MDBX_GET_KEY2(node, key)                                                                              \
+  do {                                                                                                        \
+    key.iov_len = node_get_keysize(node);                                                                     \
+    key.iov_base = NODEKEY(node);                                                                             \
   } while (0)
 
 /* max number of pages to commit in one writev() call */
@@ -1142,7 +1082,7 @@ static __inline void node_set_datasize(node_t *node, size_t size) {
 
 ///* Check for misused aah handles */
 //#define TXN_AAH_CHANGED(txn, aah)
-//  ((txn)->mt_aah_seq[aah] != (txn)->mt_book->me_aah_seq[aah])
+//  ((txn)->mt_aah_seq[aah] != (txn)->mt_env->me_aah_seq[aah])
 
 /* LY: fast enough on most systems
  *
@@ -1157,3 +1097,27 @@ static __inline void node_set_datasize(node_t *node, size_t size) {
 #else
 #define mdbx_cmp2int(a, b) (((a) > (b)) - ((b) > (a)))
 #endif
+
+static inline pgno_t pgno_add(pgno_t base, pgno_t augend) {
+  assert(base <= MAX_PAGENO);
+  return (augend < MAX_PAGENO - base) ? base + augend : MAX_PAGENO;
+}
+
+static inline pgno_t pgno_sub(pgno_t base, pgno_t subtrahend) {
+  assert(base >= MIN_PAGENO);
+  return (subtrahend < base - MIN_PAGENO) ? base - subtrahend : MIN_PAGENO;
+}
+
+static inline MDBX_seize_result_t seize_failed(MDBX_error_t err) {
+  assert(MDBX_IS_ERROR(err));
+  const MDBX_seize_result_t result = {err, MDBX_SEIZE_FAILED};
+  return result;
+}
+
+static inline MDBX_seize_result_t seize_done(MDBX_seize_t seize) {
+  assert(seize >= MDBX_SEIZE_FAILED && seize <= MDBX_SEIZE_EXCLUSIVE_FIRST);
+  const MDBX_seize_result_t result = {MDBX_SUCCESS, seize};
+  return result;
+}
+
+#define IS_SEIZE_EXCLUSIVE(seize) ((seize) > MDBX_SEIZE_SHARED)

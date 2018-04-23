@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -14,21 +14,20 @@
 
 #include "./bits.h"
 
-#if MDBX_VERSION_MAJOR != 0 || MDBX_VERSION_MINOR != 0
+#if MDBX_VERSION_MAJOR != 1 || MDBX_VERSION_MINOR != 0
 #error "API version mismatch!"
 #endif
 
 #define MDBX_VERSION_RELEASE 0
 #define MDBX_VERSION_REVISION 0
 
-/*LIBMDBX_EXPORTS*/ const mdbx_version_info mdbx_version = {
+/*LIBMDBX_EXPORTS*/ const mdbx_version_info_t mdbx_version = {
     MDBX_VERSION_MAJOR,
     MDBX_VERSION_MINOR,
     MDBX_VERSION_RELEASE,
     MDBX_VERSION_REVISION,
-    {"@MDBX_GIT_TIMESTAMP@", "@MDBX_GIT_TREE@", "@MDBX_GIT_COMMIT@",
-     "@MDBX_GIT_DESCRIBE@"}};
+    {"@MDBX_GIT_TIMESTAMP@", "@MDBX_GIT_TREE@", "@MDBX_GIT_COMMIT@", "@MDBX_GIT_DESCRIBE@"}};
 
-/*LIBMDBX_EXPORTS*/ const mdbx_build_info mdbx_build = {
+/*LIBMDBX_EXPORTS*/ const mdbx_build_info_t mdbx_build = {
     "@MDBX_BUILD_TIMESTAMP@", "@MDBX_BUILD_TAGRET@", "@MDBX_BUILD_OPTIONS@",
-    "@MDBX_BUILD_COMPILER@", "@MDBX_BUILD_FLAGS@"};
+    "@MDBX_BUILD_COMPILER@",  "@MDBX_BUILD_FLAGS@",  MDBX_CONFIGURED_DEBUG_ABILITIES};

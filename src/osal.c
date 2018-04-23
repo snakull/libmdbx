@@ -1,7 +1,7 @@
-﻿/* https://en.wikipedia.org/wiki/Operating_system_abstraction_layer */
+/* https://en.wikipedia.org/wiki/Operating_system_abstraction_layer */
 
 /*
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -15,6 +15,9 @@
  */
 
 #include "./bits.h"
+#include "./debug.h"
+#include "./proto.h"
+#include "./ualb.h"
 
 static MDBX_pid_t mdbx_getpid(void) {
 #if defined(_WIN32) || defined(_WIN64)
@@ -58,8 +61,7 @@ static int ntstatus2errcode(NTSTATUS status) {
   OVERLAPPED ov;
   memset(&ov, 0, sizeof(ov));
   ov.Internal = status;
-  return GetOverlappedResult(NULL, &ov, &dummy, FALSE) ? MDBX_SUCCESS
-                                                       : GetLastError();
+  return GetOverlappedResult(NULL, &ov, &dummy, FALSE) ? MDBX_SUCCESS : GetLastError();
 }
 
 /* We use native NT APIs to setup the memory map, so that we can
@@ -71,37 +73,48 @@ static int ntstatus2errcode(NTSTATUS status) {
  * ntdll.dll, which is not linked by default in user code. */
 #pragma comment(lib, "ntdll.lib")
 
-extern NTSTATUS NTAPI NtCreateSection(
-    OUT PHANDLE SectionHandle, IN ACCESS_MASK DesiredAccess,
-    IN OPTIONAL POBJECT_ATTRIBUTES ObjectAttributes,
-    IN OPTIONAL PLARGE_INTEGER MaximumSize, IN ULONG SectionPageProtection,
-    IN ULONG AllocationAttributes, IN OPTIONAL HANDLE FileHandle);
+extern NTSTATUS NTAPI NtCreateSection(OUT PHANDLE SectionHandle, IN ACCESS_MASK DesiredAccess,
+                                      IN OPTIONAL POBJECT_ATTRIBUTES ObjectAttributes,
+                                      IN OPTIONAL PLARGE_INTEGER MaximumSize, IN ULONG SectionPageProtection,
+                                      IN ULONG AllocationAttributes, IN OPTIONAL HANDLE FileHandle);
 
-extern NTSTATUS NTAPI NtExtendSection(IN HANDLE SectionHandle,
-                                      IN PLARGE_INTEGER NewSectionSize);
+typedef struct _SECTION_BASIC_INFORMATION {
+  ULONG Unknown;
+  ULONG SectionAttributes;
+  LARGE_INTEGER SectionSize;
+} SECTION_BASIC_INFORMATION, *PSECTION_BASIC_INFORMATION;
+
+typedef enum _SECTION_INFORMATION_CLASS {
+  SectionBasicInformation,
+  SectionImageInformation,
+  SectionRelocationInformation, // name:wow64:whNtQuerySection_SectionRelocationInformation
+  MaxSectionInfoClass
+} SECTION_INFORMATION_CLASS;
+
+extern NTSTATUS NTAPI NtQuerySection(IN HANDLE SectionHandle, IN SECTION_INFORMATION_CLASS InformationClass,
+                                     OUT PVOID InformationBuffer, IN ULONG InformationBufferSize,
+                                     OUT PULONG ResultLength OPTIONAL);
+
+extern NTSTATUS NTAPI NtExtendSection(IN HANDLE SectionHandle, IN PLARGE_INTEGER NewSectionSize);
 
 typedef enum _SECTION_INHERIT { ViewShare = 1, ViewUnmap = 2 } SECTION_INHERIT;
 
-extern NTSTATUS NTAPI NtMapViewOfSection(
-    IN HANDLE SectionHandle, IN HANDLE ProcessHandle, IN OUT PVOID *BaseAddress,
-    IN ULONG_PTR ZeroBits, IN SIZE_T CommitSize,
-    IN OUT OPTIONAL PLARGE_INTEGER SectionOffset, IN OUT PSIZE_T ViewSize,
-    IN SECTION_INHERIT InheritDisposition, IN ULONG AllocationType,
-    IN ULONG Win32Protect);
+extern NTSTATUS NTAPI NtMapViewOfSection(IN HANDLE SectionHandle, IN HANDLE ProcessHandle,
+                                         IN OUT PVOID *BaseAddress, IN ULONG_PTR ZeroBits,
+                                         IN SIZE_T CommitSize, IN OUT OPTIONAL PLARGE_INTEGER SectionOffset,
+                                         IN OUT PSIZE_T ViewSize, IN SECTION_INHERIT InheritDisposition,
+                                         IN ULONG AllocationType, IN ULONG Win32Protect);
 
-extern NTSTATUS NTAPI NtUnmapViewOfSection(IN HANDLE ProcessHandle,
-                                           IN OPTIONAL PVOID BaseAddress);
+extern NTSTATUS NTAPI NtUnmapViewOfSection(IN HANDLE ProcessHandle, IN OPTIONAL PVOID BaseAddress);
 
 extern NTSTATUS NTAPI NtClose(HANDLE Handle);
 
-extern NTSTATUS NTAPI NtAllocateVirtualMemory(
-    IN HANDLE ProcessHandle, IN OUT PVOID *BaseAddress, IN ULONG ZeroBits,
-    IN OUT PULONG RegionSize, IN ULONG AllocationType, IN ULONG Protect);
+extern NTSTATUS NTAPI NtAllocateVirtualMemory(IN HANDLE ProcessHandle, IN OUT PVOID *BaseAddress,
+                                              IN ULONG_PTR ZeroBits, IN OUT PSIZE_T RegionSize,
+                                              IN ULONG AllocationType, IN ULONG Protect);
 
-extern NTSTATUS NTAPI NtFreeVirtualMemory(IN HANDLE ProcessHandle,
-                                          IN PVOID *BaseAddress,
-                                          IN OUT PULONG RegionSize,
-                                          IN ULONG FreeType);
+extern NTSTATUS NTAPI NtFreeVirtualMemory(IN HANDLE ProcessHandle, IN PVOID *BaseAddress,
+                                          IN OUT PSIZE_T RegionSize, IN ULONG FreeType);
 
 #ifndef FILE_PROVIDER_CURRENT_VERSION
 typedef struct _FILE_PROVIDER_EXTERNAL_INFO_V1 {
@@ -118,85 +131,28 @@ typedef struct _FILE_PROVIDER_EXTERNAL_INFO_V1 {
 #define STATUS_INVALID_DEVICE_REQUEST ((NTSTATUS)0xC0000010L)
 #endif
 
-extern NTSTATUS
-NtFsControlFile(IN HANDLE FileHandle, IN OUT HANDLE Event,
-                IN OUT PVOID /* PIO_APC_ROUTINE */ ApcRoutine,
-                IN OUT PVOID ApcContext, OUT PIO_STATUS_BLOCK IoStatusBlock,
-                IN ULONG FsControlCode, IN OUT PVOID InputBuffer,
-                IN ULONG InputBufferLength, OUT OPTIONAL PVOID OutputBuffer,
-                IN ULONG OutputBufferLength);
+extern NTSTATUS NtFsControlFile(IN HANDLE FileHandle, IN OUT HANDLE Event,
+                                IN OUT PVOID /* PIO_APC_ROUTINE */ ApcRoutine, IN OUT PVOID ApcContext,
+                                OUT PIO_STATUS_BLOCK IoStatusBlock, IN ULONG FsControlCode,
+                                IN OUT PVOID InputBuffer, IN ULONG InputBufferLength,
+                                OUT OPTIONAL PVOID OutputBuffer, IN ULONG OutputBufferLength);
 
 #endif /* _WIN32 || _WIN64 */
 
 /*----------------------------------------------------------------------------*/
 
-#ifndef _MSC_VER
-/* Prototype should match libc runtime. ISO POSIX (2003) & LSB 3.1 */
-__nothrow __noreturn void __assert_fail(const char *assertion, const char *file,
-                                        unsigned line, const char *function);
-#else
-__extern_C __declspec(dllimport) void __cdecl _assert(char const *message,
-                                                      char const *filename,
-                                                      unsigned line);
-#endif /* _MSC_VER */
-
-#ifndef mdbx_assert_fail
-void __cold mdbx_assert_fail(const MDBX_milieu *bk, const char *msg,
-                             const char *func, int line) {
-#if MDBX_DEBUG
-  if (bk && bk->me_assert_func) {
-    bk->me_assert_func(bk, msg, func, line);
-    return;
-  }
-#else
-  (void)bk;
-#endif /* MDBX_DEBUG */
-
-  if (mdbx_debug_logger)
-    mdbx_debug_log(MDBX_DBG_ASSERT, func, line, "assert: %s\n", msg);
-#ifndef _MSC_VER
-  __assert_fail(msg, "mdbx", line, func);
-#else
-  _assert(msg, func, line);
-#endif /* _MSC_VER */
-}
-#endif /* mdbx_assert_fail */
-
-__cold void mdbx_panic(const char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-#ifdef _MSC_VER
-  if (IsDebuggerPresent()) {
-    OutputDebugString("\r\n" FIXME "\r\n");
-    FatalExit(ERROR_UNHANDLED_ERROR);
-  }
-#elif _XOPEN_SOURCE >= 700 || _POSIX_C_SOURCE >= 200809L ||                    \
-    (__GLIBC_PREREQ(1, 0) && !__GLIBC_PREREQ(2, 10) && defined(_GNU_SOURCE))
-  vdprintf(STDERR_FILENO, fmt, ap);
-#else
-#error FIXME
-#endif
-  va_end(ap);
-  abort();
-}
-
-/*----------------------------------------------------------------------------*/
-
-#ifndef mdbx_asprintf
-int mdbx_asprintf(char **strp, const char *fmt, ...) {
-  va_list ap, ones;
-
-  va_start(ap, fmt);
+#ifndef mdbx_vasprintf
+int mdbx_vasprintf(char **strp, const char *fmt, va_list ap) {
+  va_list ones;
   va_copy(ones, ap);
 #ifdef _MSC_VER
   int needed = _vscprintf(fmt, ap);
-#elif defined(vsnprintf) || defined(_BSD_SOURCE) || _XOPEN_SOURCE >= 500 ||    \
-    defined(_ISOC99_SOURCE) || _POSIX_C_SOURCE >= 200112L
+#elif defined(vsnprintf) || defined(_BSD_SOURCE) || _XOPEN_SOURCE >= 500 || defined(_ISOC99_SOURCE) ||        \
+    _POSIX_C_SOURCE >= 200112L
   int needed = vsnprintf(nullptr, 0, fmt, ap);
 #else
 #error FIXME
 #endif
-  va_end(ap);
 
   if (unlikely(needed < 0 || needed >= INT_MAX)) {
     *strp = nullptr;
@@ -211,8 +167,8 @@ int mdbx_asprintf(char **strp, const char *fmt, ...) {
     return -1;
   }
 
-#if defined(vsnprintf) || defined(_BSD_SOURCE) || _XOPEN_SOURCE >= 500 ||      \
-    defined(_ISOC99_SOURCE) || _POSIX_C_SOURCE >= 200112L
+#if defined(vsnprintf) || defined(_BSD_SOURCE) || _XOPEN_SOURCE >= 500 || defined(_ISOC99_SOURCE) ||          \
+    _POSIX_C_SOURCE >= 200112L
   int actual = vsnprintf(*strp, needed + 1, fmt, ones);
 #else
 #error FIXME
@@ -226,34 +182,17 @@ int mdbx_asprintf(char **strp, const char *fmt, ...) {
   }
   return actual;
 }
+#endif /* mdbx_vasprintf */
+
+#ifndef mdbx_asprintf
+int mdbx_asprintf(char **strp, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  int rc = mdbx_vasprintf(strp, fmt, ap);
+  va_end(ap);
+  return rc;
+}
 #endif /* mdbx_asprintf */
-
-#ifndef mdbx_memalign_alloc
-static int mdbx_memalign_alloc(size_t alignment, size_t bytes, void **result) {
-#if _MSC_VER
-  *result = _aligned_malloc(bytes, alignment);
-  return *result ? MDBX_SUCCESS : MDBX_ENOMEM /* ERROR_OUTOFMEMORY */;
-#elif __GLIBC_PREREQ(2, 16) || __STDC_VERSION__ >= 201112L
-  *result = memalign(alignment, bytes);
-  return *result ? MDBX_SUCCESS : errno;
-#elif _POSIX_VERSION >= 200112L
-  *result = nullptr;
-  return posix_memalign(result, alignment, bytes);
-#else
-#error FIXME
-#endif
-}
-#endif /* mdbx_memalign_alloc */
-
-#ifndef mdbx_memalign_free
-static void mdbx_memalign_free(void *ptr) {
-#if _MSC_VER
-  _aligned_free(ptr);
-#else
-  free(ptr);
-#endif
-}
-#endif /* mdbx_memalign_free */
 
 /*----------------------------------------------------------------------------*/
 
@@ -347,8 +286,7 @@ static int mdbx_condmutex_signal(mdbx_condmutex_t *condmutex) {
 
 static int mdbx_condmutex_wait(mdbx_condmutex_t *condmutex) {
 #if defined(_WIN32) || defined(_WIN64)
-  DWORD code =
-      SignalObjectAndWait(condmutex->mutex, condmutex->event, INFINITE, FALSE);
+  DWORD code = SignalObjectAndWait(condmutex->mutex, condmutex->event, INFINITE, FALSE);
   if (code == WAIT_OBJECT_0)
     code = WaitForSingleObject(condmutex->mutex, INFINITE);
   return waitstatus2errcode(code);
@@ -401,8 +339,7 @@ static int mdbx_fastmutex_release(mdbx_fastmutex_t *fastmutex) {
 
 /*----------------------------------------------------------------------------*/
 
-static int mdbx_openfile(const char *pathname, int flags, mode_t mode,
-                         MDBX_filehandle_t *fd) {
+static int mdbx_openfile(const char *pathname, int flags, mode_t mode, MDBX_filehandle_t *fd) {
   *fd = MDBX_INVALID_FD;
 #if defined(_WIN32) || defined(_WIN64)
   (void)mode;
@@ -416,7 +353,7 @@ static int mdbx_openfile(const char *pathname, int flags, mode_t mode,
   case O_RDONLY:
     DesiredAccess = GENERIC_READ;
     break;
-  case O_WRONLY: /* assume for MDBX_milieu_copy() and friends output */
+  case O_WRONLY: /* assume for MDBX_env_copy() and friends output */
     DesiredAccess = GENERIC_WRITE;
     ShareMode = 0;
     FlagsAndAttributes |= FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH;
@@ -443,8 +380,7 @@ static int mdbx_openfile(const char *pathname, int flags, mode_t mode,
     break;
   }
 
-  *fd = CreateFileA(pathname, DesiredAccess, ShareMode, NULL,
-                    CreationDisposition, FlagsAndAttributes, NULL);
+  *fd = CreateFileA(pathname, DesiredAccess, ShareMode, NULL, CreationDisposition, FlagsAndAttributes, NULL);
 
   if (*fd == MDBX_INVALID_FD)
     return GetLastError();
@@ -452,8 +388,7 @@ static int mdbx_openfile(const char *pathname, int flags, mode_t mode,
     /* set FILE_ATTRIBUTE_NOT_CONTENT_INDEXED for new file */
     DWORD FileAttributes = GetFileAttributesA(pathname);
     if (FileAttributes == INVALID_FILE_ATTRIBUTES ||
-        !SetFileAttributesA(pathname, FileAttributes |
-                                          FILE_ATTRIBUTE_NOT_CONTENT_INDEXED)) {
+        !SetFileAttributesA(pathname, FileAttributes | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED)) {
       int rc = GetLastError();
       CloseHandle(*fd);
       *fd = MDBX_INVALID_FD;
@@ -488,8 +423,7 @@ static int mdbx_closefile(MDBX_filehandle_t fd) {
 #endif
 }
 
-static int mdbx_pread(MDBX_filehandle_t fd, void *buf, size_t bytes,
-                      uint64_t offset) {
+static int mdbx_pread(MDBX_filehandle_t fd, void *buf, size_t bytes, uint64_t offset) {
   if (bytes > MAX_WRITE)
     return MDBX_EINVAL;
 #if defined(_WIN32) || defined(_WIN64)
@@ -505,8 +439,7 @@ static int mdbx_pread(MDBX_filehandle_t fd, void *buf, size_t bytes,
     return (rc == MDBX_SUCCESS) ? /* paranoia */ ERROR_READ_FAULT : rc;
   }
 #else
-  STATIC_ASSERT_MSG(sizeof(off_t) >= sizeof(size_t),
-                    "libmdbx requires 64-bit file I/O on 64-bit systems");
+  STATIC_ASSERT_MSG(sizeof(off_t) >= sizeof(size_t), "libmdbx requires 64-bit file I/O on 64-bit systems");
   intptr_t read = pread(fd, buf, bytes, offset);
   if (read < 0) {
     int rc = errno;
@@ -516,8 +449,7 @@ static int mdbx_pread(MDBX_filehandle_t fd, void *buf, size_t bytes,
   return (bytes == (size_t)read) ? MDBX_SUCCESS : MDBX_ENODATA;
 }
 
-static int mdbx_pwrite(MDBX_filehandle_t fd, const void *buf, size_t bytes,
-                       uint64_t offset) {
+static int mdbx_pwrite(MDBX_filehandle_t fd, const void *buf, size_t bytes, uint64_t offset) {
 #if defined(_WIN32) || defined(_WIN64)
   if (bytes > MAX_WRITE)
     return ERROR_INVALID_PARAMETER;
@@ -535,8 +467,7 @@ static int mdbx_pwrite(MDBX_filehandle_t fd, const void *buf, size_t bytes,
   int rc;
   intptr_t written;
   do {
-    STATIC_ASSERT_MSG(sizeof(off_t) >= sizeof(size_t),
-                      "libmdbx requires 64-bit file I/O on 64-bit systems");
+    STATIC_ASSERT_MSG(sizeof(off_t) >= sizeof(size_t), "libmdbx requires 64-bit file I/O on 64-bit systems");
     written = pwrite(fd, buf, bytes, offset);
     if (likely(bytes == (size_t)written))
       return MDBX_SUCCESS;
@@ -546,8 +477,8 @@ static int mdbx_pwrite(MDBX_filehandle_t fd, const void *buf, size_t bytes,
 #endif
 }
 
-static int mdbx_pwritev(MDBX_filehandle_t fd, struct iovec *iov, int iovcnt,
-                        uint64_t offset, size_t expected_written) {
+static int mdbx_pwritev(MDBX_filehandle_t fd, struct iovec *iov, int iovcnt, uint64_t offset,
+                        size_t expected_written) {
 #if defined(_WIN32) || defined(_WIN64)
   size_t written = 0;
   for (int i = 0; i < iovcnt; ++i) {
@@ -557,14 +488,12 @@ static int mdbx_pwritev(MDBX_filehandle_t fd, struct iovec *iov, int iovcnt,
     written += iov[i].iov_len;
     offset += iov[i].iov_len;
   }
-  return (expected_written == written) ? MDBX_SUCCESS
-                                       : MDBX_EIO /* ERROR_WRITE_FAULT */;
+  return (expected_written == written) ? MDBX_SUCCESS : MDBX_EIO /* ERROR_WRITE_FAULT */;
 #else
   int rc;
   intptr_t written;
   do {
-    STATIC_ASSERT_MSG(sizeof(off_t) >= sizeof(size_t),
-                      "libmdbx requires 64-bit file I/O on 64-bit systems");
+    STATIC_ASSERT_MSG(sizeof(off_t) >= sizeof(size_t), "libmdbx requires 64-bit file I/O on 64-bit systems");
     written = pwritev(fd, iov, iovcnt, offset);
     if (likely(expected_written == (size_t)written))
       return MDBX_SUCCESS;
@@ -624,7 +553,7 @@ static int mdbx_filesync(MDBX_filehandle_t fd, bool filesize_changed) {
 #if defined(_WIN32) || defined(_WIN64)
   (void)filesize_changed;
   return FlushFileBuffers(fd) ? MDBX_SUCCESS : GetLastError();
-#elif __GLIBC_PREREQ(2, 16) || _BSD_SOURCE || _XOPEN_SOURCE ||                 \
+#elif __GLIBC_PREREQ(2, 16) || _BSD_SOURCE || _XOPEN_SOURCE ||                                                \
     (__GLIBC_PREREQ(2, 8) && _POSIX_C_SOURCE >= 200112L)
   for (;;) {
 /* LY: It is no reason to use fdatasync() here, even in case
@@ -637,8 +566,7 @@ static int mdbx_filesync(MDBX_filehandle_t fd, bool filesize_changed) {
  *
  * For more info about of a corresponding fdatasync() bug
  * see http://www.spinics.net/lists/linux-ext4/msg33714.html */
-#if _POSIX_C_SOURCE >= 199309L || _XOPEN_SOURCE >= 500 ||                      \
-    defined(_POSIX_SYNCHRONIZED_IO)
+#if _POSIX_C_SOURCE >= 199309L || _XOPEN_SOURCE >= 500 || defined(_POSIX_SYNCHRONIZED_IO)
     if (!filesize_changed && fdatasync(fd) == 0)
       return MDBX_SUCCESS;
 #else
@@ -680,8 +608,7 @@ static int mdbx_filesize(MDBX_filehandle_t fd, uint64_t *length) {
 #else
   struct stat st;
 
-  STATIC_ASSERT_MSG(sizeof(off_t) <= sizeof(uint64_t),
-                    "libmdbx requires 64-bit file I/O on 64-bit systems");
+  STATIC_ASSERT_MSG(sizeof(off_t) <= sizeof(uint64_t), "libmdbx requires 64-bit file I/O on 64-bit systems");
   if (fstat(fd, &st))
     return errno;
 
@@ -694,67 +621,29 @@ static int mdbx_ftruncate(MDBX_filehandle_t fd, uint64_t length) {
 #if defined(_WIN32) || defined(_WIN64)
   LARGE_INTEGER li;
   li.QuadPart = length;
-  return (SetFilePointerEx(fd, li, NULL, FILE_BEGIN) && SetEndOfFile(fd))
-             ? MDBX_SUCCESS
-             : GetLastError();
+  return (SetFilePointerEx(fd, li, NULL, FILE_BEGIN) && SetEndOfFile(fd)) ? MDBX_SUCCESS : GetLastError();
 #else
-  STATIC_ASSERT_MSG(sizeof(off_t) >= sizeof(size_t),
-                    "libmdbx requires 64-bit file I/O on 64-bit systems");
+  STATIC_ASSERT_MSG(sizeof(off_t) >= sizeof(size_t), "libmdbx requires 64-bit file I/O on 64-bit systems");
   return ftruncate(fd, length) == 0 ? MDBX_SUCCESS : errno;
 #endif
 }
 
-int mdbx_is_directory(const char *pathname) {
+MDBX_error_t mdbx_is_directory(const char *pathname) {
 #if defined(_WIN32) || defined(_WIN64)
   DWORD attr = GetFileAttributesA(pathname);
   if (attr != INVALID_FILE_ATTRIBUTES)
-    return (attr & FILE_ATTRIBUTE_DIRECTORY) ? MDBX_RESULT_TRUE
-                                             : MDBX_RESULT_FALSE;
+    return (attr & FILE_ATTRIBUTE_DIRECTORY) ? MDBX_SUCCESS : MDBX_SIGN;
 #else
   struct stat info;
   if (stat(pathname, &info) == 0)
-    return S_ISDIR(info.st_mode) ? MDBX_RESULT_TRUE : MDBX_RESULT_FALSE;
+    return S_ISDIR(info.st_mode) ? MDBX_SUCCESS : MDBX_SIGN;
 #endif
   return mdbx_get_errno();
 }
 
 /*----------------------------------------------------------------------------*/
 
-static int mdbx_thread_key_create(mdbx_thread_key_t *key) {
-#if defined(_WIN32) || defined(_WIN64)
-  *key = TlsAlloc();
-  return (*key != TLS_OUT_OF_INDEXES) ? MDBX_SUCCESS : GetLastError();
-#else
-  return pthread_key_create(key, rthc_dtor);
-#endif
-}
-
-static void mdbx_thread_key_delete(mdbx_thread_key_t key) {
-#if defined(_WIN32) || defined(_WIN64)
-  mdbx_ensure(NULL, TlsFree(key));
-#else
-  mdbx_ensure(NULL, pthread_key_delete(key) == 0);
-#endif
-}
-
-static void *mdbx_thread_rthc_get(mdbx_thread_key_t key) {
-#if defined(_WIN32) || defined(_WIN64)
-  return TlsGetValue(key);
-#else
-  return pthread_getspecific(key);
-#endif
-}
-
-static void mdbx_thread_rthc_set(mdbx_thread_key_t key, const void *value) {
-#if defined(_WIN32) || defined(_WIN64)
-  mdbx_ensure(NULL, TlsSetValue(key, (void *)value));
-#else
-  mdbx_ensure(NULL, pthread_setspecific(key, value) == 0);
-#endif
-}
-
-static int mdbx_thread_create(mdbx_thread_t *thread,
-                              THREAD_RESULT(THREAD_CALL *start_routine)(void *),
+static int mdbx_thread_create(mdbx_thread_t *thread, THREAD_RESULT(THREAD_CALL *start_routine)(void *),
                               void *arg) {
 #if defined(_WIN32) || defined(_WIN64)
   *thread = CreateThread(NULL, 0, start_routine, arg, 0, NULL);
@@ -776,8 +665,7 @@ static int mdbx_thread_join(mdbx_thread_t thread) {
 
 /*----------------------------------------------------------------------------*/
 
-static int mdbx_msync(mdbx_mmap_t *map, size_t offset, size_t length,
-                      int async) {
+static int mdbx_msync(mdbx_mmap_t *map, size_t offset, size_t length, int async) {
   uint8_t *ptr = (uint8_t *)map->address + offset;
 #if defined(_WIN32) || defined(_WIN64)
   if (FlushViewOfFile(ptr, length) && (async || FlushFileBuffers(map->fd)))
@@ -789,9 +677,10 @@ static int mdbx_msync(mdbx_mmap_t *map, size_t offset, size_t length,
 #endif
 }
 
-static int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t must, size_t limit) {
-  assert(must <= limit);
+int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t size, size_t limit) {
+  assert(size <= limit);
 #if defined(_WIN32) || defined(_WIN64)
+  NTSTATUS rc;
   map->length = 0;
   map->current = 0;
   map->section = NULL;
@@ -801,17 +690,14 @@ static int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t must, size_t limit) {
     return ERROR_FILE_OFFLINE;
 
   FILE_REMOTE_PROTOCOL_INFO RemoteProtocolInfo;
-  if (GetFileInformationByHandleEx(map->fd, FileRemoteProtocolInfo,
-                                   &RemoteProtocolInfo,
+  if (GetFileInformationByHandleEx(map->fd, FileRemoteProtocolInfo, &RemoteProtocolInfo,
                                    sizeof(RemoteProtocolInfo))) {
     if ((RemoteProtocolInfo.Flags & (REMOTE_PROTOCOL_INFO_FLAG_LOOPBACK |
-                                     REMOTE_PROTOCOL_INFO_FLAG_OFFLINE)) !=
-        REMOTE_PROTOCOL_INFO_FLAG_LOOPBACK)
+                                     REMOTE_PROTOCOL_INFO_FLAG_OFFLINE)) != REMOTE_PROTOCOL_INFO_FLAG_LOOPBACK)
       return ERROR_FILE_OFFLINE;
   }
 
-  NTSTATUS rc;
-#ifdef _WIN64
+#if defined(_WIN64) && defined(WOF_CURRENT_VERSION)
   struct {
     WOF_EXTERNAL_INFO wof_info;
     union {
@@ -821,40 +707,32 @@ static int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t must, size_t limit) {
     size_t reserved_for_microsoft_madness[42];
   } GetExternalBacking_OutputBuffer;
   IO_STATUS_BLOCK StatusBlock;
-  rc = NtFsControlFile(map->fd, NULL, NULL, NULL, &StatusBlock,
-                       FSCTL_GET_EXTERNAL_BACKING, NULL, 0,
-                       &GetExternalBacking_OutputBuffer,
-                       sizeof(GetExternalBacking_OutputBuffer));
-  if (rc != STATUS_OBJECT_NOT_EXTERNALLY_BACKED &&
-      rc != STATUS_INVALID_DEVICE_REQUEST)
+  rc = NtFsControlFile(map->fd, NULL, NULL, NULL, &StatusBlock, FSCTL_GET_EXTERNAL_BACKING, NULL, 0,
+                       &GetExternalBacking_OutputBuffer, sizeof(GetExternalBacking_OutputBuffer));
+  if (rc != STATUS_OBJECT_NOT_EXTERNALLY_BACKED && rc != STATUS_INVALID_DEVICE_REQUEST)
     return NT_SUCCESS(rc) ? ERROR_FILE_OFFLINE : ntstatus2errcode(rc);
 #endif
 
   WCHAR PathBuffer[INT16_MAX];
   DWORD VolumeSerialNumber, FileSystemFlags;
-  if (!GetVolumeInformationByHandleW(map->fd, PathBuffer, INT16_MAX,
-                                     &VolumeSerialNumber, NULL,
+  if (!GetVolumeInformationByHandleW(map->fd, PathBuffer, INT16_MAX, &VolumeSerialNumber, NULL,
                                      &FileSystemFlags, NULL, 0))
     return GetLastError();
 
   if ((flags & MDBX_RDONLY) == 0) {
-    if (FileSystemFlags & (FILE_SEQUENTIAL_WRITE_ONCE | FILE_READ_ONLY_VOLUME |
-                           FILE_VOLUME_IS_COMPRESSED))
+    if (FileSystemFlags & (FILE_SEQUENTIAL_WRITE_ONCE | FILE_READ_ONLY_VOLUME | FILE_VOLUME_IS_COMPRESSED))
       return ERROR_FILE_OFFLINE;
   }
 
-  if (!GetFinalPathNameByHandleW(map->fd, PathBuffer, INT16_MAX,
-                                 FILE_NAME_NORMALIZED | VOLUME_NAME_NT))
+  if (!GetFinalPathNameByHandleW(map->fd, PathBuffer, INT16_MAX, FILE_NAME_NORMALIZED | VOLUME_NAME_NT))
     return GetLastError();
 
   if (_wcsnicmp(PathBuffer, L"\\Device\\Mup\\", 12) == 0)
     return ERROR_FILE_OFFLINE;
 
-  if (GetFinalPathNameByHandleW(map->fd, PathBuffer, INT16_MAX,
-                                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)) {
+  if (GetFinalPathNameByHandleW(map->fd, PathBuffer, INT16_MAX, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)) {
     UINT DriveType = GetDriveTypeW(PathBuffer);
-    if (DriveType == DRIVE_NO_ROOT_DIR &&
-        wcsncmp(PathBuffer, L"\\\\?\\", 4) == 0 &&
+    if (DriveType == DRIVE_NO_ROOT_DIR && wcsncmp(PathBuffer, L"\\\\?\\", 4) == 0 &&
         wcsncmp(PathBuffer + 5, L":\\", 2) == 0) {
       PathBuffer[7] = 0;
       DriveType = GetDriveTypeW(PathBuffer + 4);
@@ -876,30 +754,37 @@ static int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t must, size_t limit) {
     }
   }
 
-  rc = NtCreateSection(
-      &map->section,
-      /* DesiredAccess */ SECTION_MAP_READ | SECTION_EXTEND_SIZE |
-          ((flags & MDBX_WRITEMAP) ? SECTION_MAP_WRITE : 0),
-      /* ObjectAttributes */ NULL, /* MaximumSize */ NULL,
-      /* SectionPageProtection */ (flags & MDBX_RDONLY) ? PAGE_READONLY
-                                                        : PAGE_READWRITE,
-      /* AllocationAttributes */ SEC_RESERVE, map->fd);
+  rc = mdbx_filesize(map->fd, &map->filesize);
+  if (rc != MDBX_SUCCESS)
+    return rc;
+  if ((flags & MDBX_RDONLY) == 0 && map->filesize != size) {
+    rc = mdbx_ftruncate(map->fd, size);
+    if (rc == MDBX_SUCCESS)
+      map->filesize = size;
+    /* ignore error, because Windows unable shrink file
+     * that already mapped (by another process) */
+  }
 
+  LARGE_INTEGER SectionSize;
+  SectionSize.QuadPart = size;
+  rc = NtCreateSection(&map->section,
+                       /* DesiredAccess */ (flags & MDBX_WRITEMAP)
+                           ? SECTION_QUERY | SECTION_MAP_READ | SECTION_EXTEND_SIZE | SECTION_MAP_WRITE
+                           : SECTION_QUERY | SECTION_MAP_READ | SECTION_EXTEND_SIZE,
+                       /* ObjectAttributes */ NULL, /* MaximumSize (InitialSize) */ &SectionSize,
+                       /* SectionPageProtection */ (flags & MDBX_RDONLY) ? PAGE_READONLY : PAGE_READWRITE,
+                       /* AllocationAttributes */ SEC_RESERVE, map->fd);
   if (!NT_SUCCESS(rc))
     return ntstatus2errcode(rc);
 
-  map->address = nullptr;
-  SIZE_T ViewSize = (flags & MDBX_RDONLY) ? must : limit;
-  rc = NtMapViewOfSection(
-      map->section, GetCurrentProcess(), &map->address,
-      /* ZeroBits */ 0,
-      /* CommitSize */ must,
-      /* SectionOffset */ NULL, &ViewSize,
-      /* InheritDisposition */ ViewUnmap,
-      /* AllocationType */ (flags & MDBX_RDONLY) ? 0 : MEM_RESERVE,
-      /* Win32Protect */ (flags & MDBX_WRITEMAP) ? PAGE_READWRITE
-                                                 : PAGE_READONLY);
-
+  SIZE_T ViewSize = (flags & MDBX_RDONLY) ? 0 : limit;
+  rc = NtMapViewOfSection(map->section, GetCurrentProcess(), &map->address,
+                          /* ZeroBits */ 0,
+                          /* CommitSize */ 0,
+                          /* SectionOffset */ NULL, &ViewSize,
+                          /* InheritDisposition */ ViewUnmap,
+                          /* AllocationType */ (flags & MDBX_RDONLY) ? 0 : MEM_RESERVE,
+                          /* Win32Protect */ (flags & MDBX_WRITEMAP) ? PAGE_READWRITE : PAGE_READONLY);
   if (!NT_SUCCESS(rc)) {
     NtClose(map->section);
     map->section = 0;
@@ -908,24 +793,13 @@ static int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t must, size_t limit) {
   }
   assert(map->address != MAP_FAILED);
 
-  uint64_t filesize;
-  rc = mdbx_filesize(map->fd, &filesize);
-  if (rc != MDBX_SUCCESS) {
-    NtClose(map->section);
-    NtUnmapViewOfSection(GetCurrentProcess(), map->address);
-    map->section = 0;
-    map->address = nullptr;
-    return rc;
-  }
-
-  map->current = (must < filesize) ? must : (size_t)filesize;
+  map->current = (size_t)SectionSize.QuadPart;
   map->length = ViewSize;
   return MDBX_SUCCESS;
 #else
-  (void)must;
-  map->address = mmap(
-      NULL, limit, (flags & MDBX_WRITEMAP) ? PROT_READ | PROT_WRITE : PROT_READ,
-      MAP_SHARED, map->fd, 0);
+  (void)size;
+  map->address =
+      mmap(NULL, limit, (flags & MDBX_WRITEMAP) ? PROT_READ | PROT_WRITE : PROT_READ, MAP_SHARED, map->fd, 0);
   if (likely(map->address != MAP_FAILED)) {
     map->length = limit;
     return MDBX_SUCCESS;
@@ -936,13 +810,18 @@ static int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t must, size_t limit) {
 #endif
 }
 
-static int mdbx_munmap(mdbx_mmap_t *map) {
+int mdbx_munmap(mdbx_mmap_t *map) {
 #if defined(_WIN32) || defined(_WIN64)
   if (map->section)
     NtClose(map->section);
   NTSTATUS rc = NtUnmapViewOfSection(GetCurrentProcess(), map->address);
   if (!NT_SUCCESS(rc))
     ntstatus2errcode(rc);
+
+  if (map->filesize != map->current && mdbx_filesize(map->fd, &map->filesize) == MDBX_SUCCESS &&
+      map->filesize != map->current)
+    (void)mdbx_ftruncate(map->fd, map->current);
+
   map->length = 0;
   map->current = 0;
   map->address = nullptr;
@@ -955,55 +834,147 @@ static int mdbx_munmap(mdbx_mmap_t *map) {
   return MDBX_SUCCESS;
 }
 
-static int mdbx_mresize(int flags, mdbx_mmap_t *map, size_t atleast,
-                        size_t limit) {
-  assert(atleast <= limit);
+int mdbx_mresize(int flags, mdbx_mmap_t *map, size_t size, size_t limit) {
+  assert(size <= limit);
 #if defined(_WIN32) || defined(_WIN64)
-  if (limit < map->length) {
-    /* Windows is unable shrinking a mapped section */
-    return ERROR_USER_MAPPED_FILE;
+  assert(size != map->current || limit != map->length || size < map->filesize);
+
+  NTSTATUS status;
+  LARGE_INTEGER SectionSize;
+  int err, rc = MDBX_SUCCESS;
+
+  if (!(flags & MDBX_RDONLY) && limit == map->length && size > map->current) {
+    /* growth rw-section */
+    SectionSize.QuadPart = size;
+    status = NtExtendSection(map->section, &SectionSize);
+    if (NT_SUCCESS(status))
+      map->filesize = map->current = size;
+    return ntstatus2errcode(status);
   }
+
   if (limit > map->length) {
-    /* extend */
-    LARGE_INTEGER new_size;
-    new_size.QuadPart = limit;
-    NTSTATUS rc = NtExtendSection(map->section, &new_size);
-    if (!NT_SUCCESS(rc))
-      return ntstatus2errcode(rc);
-    map->length = limit;
-  }
-  if (atleast < map->current) {
-    /* Windows is unable shrinking a mapped file */
-    uint8_t *ptr = (uint8_t *)map->address + atleast;
-    if (!VirtualFree(ptr, map->current - atleast, MEM_DECOMMIT))
-      return MDBX_RESULT_TRUE;
+    /* check ability of address space for growth before umnap */
+    PVOID BaseAddress = (PBYTE)map->address + map->length;
+    SIZE_T RegionSize = limit - map->length;
+    status =
+        NtAllocateVirtualMemory(GetCurrentProcess(), &BaseAddress, 0, &RegionSize, MEM_RESERVE, PAGE_NOACCESS);
+    if (!NT_SUCCESS(status))
+      return ntstatus2errcode(status);
 
-    map->current = atleast;
-    int rc = mdbx_ftruncate(map->fd, atleast);
-    return (rc != MDBX_SUCCESS) ? MDBX_RESULT_TRUE : rc;
-  }
-  if (atleast > map->current) {
-    /* growth */
-    uint8_t *ptr = (uint8_t *)map->address + map->current;
-    if (ptr !=
-        VirtualAlloc(ptr, atleast - map->current, MEM_COMMIT,
-                     (flags & MDBX_WRITEMAP) ? PAGE_READWRITE : PAGE_READONLY))
-      return GetLastError();
-    map->current = atleast;
+    status = NtFreeVirtualMemory(GetCurrentProcess(), &BaseAddress, &RegionSize, MEM_RELEASE);
+    if (!NT_SUCCESS(status))
+      return ntstatus2errcode(status);
   }
 
-  uint64_t filesize;
-  int rc = mdbx_filesize(map->fd, &filesize);
-  if (rc != MDBX_SUCCESS)
-    return rc;
-  if (filesize < atleast) {
-    rc = mdbx_ftruncate(map->fd, atleast);
-    if (rc != MDBX_SUCCESS)
-      return rc;
+  /* Windows unable:
+    *  - shrink a mapped file;
+    *  - change size of mapped view;
+    *  - extend read-only mapping;
+    * Therefore we should unmap/map entire section. */
+  status = NtUnmapViewOfSection(GetCurrentProcess(), map->address);
+  if (!NT_SUCCESS(status))
+    return ntstatus2errcode(status);
+  status = NtClose(map->section);
+  map->section = NULL;
+  PVOID ReservedAddress = NULL;
+  SIZE_T ReservedSize = limit;
+
+  if (!NT_SUCCESS(status)) {
+  bailout_ntstatus:
+    err = ntstatus2errcode(status);
+  bailout:
+    map->address = NULL;
+    map->current = map->length = 0;
+    if (ReservedAddress)
+      (void)NtFreeVirtualMemory(GetCurrentProcess(), &ReservedAddress, &ReservedSize, MEM_RELEASE);
+    return err;
   }
-  return MDBX_SUCCESS;
+
+  /* resizing of the file may take a while,
+   * therefore we reserve address space to avoid occupy it by other threads */
+  ReservedAddress = map->address;
+  status = NtAllocateVirtualMemory(GetCurrentProcess(), &ReservedAddress, 0, &ReservedSize, MEM_RESERVE,
+                                   PAGE_NOACCESS);
+  if (!NT_SUCCESS(status)) {
+    ReservedAddress = NULL;
+    if (status != /* STATUS_CONFLICTING_ADDRESSES */ 0xC0000018 || limit == map->length)
+      goto bailout_ntstatus /* no way to recovery */;
+
+    /* assume we can change base address if mapping size changed */
+    map->address = NULL;
+  }
+
+retry_file_and_section:
+  err = mdbx_filesize(map->fd, &map->filesize);
+  if (err != MDBX_SUCCESS)
+    goto bailout;
+
+  if ((flags & MDBX_RDONLY) == 0 && map->filesize != size) {
+    err = mdbx_ftruncate(map->fd, size);
+    if (err == MDBX_SUCCESS)
+      map->filesize = size;
+    /* ignore error, because Windows unable shrink file
+     * that already mapped (by another process) */
+  }
+
+  SectionSize.QuadPart = size;
+  status = NtCreateSection(&map->section,
+                           /* DesiredAccess */ (flags & MDBX_WRITEMAP)
+                               ? SECTION_QUERY | SECTION_MAP_READ | SECTION_EXTEND_SIZE | SECTION_MAP_WRITE
+                               : SECTION_QUERY | SECTION_MAP_READ | SECTION_EXTEND_SIZE,
+                           /* ObjectAttributes */ NULL,
+                           /* MaximumSize (InitialSize) */ &SectionSize,
+                           /* SectionPageProtection */ (flags & MDBX_RDONLY) ? PAGE_READONLY : PAGE_READWRITE,
+                           /* AllocationAttributes */ SEC_RESERVE, map->fd);
+
+  if (!NT_SUCCESS(status))
+    goto bailout_ntstatus;
+
+  if (ReservedAddress) {
+    /* release reserved address space */
+    status = NtFreeVirtualMemory(GetCurrentProcess(), &ReservedAddress, &ReservedSize, MEM_RELEASE);
+    ReservedAddress = NULL;
+    if (!NT_SUCCESS(status))
+      goto bailout_ntstatus;
+  }
+
+retry_mapview:;
+  SIZE_T ViewSize = (flags & MDBX_RDONLY) ? size : limit;
+  status = NtMapViewOfSection(map->section, GetCurrentProcess(), &map->address,
+                              /* ZeroBits */ 0,
+                              /* CommitSize */ 0,
+                              /* SectionOffset */ NULL, &ViewSize,
+                              /* InheritDisposition */ ViewUnmap,
+                              /* AllocationType */ (flags & MDBX_RDONLY) ? 0 : MEM_RESERVE,
+                              /* Win32Protect */ (flags & MDBX_WRITEMAP) ? PAGE_READWRITE : PAGE_READONLY);
+
+  if (!NT_SUCCESS(status)) {
+    if (status == /* STATUS_CONFLICTING_ADDRESSES */ 0xC0000018 && map->address && limit != map->length) {
+      /* try remap at another base address, but only if the limit is changing */
+      map->address = NULL;
+      goto retry_mapview;
+    }
+    NtClose(map->section);
+    map->section = NULL;
+
+    if (map->address && (size != map->current || limit != map->length)) {
+      /* try remap with previously size and limit,
+       * but will return MDBX_SIGN on success */
+      rc = MDBX_SIGN;
+      size = map->current;
+      limit = map->length;
+      goto retry_file_and_section;
+    }
+
+    /* no way to recovery */
+    goto bailout_ntstatus;
+  }
+  assert(map->address != MAP_FAILED);
+
+  map->current = (size_t)SectionSize.QuadPart;
+  map->length = ViewSize;
+  return rc;
 #else
-  (void)flags;
   if (limit != map->length) {
     void *ptr = mremap(map->address, map->length, limit, MREMAP_MAYMOVE);
     if (ptr == MAP_FAILED)
@@ -1011,16 +982,15 @@ static int mdbx_mresize(int flags, mdbx_mmap_t *map, size_t atleast,
     map->address = ptr;
     map->length = limit;
   }
-  return mdbx_ftruncate(map->fd, atleast);
+  return (flags & MDBX_RDONLY) ? MDBX_SUCCESS : mdbx_ftruncate(map->fd, size);
 #endif
 }
 
 /*----------------------------------------------------------------------------*/
 
-static __cold void mdbx_osal_jitter(bool tiny) {
+__cold void mdbx_jitter(char /* bool */ tiny) {
   for (;;) {
-#if defined(_M_IX86) || defined(_M_X64) || defined(__i386__) ||                \
-    defined(__x86_64__)
+#if defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)
     const unsigned salt = 277u * (unsigned)__rdtsc();
 #else
     const unsigned salt = rand();

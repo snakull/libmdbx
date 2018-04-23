@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -20,8 +20,8 @@
 
 namespace config {
 
-bool parse_option(int argc, char *const argv[], int &narg, const char *option,
-                  const char **value, const char *default_value) {
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, const char **value,
+                  const char *default_value) {
   assert(narg < argc);
   const char *current = argv[narg];
   const size_t optlen = strlen(option);
@@ -55,11 +55,10 @@ bool parse_option(int argc, char *const argv[], int &narg, const char *option,
   failure("No value given for '--%s' option\n", option);
 }
 
-bool parse_option(int argc, char *const argv[], int &narg, const char *option,
-                  std::string &value, bool allow_empty) {
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, std::string &value,
+                  bool allow_empty) {
   const char *value_cstr;
-  if (!parse_option(argc, argv, narg, option, &value_cstr,
-                    allow_empty ? "" : nullptr))
+  if (!parse_option(argc, argv, narg, option, &value_cstr, allow_empty ? "" : nullptr))
     return false;
 
   if (!allow_empty && strlen(value_cstr) == 0)
@@ -69,8 +68,8 @@ bool parse_option(int argc, char *const argv[], int &narg, const char *option,
   return true;
 }
 
-bool parse_option(int argc, char *const argv[], int &narg, const char *option,
-                  unsigned &mask, const option_verb *verbs) {
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, unsigned &mask,
+                  const option_verb *verbs) {
   const char *list;
   if (!parse_option(argc, argv, narg, option, &list))
     return false;
@@ -87,8 +86,7 @@ bool parse_option(int argc, char *const argv[], int &narg, const char *option,
     const option_verb *scan = verbs;
     while (true) {
       if (!scan->verb)
-        failure("Unknown verb '%.*s', for option '==%s'\n", (int)len, list,
-                option);
+        failure("Unknown verb '%.*s', for option '==%s'\n", (int)len, list, option);
       if (strlen(scan->verb) == len && strncmp(list, scan->verb, len) == 0) {
         mask |= scan->mask;
         list += len;
@@ -101,9 +99,8 @@ bool parse_option(int argc, char *const argv[], int &narg, const char *option,
   return true;
 }
 
-bool parse_option(int argc, char *const argv[], int &narg, const char *option,
-                  uint64_t &value, const scale_mode scale,
-                  const uint64_t minval, const uint64_t maxval) {
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, uint64_t &value,
+                  const scale_mode scale, const uint64_t minval, const uint64_t maxval) {
 
   const char *value_cstr;
   if (!parse_option(argc, argv, narg, option, &value_cstr))
@@ -113,43 +110,33 @@ bool parse_option(int argc, char *const argv[], int &narg, const char *option,
   errno = 0;
   unsigned long raw = strtoul(value_cstr, &suffix, 0);
   if (errno)
-    failure("Option '--%s' expects a numeric value (%s)\n", option,
-            test_strerror(errno));
+    failure("Option '--%s' expects a numeric value (%s)\n", option, test_strerror(errno));
 
   uint64_t multipler = 1;
   if (suffix && *suffix) {
     if (scale == no_scale)
-      failure("Option '--%s' doen't accepts suffixes, so '%s' is unexpected\n",
-              option, suffix);
+      failure("Option '--%s' doen't accepts suffixes, so '%s' is unexpected\n", option, suffix);
     if (strcmp(suffix, "K") == 0 || strcasecmp(suffix, "Kilo") == 0)
       multipler = (scale == decimal) ? UINT64_C(1000) : UINT64_C(1024);
     else if (strcmp(suffix, "M") == 0 || strcasecmp(suffix, "Mega") == 0)
-      multipler =
-          (scale == decimal) ? UINT64_C(1000) * 1000 : UINT64_C(1024) * 1024;
+      multipler = (scale == decimal) ? UINT64_C(1000) * 1000 : UINT64_C(1024) * 1024;
     else if (strcmp(suffix, "G") == 0 || strcasecmp(suffix, "Giga") == 0)
-      multipler = (scale == decimal) ? UINT64_C(1000) * 1000 * 1000
-                                     : UINT64_C(1024) * 1024 * 1024;
+      multipler = (scale == decimal) ? UINT64_C(1000) * 1000 * 1000 : UINT64_C(1024) * 1024 * 1024;
     else if (strcmp(suffix, "T") == 0 || strcasecmp(suffix, "Tera") == 0)
-      multipler = (scale == decimal) ? UINT64_C(1000) * 1000 * 1000 * 1000
-                                     : UINT64_C(1024) * 1024 * 1024 * 1024;
-    else if (scale == duration &&
-             (strcmp(suffix, "s") == 0 || strcasecmp(suffix, "Seconds") == 0))
+      multipler =
+          (scale == decimal) ? UINT64_C(1000) * 1000 * 1000 * 1000 : UINT64_C(1024) * 1024 * 1024 * 1024;
+    else if (scale == duration && (strcmp(suffix, "s") == 0 || strcasecmp(suffix, "Seconds") == 0))
       multipler = 1;
-    else if (scale == duration &&
-             (strcmp(suffix, "m") == 0 || strcasecmp(suffix, "Minutes") == 0))
+    else if (scale == duration && (strcmp(suffix, "m") == 0 || strcasecmp(suffix, "Minutes") == 0))
       multipler = 60;
-    else if (scale == duration &&
-             (strcmp(suffix, "h") == 0 || strcasecmp(suffix, "Hours") == 0))
+    else if (scale == duration && (strcmp(suffix, "h") == 0 || strcasecmp(suffix, "Hours") == 0))
       multipler = 3600;
-    else if (scale == duration &&
-             (strcmp(suffix, "d") == 0 || strcasecmp(suffix, "Days") == 0))
+    else if (scale == duration && (strcmp(suffix, "d") == 0 || strcasecmp(suffix, "Days") == 0))
       multipler = 3600 * 24;
     else
-      failure(
-          "Option '--%s' expects a numeric value with Kilo/Mega/Giga/Tera %s"
-          "suffixes, but '%s' is unexpected\n",
-          option, (scale == duration) ? "or Seconds/Minutes/Hours/Days " : "",
-          suffix);
+      failure("Option '--%s' expects a numeric value with Kilo/Mega/Giga/Tera %s"
+              "suffixes, but '%s' is unexpected\n",
+              option, (scale == duration) ? "or Seconds/Minutes/Hours/Days " : "", suffix);
   }
 
   if (raw >= UINT64_MAX / multipler)
@@ -157,17 +144,14 @@ bool parse_option(int argc, char *const argv[], int &narg, const char *option,
 
   value = raw * multipler;
   if (maxval && value > maxval)
-    failure("The maximal value for option '--%s' is %" PRIu64 "\n", option,
-            maxval);
+    failure("The maximal value for option '--%s' is %" PRIu64 "\n", option, maxval);
   if (value < minval)
-    failure("The minimal value for option '--%s' is %" PRIu64 "\n", option,
-            minval);
+    failure("The minimal value for option '--%s' is %" PRIu64 "\n", option, minval);
   return true;
 }
 
-bool parse_option(int argc, char *const argv[], int &narg, const char *option,
-                  unsigned &value, const scale_mode scale,
-                  const unsigned minval, const unsigned maxval) {
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, unsigned &value,
+                  const scale_mode scale, const unsigned minval, const unsigned maxval) {
 
   uint64_t huge;
   if (!parse_option(argc, argv, narg, option, huge, scale, minval, maxval))
@@ -176,8 +160,8 @@ bool parse_option(int argc, char *const argv[], int &narg, const char *option,
   return true;
 }
 
-bool parse_option(int argc, char *const argv[], int &narg, const char *option,
-                  uint8_t &value, const uint8_t minval, const uint8_t maxval) {
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, uint8_t &value,
+                  const uint8_t minval, const uint8_t maxval) {
 
   uint64_t huge;
   if (!parse_option(argc, argv, narg, option, huge, no_scale, minval, maxval))
@@ -186,8 +170,7 @@ bool parse_option(int argc, char *const argv[], int &narg, const char *option,
   return true;
 }
 
-bool parse_option(int argc, char *const argv[], int &narg, const char *option,
-                  bool &value) {
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, bool &value) {
   const char *value_cstr = NULL;
   if (!parse_option(argc, argv, narg, option, &value_cstr, "yes")) {
     const char *current = argv[narg];
@@ -195,8 +178,7 @@ bool parse_option(int argc, char *const argv[], int &narg, const char *option,
       value = false;
       return true;
     }
-    if (strncmp(current, "--dont-", 7) == 0 &&
-        strcmp(current + 7, option) == 0) {
+    if (strncmp(current, "--dont-", 7) == 0 && strcmp(current + 7, option) == 0) {
       value = false;
       return true;
     }
@@ -218,38 +200,29 @@ bool parse_option(int argc, char *const argv[], int &narg, const char *option,
     return true;
   }
 
-  failure(
-      "Option '--%s' expects a 'boolean' value Yes/No, so '%s' is unexpected\n",
-      option, value_cstr);
+  failure("Option '--%s' expects a 'boolean' value Yes/No, so '%s' is unexpected\n", option, value_cstr);
 }
 
 //-----------------------------------------------------------------------------
 
-const struct option_verb mode_bits[] = {{"rdonly", MDBX_RDONLY},
-                                        {"mapasync", MDBX_MAPASYNC},
-                                        {"utterly", MDBX_UTTERLY_NOSYNC},
-                                        {"nosync", MDBX_NOSYNC},
-                                        {"nometasync", MDBX_NOMETASYNC},
-                                        {"writemap", MDBX_WRITEMAP},
-                                        {"notls", MDBX_NOTLS},
-                                        {"nordahead", MDBX_NORDAHEAD},
-                                        {"nomeminit", MDBX_NOMEMINIT},
-                                        {"coalesce", MDBX_COALESCE},
-                                        {"lifo", MDBX_LIFORECLAIM},
-                                        {"perturb", MDBX_PAGEPERTURB},
-                                        {nullptr, 0}};
+const struct option_verb mode_bits[] = {{"rdonly", MDBX_RDONLY},       {"create", MDBX_CREATE},
+                                        {"mapasync", MDBX_MAPASYNC},   {"utterly", MDBX_UTTERLY_NOSYNC},
+                                        {"nosync", MDBX_NOSYNC},       {"nometasync", MDBX_NOMETASYNC},
+                                        {"writemap", MDBX_WRITEMAP},   {"notls", MDBX_NOTLS},
+                                        {"nordahead", MDBX_NORDAHEAD}, {"nomeminit", MDBX_NOMEMINIT},
+                                        {"coalesce", MDBX_COALESCE},   {"lifo", MDBX_LIFORECLAIM},
+                                        {"perturb", MDBX_PAGEPERTURB}, {nullptr, 0}};
 
 const struct option_verb table_bits[] = {
     {"key.reverse", MDBX_REVERSEKEY},
     {"key.integer", MDBX_INTEGERKEY},
-    {"data.integer", MDBX_INTEGERDUP | MDBX_DUPFIXED | MDBX_DUPSORT},
-    {"data.fixed", MDBX_DUPFIXED | MDBX_DUPSORT},
-    {"data.reverse", MDBX_REVERSEDUP | MDBX_DUPSORT},
+    {"data.integer", (uint_fast32_t)(MDBX_INTEGERDUP | MDBX_DUPFIXED | MDBX_DUPSORT)},
+    {"data.fixed", (uint_fast32_t)(MDBX_DUPFIXED | MDBX_DUPSORT)},
+    {"data.reverse", (uint_fast32_t)(MDBX_REVERSEDUP | MDBX_DUPSORT)},
     {"data.dups", MDBX_DUPSORT},
     {nullptr, 0}};
 
-static void dump_verbs(const char *caption, size_t bits,
-                       const struct option_verb *verbs) {
+static void dump_verbs(const char *caption, size_t bits, const struct option_verb *verbs) {
   log_info("%s: 0x%" PRIx64 " = ", caption, (uint64_t)bits);
 
   const char *comma = "";
@@ -283,20 +256,15 @@ void dump(const char *title) {
   logging::local_suffix indent(title);
 
   for (auto i = global::actors.begin(); i != global::actors.end(); ++i) {
-    const std::string tableid =
-        i->space_id ? "MAINDB" : ("SUB#" + std::to_string(i->space_id));
-    log_info("#%u, testcase %s, space_id/table %u\n", i->actor_id,
-             testcase2str(i->testcase), i->space_id);
+    log_info("#%u, testcase %s, space_id/table %u\n", i->actor_id, testcase2str(i->testcase), i->space_id);
     indent.push();
 
     if (i->params.loglevel) {
       log_info("log: level %u, %s\n", i->params.loglevel,
-               i->params.pathname_log.empty() ? "console"
-                                              : i->params.pathname_log.c_str());
+               i->params.pathname_log.empty() ? "console" : i->params.pathname_log.c_str());
     }
 
-    log_info("database: %s, size %" PRIu64 "\n", i->params.pathname_db.c_str(),
-             i->params.size);
+    log_info("database: %s, size %" PRIu64 "\n", i->params.pathname_db.c_str(), i->params.size);
 
     dump_verbs("mode", i->params.mode_flags, mode_bits);
     dump_verbs("table", i->params.table_flags, table_bits);
@@ -315,37 +283,35 @@ void dump(const char *title) {
 
     log_info("keygen.case: %s\n", keygencase2str(i->params.keygen.keycase));
     log_info("keygen.seed: %u\n", i->params.keygen.seed);
-    log_info("key: minlen %u, maxlen %u\n", i->params.keylen_min,
-             i->params.keylen_max);
-    log_info("data: minlen %u, maxlen %u\n", i->params.datalen_min,
-             i->params.datalen_max);
+    log_info("key: minlen %u, maxlen %u\n", i->params.keylen_min, i->params.keylen_max);
+    log_info("data: minlen %u, maxlen %u\n", i->params.datalen_min, i->params.datalen_max);
 
-    log_info("batch: read %u, write %u\n", i->params.batch_read,
-             i->params.batch_write);
+    log_info("batch: read %u, write %u\n", i->params.batch_read, i->params.batch_write);
 
     if (i->params.waitfor_nops)
-      log_info("wait: actor %u for %u ops\n", i->wait4id,
-               i->params.waitfor_nops);
+      log_info("wait: actor %u for %u ops\n", i->wait4id, i->params.waitfor_nops);
     else if (i->params.delaystart)
       dump_duration("delay", i->params.delaystart);
     else
       log_info("no-delay\n");
 
-    log_info("limits: readers %u, tables %u\n", i->params.max_readers,
-             i->params.max_tables);
+    if (i->params.inject_writefaultn)
+      log_info("inject-writefault on %u ops\n", i->params.inject_writefaultn);
+    else
+      log_info("no-inject-writefault\n");
+
+    log_info("limits: readers %u, tables %u\n", i->params.max_readers, i->params.max_tables);
 
     log_info("drop table: %s\n", i->params.drop_table ? "Yes" : "No");
     indent.pop();
   }
 
   dump_duration("timeout", global::config::timeout_duration_seconds);
-  log_info("cleanup: before %s, after %s\n",
-           global::config::cleanup_before ? "Yes" : "No",
+  log_info("cleanup: before %s, after %s\n", global::config::cleanup_before ? "Yes" : "No",
            global::config::cleanup_after ? "Yes" : "No");
 
   log_info("failfast: %s\n", global::config::failfast ? "Yes" : "No");
-  log_info("progress indicator: %s\n",
-           global::config::progress_indicator ? "Yes" : "No");
+  log_info("progress indicator: %s\n", global::config::progress_indicator ? "Yes" : "No");
 }
 
 } /* namespace config */
@@ -354,8 +320,8 @@ void dump(const char *title) {
 
 using namespace config;
 
-actor_config::actor_config(actor_testcase testcase, const actor_params &params,
-                           unsigned space_id, unsigned wait4id)
+actor_config::actor_config(actor_testcase testcase, const actor_params &params, unsigned space_id,
+                           unsigned wait4id)
     : params(params) {
   this->space_id = space_id;
   this->actor_id = 1 + (unsigned)global::actors.size();
@@ -379,16 +345,12 @@ const std::string actor_config::serialize(const char *prefix) const {
   result.append(params.pathname_log);
   result.append("|");
 
-  static_assert(std::is_pod<actor_params_pod>::value,
-                "actor_params_pod should by POD");
-  result.append(data2hex(static_cast<const actor_params_pod *>(&params),
-                         sizeof(actor_params_pod), checksum));
+  static_assert(std::is_pod<actor_params_pod>::value, "actor_params_pod should by POD");
+  result.append(data2hex(static_cast<const actor_params_pod *>(&params), sizeof(actor_params_pod), checksum));
   result.append("|");
 
-  static_assert(std::is_pod<actor_config_pod>::value,
-                "actor_config_pod should by POD");
-  result.append(data2hex(static_cast<const actor_config_pod *>(this),
-                         sizeof(actor_config_pod), checksum));
+  static_assert(std::is_pod<actor_config_pod>::value, "actor_config_pod should by POD");
+  result.append(data2hex(static_cast<const actor_config_pod *>(this), sizeof(actor_config_pod), checksum));
   result.append("|");
 
   result.append(osal_serialize(checksum));
@@ -426,12 +388,10 @@ bool actor_config::deserialize(const char *str, actor_config &config) {
     TRACE("<< actor_config::deserialize: slash-3\n");
     return false;
   }
-  static_assert(std::is_pod<actor_params_pod>::value,
-                "actor_params_pod should by POD");
-  if (!hex2data(str, slash, static_cast<actor_params_pod *>(&config.params),
-                sizeof(actor_params_pod), checksum)) {
-    TRACE("<< actor_config::deserialize: actor_params_pod(%.*s)\n",
-          (int)(slash - str), str);
+  static_assert(std::is_pod<actor_params_pod>::value, "actor_params_pod should by POD");
+  if (!hex2data(str, slash, static_cast<actor_params_pod *>(&config.params), sizeof(actor_params_pod),
+                checksum)) {
+    TRACE("<< actor_config::deserialize: actor_params_pod(%.*s)\n", (int)(slash - str), str);
     return false;
   }
   str = slash + 1;
@@ -441,12 +401,9 @@ bool actor_config::deserialize(const char *str, actor_config &config) {
     TRACE("<< actor_config::deserialize: slash-4\n");
     return false;
   }
-  static_assert(std::is_pod<actor_config_pod>::value,
-                "actor_config_pod should by POD");
-  if (!hex2data(str, slash, static_cast<actor_config_pod *>(&config),
-                sizeof(actor_config_pod), checksum)) {
-    TRACE("<< actor_config::deserialize: actor_config_pod(%.*s)\n",
-          (int)(slash - str), str);
+  static_assert(std::is_pod<actor_config_pod>::value, "actor_config_pod should by POD");
+  if (!hex2data(str, slash, static_cast<actor_config_pod *>(&config), sizeof(actor_config_pod), checksum)) {
+    TRACE("<< actor_config::deserialize: actor_config_pod(%.*s)\n", (int)(slash - str), str);
     return false;
   }
   str = slash + 1;

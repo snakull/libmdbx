@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -36,50 +36,154 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. */
 
 #include "./bits.h"
+#include "./debug.h"
 #include "./proto.h"
+#include "./ualb.h"
+
+#define env_extra(fmt, ...) log_extra(MDBX_LOG_ENV, fmt, ##__VA_ARGS__)
+#define env_trace(fmt, ...) log_trace(MDBX_LOG_ENV, fmt, ##__VA_ARGS__)
+#define env_verbose(fmt, ...) log_verbose(MDBX_LOG_ENV, fmt, ##__VA_ARGS__)
+#define env_info(fmt, ...) log_info(MDBX_LOG_ENV, fmt, ##__VA_ARGS__)
+#define env_notice(fmt, ...) log_notice(MDBX_LOG_ENV, fmt, ##__VA_ARGS__)
+#define env_warning(fmt, ...) log_warning(MDBX_LOG_ENV, fmt, ##__VA_ARGS__)
+#define env_error(fmt, ...) log_error(MDBX_LOG_ENV, fmt, ##__VA_ARGS__)
+#define env_panic(env, msg, err) mdbx_panic(env, MDBX_LOG_ENV, __func__, __LINE__, "%s, error %d", msg, err)
 
 //-----------------------------------------------------------------------------
 
-int __cold mdbx_reader_list(MDBX_milieu *bk, MDBX_msg_func *func, void *ctx) {
-  char buf[64];
-  int rc = 0, first = 1;
+static void __cold env_destroy(MDBX_env_t *env) {
+  if (env->me_flags32 & MDBX_ENV_ACTIVE) {
+    env->me_flags32 &= ~MDBX_ENV_ACTIVE;
 
-  if (unlikely(!bk || !func))
-    return -MDBX_EINVAL;
-
-  if (unlikely(bk->me_signature != MDBX_ME_SIGNATURE))
-    return MDBX_EBADSIGN;
-
-  const MDBX_lockinfo *const lck = bk->me_lck;
-  const unsigned snap_nreaders = lck->li_numreaders;
-  for (unsigned i = 0; i < snap_nreaders; i++) {
-    if (lck->li_readers[i].mr_pid) {
-      const txnid_t txnid = lck->li_readers[i].mr_txnid;
-      if (txnid == ~(txnid_t)0)
-        snprintf(buf, sizeof(buf), "%10" PRIuPTR " %" PRIxPTR " -\n",
-                 (uintptr_t)lck->li_readers[i].mr_pid,
-                 (uintptr_t)lck->li_readers[i].mr_tid);
-      else
-        snprintf(buf, sizeof(buf), "%10" PRIuPTR " %" PRIxPTR " %" PRIaTXN "\n",
-                 (uintptr_t)lck->li_readers[i].mr_pid,
-                 (uintptr_t)lck->li_readers[i].mr_tid, txnid);
-
-      if (first) {
-        first = 0;
-        rc = func("    pid     thread     txnid\n", ctx);
-        if (rc < 0)
-          break;
-      }
-      rc = func(buf, ctx);
-      if (rc < 0)
-        break;
+    for (page_t *dp; (dp = env->me_dpages) != nullptr;) {
+      ASAN_UNPOISON_MEMORY_REGION(&dp->mp_next, sizeof(dp->mp_next));
+      VALGRIND_MAKE_MEM_DEFINED(&dp->mp_next, sizeof(dp->mp_next));
+      env->me_dpages = dp->mp_next;
+      free(dp);
     }
-  }
-  if (first)
-    rc = func("(no active readers)\n", ctx);
 
-  return rc;
+    /* Doing this here since me_dbxs may not exist during mdbx_bk_close */
+    if (env->env_ahe_array) {
+      for (unsigned i = env->env_ah_max; --i >= CORE_AAH;)
+        aa_release(env, &env->env_ahe_array[i]);
+      free(env->env_ahe_array);
+    }
+
+    free(env->me_pagebuf);
+    free(env->me_dirtylist);
+    if (env->me_wpa_txn) {
+      mdbx_txl_free(env->me_wpa_txn->mt_lifo_reclaimed);
+      free(env->me_wpa_txn);
+    }
+    mdbx_pnl_free(env->me_free_pgs);
+
+    if (env->me_flags32 & MDBX_ENV_TXKEY) {
+      rthc_release(env->me_txkey);
+      env->me_flags32 &= ~MDBX_ENV_TXKEY;
+    }
+
+    if (env->me_map) {
+      mdbx_munmap(&env->me_dxb_mmap);
+#ifdef USE_VALGRIND
+      VALGRIND_DISCARD(env->me_valgrind_handle);
+      env->me_valgrind_handle = -1;
+#endif
+    }
+
+    if (env->me_lck) {
+      if (env->me_live_reader && env->me_live_reader == mdbx_getpid())
+        env->ops.locking.ops_reader_alive_clear(env, env->me_live_reader);
+      mdbx_munmap(&env->me_lck_mmap);
+    }
+    env->me_oldest = nullptr;
+
+    env->ops.locking.ops_detach(env);
+    if (env->me_dxb_fd != MDBX_INVALID_FD) {
+      (void)mdbx_closefile(env->me_dxb_fd);
+      env->me_dxb_fd = MDBX_INVALID_FD;
+    }
+    if (env->me_lck_fd != MDBX_INVALID_FD) {
+      (void)mdbx_closefile(env->me_lck_fd);
+      env->me_lck_fd = MDBX_INVALID_FD;
+    }
+
+    env->me_pathname_lck = nullptr;
+    env->me_pathname_dxb = nullptr;
+    env->me_pathname_ovf = nullptr;
+    free(env->me_pathname_buf);
+    env->me_pathname_buf = nullptr;
+  }
+
+  VALGRIND_DESTROY_MEMPOOL(env);
+  mdbx_ensure(env, mdbx_fastmutex_destroy(&env->me_aah_lock) == MDBX_SUCCESS);
+#if defined(_WIN32) || defined(_WIN64)
+  /* me_remap_guard don't have destructor (Slim Reader/Writer Lock) */
+  DeleteCriticalSection(&env->me_windowsbug_lock);
+#else
+  mdbx_ensure(env, mdbx_fastmutex_destroy(&env->me_remap_guard) == MDBX_SUCCESS);
+#endif /* Windows */
 }
+
+static __cold int env_shutdown(MDBX_env_t *env, MDBX_shutdown_mode_t mode) {
+  const uint32_t snap_flags = env->me_flags32 & (MDBX_RDONLY | MDBX_ENV_ACTIVE | MDBX_ENV_TAINTED);
+  int rc = (snap_flags & MDBX_ENV_TAINTED) ? MDBX_SIGN : MDBX_SUCCESS;
+  if (unlikely(snap_flags != MDBX_ENV_ACTIVE || !env->me_wpa_txn)) {
+    env_warning("<< environment read-only/not-active/tainted (0x%x), skip db-sync, rc %d", snap_flags, rc);
+    return rc;
+  }
+
+  mdbx_assert(env, env->me_wpa_txn != nullptr);
+  if (env->me_wpa_txn->mt_owner) {
+    env->me_wpa_txn->mt_flags |= MDBX_TXN_FINISHED | MDBX_TXN_ERROR;
+    env->me_flags32 |= MDBX_ENV_TAINTED;
+    rc = MDBX_SIGN;
+    env_trace("<< write-txn pending, skip db-sync, rc %d", rc);
+    return rc;
+  }
+
+  bool should_downgrade = false;
+  switch (mode) {
+  default:
+    env_trace("unknown shutdown-mode %d, fallback to default", (int)mode);
+  /* fallthrough */
+  case MDBX_shutdown_default:
+    env_trace("shutdown-mode=default");
+    if (env->me_flags32 & MDBX_EXCLUSIVE) {
+      env_trace("exclusive mode, fallback to shutdown-mode=sync");
+    } else {
+      rc = env->ops.locking.ops_upgrade(env, MDBX_NONBLOCK);
+      if (rc == MDBX_SIGN) {
+        env_trace("<< at lease one other writer present, skip db-sync");
+        return MDBX_SUCCESS;
+      } else if (rc == MDBX_SUCCESS) {
+        env_trace("got exclusive mode, db-sync needed");
+        env->me_wpa_txn->mt_owner = mdbx_thread_self();
+        should_downgrade = true;
+      } else if (rc == MDBX_EBUSY)
+        env_trace("other process uses DB, but NOT sure to skip db-sync");
+      else {
+        mdbx_error("failed upgrade-to-exclusive %d, assume db-sync needed", rc);
+        if (unlikely(env->me_flags32 & MDBX_ENV_TAINTED)) {
+          env_trace("<< environment got tainted, skip db-sync");
+          return MDBX_SIGN;
+        }
+      }
+    }
+  /* fallthrough */
+  case MDBX_shutdown_sync:
+    env_trace("shutdown-mode=sync, perform db-sync");
+    rc = mdbx_sync(env);
+    if (should_downgrade)
+      env->ops.locking.ops_downgrade(env);
+    env_trace("<< rc %d", rc);
+    return rc;
+  case MDBX_shutdown_dirty:
+    env_trace("<< shutdown-mode=dirty, MDBX_SUCCESS");
+    return MDBX_SUCCESS;
+  }
+}
+
+//-----------------------------------------------------------------------------
 
 /* Insert pid into list if not already present.
  * return -1 if already present. */
@@ -116,62 +220,58 @@ static int __cold mdbx_pid_insert(MDBX_pid_t *ids, MDBX_pid_t pid) {
   return 0;
 }
 
-int __cold mdbx_check_readers(MDBX_milieu *bk, int *dead) {
-  if (unlikely(!bk || bk->me_signature != MDBX_ME_SIGNATURE))
-    return MDBX_EINVAL;
-  if (dead)
-    *dead = 0;
-  return reader_check(bk, false, dead);
-}
-
 /* Return:
- *  MDBX_RESULT_TRUE - done and mutex recovered
+ *  MDBX_SIGN - done and mutex recovered
  *  MDBX_SUCCESS     - done
  *  Otherwise errcode. */
-int __cold reader_check(MDBX_milieu *bk, int rdt_locked, int *dead) {
+MDBX_numeric_result_t __cold check_registered_readers(MDBX_env_t *env, int rdt_locked) {
   assert(rdt_locked >= 0);
+  MDBX_numeric_result_t result;
+  result.value = 0;
 
-  if (unlikely(bk->me_pid != mdbx_getpid())) {
-    bk->me_flags32 |= MDBX_FATAL_ERROR;
-    return MDBX_PANIC;
+  if (unlikely(env->me_pid != mdbx_getpid())) {
+    env->me_flags32 |= MDBX_ENV_TAINTED;
+    result.err = MDBX_PANIC;
+    return result;
   }
 
-  MDBX_lockinfo *const lck = bk->me_lck;
+  MDBX_lockinfo_t *const lck = env->me_lck;
   const unsigned snap_nreaders = lck->li_numreaders;
   MDBX_pid_t *pids = alloca((snap_nreaders + 1) * sizeof(MDBX_pid_t));
   pids[0] = 0;
 
-  int rc = MDBX_SUCCESS, count = 0;
+  result.err = MDBX_SUCCESS;
   for (unsigned i = 0; i < snap_nreaders; i++) {
     const MDBX_pid_t pid = lck->li_readers[i].mr_pid;
     if (pid == 0)
       continue /* skip empty */;
-    if (pid == bk->me_pid)
+    if (pid == env->me_pid)
       continue /* skip self */;
     if (mdbx_pid_insert(pids, pid) != 0)
       continue /* such pid already processed */;
 
-    int err = mdbx_rpid_check(bk, pid);
-    if (err == MDBX_RESULT_TRUE)
+    int err = env->ops.locking.ops_reader_alive_check(env, pid);
+    if (err == MDBX_SUCCESS)
       continue /* reader is live */;
 
-    if (err != MDBX_SUCCESS) {
-      rc = err;
-      break /* mdbx_rpid_check() failed */;
+    if (err != MDBX_SIGN) {
+      result.err = err;
+      break /* mdbx_lck_reader_alive_check() failed */;
     }
 
     /* stale reader found */
     if (!rdt_locked) {
-      err = mdbx_rdt_lock(bk);
+      err = env->ops.locking.ops_reader_registration_lock(env, env->me_flags32 & MDBX_NONBLOCK);
       if (MDBX_IS_ERROR(err)) {
-        rc = err;
+        result.err = err;
         break;
       }
 
       rdt_locked = -1;
-      if (err == MDBX_RESULT_TRUE) {
-        /* mutex recovered, the mutex_failed() checked all readers */
-        rc = MDBX_RESULT_TRUE;
+      if (err == MDBX_SIGN) {
+        /* roubust mutex recovered,
+         * the mdbx_robust_mutex_failed() checked all readers */
+        result.err = MDBX_SIGN;
         break;
       }
 
@@ -179,87 +279,52 @@ int __cold reader_check(MDBX_milieu *bk, int rdt_locked, int *dead) {
       if (lck->li_readers[i].mr_pid != pid)
         continue;
 
-      err = mdbx_rpid_check(bk, pid);
+      err = env->ops.locking.ops_reader_alive_check(env, pid);
       if (MDBX_IS_ERROR(err)) {
-        rc = err;
+        result.err = err;
         break;
       }
 
-      if (err != MDBX_SUCCESS)
+      if (err == MDBX_SUCCESS)
         continue /* the race with other process, slot reused */;
     }
 
     /* clean it */
     for (unsigned j = i; j < snap_nreaders; j++) {
       if (lck->li_readers[j].mr_pid == pid) {
-        mdbx_debug("clear stale reader pid %" PRIuPTR " txn %" PRIaTXN "",
-                   (size_t)pid, lck->li_readers[j].mr_txnid);
+        mdbx_debug("clear stale reader pid %" PRIuPTR " txn %" PRIaTXN "", (size_t)pid,
+                   lck->li_readers[j].mr_txnid);
         lck->li_readers[j].mr_pid = 0;
-        lck->li_reader_finished_flag = true;
-        count++;
+        lck->li_readers_refresh_flag = true;
+        result.value++;
       }
     }
   }
 
   if (rdt_locked < 0)
-    mdbx_rdt_unlock(bk);
+    env->ops.locking.ops_reader_registration_unlock(env);
 
-  if (dead)
-    *dead = count;
-  return rc;
+  return result;
 }
 
-int __cold mdbx_set_debug(int flags, MDBX_debug_func *logger) {
-  unsigned ret = mdbx_runtime_flags;
-  mdbx_runtime_flags = flags;
-
-#ifdef __linux__
-  if (flags & MDBX_DBG_DUMP) {
-    int core_filter_fd = open("/proc/self/coredump_filter", O_TRUNC | O_RDWR);
-    if (core_filter_fd >= 0) {
-      char buf[32];
-      const unsigned r = pread(core_filter_fd, buf, sizeof(buf), 0);
-      if (r > 0 && r < sizeof(buf)) {
-        buf[r] = 0;
-        unsigned long mask = strtoul(buf, nullptr, 16);
-        if (mask != ULONG_MAX) {
-          mask |= 1 << 3 /* Dump file-backed shared mappings */;
-          mask |= 1 << 6 /* Dump shared huge pages */;
-          mask |= 1 << 8 /* Dump shared DAX pages */;
-          unsigned w = snprintf(buf, sizeof(buf), "0x%lx\n", mask);
-          if (w > 0 && w < sizeof(buf)) {
-            w = pwrite(core_filter_fd, buf, w, 0);
-            (void)w;
-          }
-        }
-      }
-      close(core_filter_fd);
-    }
-  }
-#endif /* __linux__ */
-
-  mdbx_debug_logger = logger;
-  return ret;
-}
-
-static txnid_t __cold rbr(MDBX_milieu *bk, const txnid_t laggard) {
+static txnid_t __cold rbr(MDBX_env_t *env, const txnid_t laggard) {
   mdbx_debug("databook size maxed out");
 
   int retry;
   for (retry = 0; retry < INT_MAX; ++retry) {
-    txnid_t oldest = reclaiming_detent(bk);
-    mdbx_assert(bk, oldest < bk->me_wpa_txn->mt_txnid);
-    mdbx_assert(bk, oldest >= laggard);
-    mdbx_assert(bk, oldest >= bk->me_oldest[0]);
+    txnid_t oldest = reclaiming_detent(env);
+    mdbx_assert(env, oldest < env->me_wpa_txn->mt_txnid);
+    mdbx_assert(env, oldest >= laggard);
+    mdbx_assert(env, oldest >= env->me_oldest[0]);
     if (oldest == laggard)
       return oldest;
 
-    if (MDBX_IS_ERROR(reader_check(bk, false, nullptr)))
+    if (MDBX_IS_ERROR(check_registered_readers(env, false).err))
       break;
 
-    MDBX_reader *const rtbl = bk->me_lck->li_readers;
-    MDBX_reader *asleep = nullptr;
-    for (int i = bk->me_lck->li_numreaders; --i >= 0;) {
+    MDBX_reader_t *const rtbl = env->me_lck->li_readers;
+    MDBX_reader_t *asleep = nullptr;
+    for (int i = env->me_lck->li_numreaders; --i >= 0;) {
       if (rtbl[i].mr_pid) {
         jitter4testing(true);
         const txnid_t snap = rtbl[i].mr_txnid;
@@ -271,24 +336,21 @@ static txnid_t __cold rbr(MDBX_milieu *bk, const txnid_t laggard) {
     }
 
     if (laggard < oldest || !asleep) {
-      if (retry && bk->me_callback_rbr) {
+      if (retry && env->me_callback_rbr) {
         /* LY: notify end of RBR-loop */
         const txnid_t gap = oldest - laggard;
-        bk->me_callback_rbr(bk, 0, 0, laggard,
-                            (gap < UINT_MAX) ? (unsigned)gap : UINT_MAX,
-                            -retry);
+        env->me_callback_rbr(env, 0, 0, laggard, (gap < UINT_MAX) ? (unsigned)gap : UINT_MAX, -retry);
       }
-      mdbx_notice("RBR-kick: update oldest %" PRIaTXN " -> %" PRIaTXN,
-                  bk->me_oldest[0], oldest);
-      mdbx_assert(bk, bk->me_oldest[0] <= oldest);
-      return bk->me_oldest[0] = oldest;
+      env_notice("RBR-kick: update oldest %" PRIaTXN " -> %" PRIaTXN, env->me_oldest[0], oldest);
+      mdbx_assert(env, env->me_oldest[0] <= oldest);
+      return env->me_oldest[0] = oldest;
     }
 
     MDBX_tid_t tid;
     MDBX_pid_t pid;
     int rc;
 
-    if (!bk->me_callback_rbr)
+    if (!env->me_callback_rbr)
       break;
 
     pid = asleep->mr_pid;
@@ -296,54 +358,29 @@ static txnid_t __cold rbr(MDBX_milieu *bk, const txnid_t laggard) {
     if (asleep->mr_txnid != laggard || pid <= 0)
       continue;
 
-    const txnid_t gap = meta_txnid_stable(bk, meta_head(bk)) - laggard;
-    rc =
-        bk->me_callback_rbr(bk, pid, tid, laggard,
-                            (gap < UINT_MAX) ? (unsigned)gap : UINT_MAX, retry);
-    if (rc < 0)
+    const txnid_t gap = meta_txnid_stable(env, meta_head(env)) - laggard;
+    rc = env->me_callback_rbr(env, pid, tid, laggard, (gap < UINT_MAX) ? (unsigned)gap : UINT_MAX, retry);
+    if (rc <= MDBX_RBR_UNABLE)
       break;
 
-    if (rc) {
+    if (rc >= MDBX_RBR_EVICTED) {
       asleep->mr_txnid = ~(txnid_t)0;
-      bk->me_lck->li_reader_finished_flag = true;
-      if (rc > 1) {
+      env->me_lck->li_readers_refresh_flag = true;
+      if (rc >= MDBX_RBR_KILLED) {
         asleep->mr_tid = 0;
         asleep->mr_pid = 0;
         mdbx_coherent_barrier();
       }
+    } else {
+      assert(rc == MDBX_RBR_RETRY);
     }
   }
 
-  if (retry && bk->me_callback_rbr) {
+  if (retry && env->me_callback_rbr) {
     /* LY: notify end of RBR-loop */
-    bk->me_callback_rbr(bk, 0, 0, laggard, 0, -retry);
+    env->me_callback_rbr(env, 0, 0, laggard, 0, -retry);
   }
-  return find_oldest(bk->me_current_txn);
-}
-
-int __cold mdbx_set_syncbytes(MDBX_milieu *bk, size_t bytes) {
-  if (unlikely(!bk))
-    return MDBX_EINVAL;
-
-  if (unlikely(bk->me_signature != MDBX_ME_SIGNATURE))
-    return MDBX_EBADSIGN;
-
-  if (!bk->me_lck)
-    return MDBX_EPERM;
-
-  bk->me_lck->li_autosync_threshold = bytes;
-  return mdbx_bk_sync(bk, 0);
-}
-
-int __cold rbr_set(MDBX_milieu *bk, MDBX_rbr_callback *cb) {
-  if (unlikely(!bk))
-    return MDBX_EINVAL;
-
-  if (unlikely(bk->me_signature != MDBX_ME_SIGNATURE))
-    return MDBX_EBADSIGN;
-
-  bk->me_callback_rbr = cb;
-  return MDBX_SUCCESS;
+  return find_oldest(env->me_current_txn);
 }
 
 //----------------------------------------------------------------------------

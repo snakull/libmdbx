@@ -1,5 +1,5 @@
-﻿/*
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>
+/*
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -13,6 +13,9 @@
  */
 
 #include "./bits.h"
+#include "./debug.h"
+#include "./proto.h"
+#include "./ualb.h"
 
 /* PREAMBLE FOR WINDOWS:
  *
@@ -24,408 +27,573 @@
  * LY
  */
 
-/*----------------------------------------------------------------------------*/
-/* rthc */
+#define lck_extra(fmt, ...) log_extra(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
+#define lck_trace(fmt, ...) log_trace(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
+#define lck_verbose(fmt, ...) log_verbose(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
+#define lck_info(fmt, ...) log_info(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
+#define lck_notice(fmt, ...) log_notice(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
+#define lck_warning(fmt, ...) log_warning(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
+#define lck_error(fmt, ...) log_error(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
+#define lck_panic(env, msg, err) mdbx_panic(env, MDBX_LOG_LCK, __func__, __LINE__, "%s, error %d", msg, err)
 
-static CRITICAL_SECTION rthc_critical_section;
+#define lck_transition_begin(from, to) lck_trace("now %s, going-down %s", from, to)
+#define lck_transition_end(from, to, err)                                                                     \
+  do {                                                                                                        \
+    if (err == MDBX_SUCCESS)                                                                                  \
+      lck_trace("done, now %s", to);                                                                          \
+    else if (lck_is_collision(err))                                                                           \
+      lck_trace("BUSY, still %s", from);                                                                      \
+    else                                                                                                      \
+      lck_error("ERROR %d, still %s", err, from);                                                             \
+  } while (0)
 
-static void NTAPI tls_callback(PVOID module, DWORD reason, PVOID reserved) {
-  (void)module;
-  (void)reserved;
-  switch (reason) {
-  case DLL_PROCESS_ATTACH:
-    InitializeCriticalSection(&rthc_critical_section);
-    break;
-  case DLL_PROCESS_DETACH:
-    DeleteCriticalSection(&rthc_critical_section);
-    break;
-
-  case DLL_THREAD_ATTACH:
-    break;
-  case DLL_THREAD_DETACH:
-    rthc_cleanup();
-    break;
-  }
-}
-
-void rthc_lock(void) { EnterCriticalSection(&rthc_critical_section); }
-
-void rthc_unlock(void) { LeaveCriticalSection(&rthc_critical_section); }
-
-/* *INDENT-OFF* */
-/* clang-format off */
-#if defined(_MSC_VER)
-#  pragma const_seg(push)
-#  pragma data_seg(push)
-
-#  ifdef _WIN64
-     /* kick a linker to create the TLS directory if not already done */
-#    pragma comment(linker, "/INCLUDE:_tls_used")
-     /* Force some symbol references. */
-#    pragma comment(linker, "/INCLUDE:mdbx_tls_callback")
-     /* specific const-segment for WIN64 */
-#    pragma const_seg(".CRT$XLB")
-     const
-#  else
-     /* kick a linker to create the TLS directory if not already done */
-#    pragma comment(linker, "/INCLUDE:__tls_used")
-     /* Force some symbol references. */
-#    pragma comment(linker, "/INCLUDE:_mdbx_tls_callback")
-     /* specific data-segment for WIN32 */
-#    pragma data_seg(".CRT$XLB")
-#  endif
-
-   PIMAGE_TLS_CALLBACK mdbx_tls_callback = tls_callback;
-#  pragma data_seg(pop)
-#  pragma const_seg(pop)
-
-#elif defined(__GNUC__)
-#  ifdef _WIN64
-     const
-#  endif
-   PIMAGE_TLS_CALLBACK mdbx_tls_callback __attribute__((section(".CRT$XLB"), used))
-     = tls_callback;
-#else
-#  error FIXME
-#endif
-/* *INDENT-ON* */
-/* clang-format on */
-
-/*----------------------------------------------------------------------------*/
-
-#define LCK_SHARED 0
-#define LCK_EXCLUSIVE LOCKFILE_EXCLUSIVE_LOCK
-#define LCK_WAITFOR 0
-#define LCK_DONTWAIT LOCKFILE_FAIL_IMMEDIATELY
-
-static inline BOOL flock(MDBX_filehandle_t fd, DWORD flags, uint64_t offset,
-                         size_t bytes) {
+static inline BOOL lck_lock(MDBX_filehandle_t fd, DWORD flags, uint64_t offset, size_t bytes) {
+  mdbx_jitter4testing(false);
   OVERLAPPED ov;
   ov.hEvent = 0;
   ov.Offset = (DWORD)offset;
   ov.OffsetHigh = HIGH_DWORD(offset);
-  return LockFileEx(fd, flags, 0, (DWORD)bytes, HIGH_DWORD(bytes), &ov);
+  const BOOL rc = LockFileEx(fd, flags, 0, (DWORD)bytes, HIGH_DWORD(bytes), &ov);
+  mdbx_jitter4testing(false);
+  return rc;
 }
 
-static inline BOOL funlock(MDBX_filehandle_t fd, uint64_t offset,
-                           size_t bytes) {
-  return UnlockFile(fd, (DWORD)offset, HIGH_DWORD(offset), (DWORD)bytes,
-                    HIGH_DWORD(bytes));
+static inline BOOL lck_unlock(MDBX_filehandle_t fd, uint64_t offset, size_t bytes) {
+  mdbx_jitter4testing(false);
+  const BOOL rc = UnlockFile(fd, (DWORD)offset, HIGH_DWORD(offset), (DWORD)bytes, HIGH_DWORD(bytes));
+  mdbx_jitter4testing(false);
+  return rc;
+}
+
+static inline MDBX_error_t lck_exclusive(MDBX_filehandle_t fd, const MDBX_flags_t flags, uint64_t offset,
+                                         size_t bytes) {
+  return lck_lock(fd, (flags & MDBX_NONBLOCK) ? LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY
+                                              : LOCKFILE_EXCLUSIVE_LOCK,
+                  offset, bytes)
+             ? MDBX_SUCCESS
+             : GetLastError();
+}
+
+static inline MDBX_error_t lck_shared(MDBX_filehandle_t fd, const MDBX_flags_t flags, uint64_t offset,
+                                      size_t bytes) {
+  return lck_lock(fd, (flags & MDBX_NONBLOCK) ? LOCKFILE_FAIL_IMMEDIATELY : 0, offset, bytes) ? MDBX_SUCCESS
+                                                                                              : GetLastError();
+}
+
+static inline BOOL lck_is_collision(MDBX_error_t err) {
+  return (err == ERROR_LOCK_VIOLATION || err == ERROR_SHARING_VIOLATION);
 }
 
 /*----------------------------------------------------------------------------*/
-/* global `write` lock for write-txt processing,
- * exclusive locking both meta-pages) */
+/* global lock for write-transactions */
 
-#define LCK_MAXLEN (1u + (size_t)(MAXSSIZE_T))
-#define LCK_META_OFFSET 0
-#define LCK_META_LEN 0x10000u
-#define LCK_BODY_OFFSET LCK_META_LEN
-#define LCK_BODY_LEN (LCK_MAXLEN - LCK_BODY_OFFSET + 1u)
-#define LCK_META LCK_META_OFFSET, LCK_META_LEN
-#define LCK_BODY LCK_BODY_OFFSET, LCK_BODY_LEN
-#define LCK_WHOLE 0, LCK_MAXLEN
+#define DXB_HEAD_OFFSET 0
+#define DXB_HEAD_LEN (NUM_METAS * (size_t)MAX_PAGESIZE)
+#define DXB_BODY_OFFSET DXB_HEAD_LEN
+#define DXB_BODY_LEN (MAX_MAPSIZE - DXB_BODY_OFFSET)
+#define LCK_DXB_BODY DXB_BODY_OFFSET, DXB_BODY_LEN
+#define LCK_DXB_WHOLE 0, MAX_MAPSIZE
 
-static int tn_lock(MDBX_milieu *bk) {
-  if (flock(bk->me_dxb_fd, LCK_EXCLUSIVE | LCK_WAITFOR, LCK_BODY))
-    return MDBX_SUCCESS;
-  return GetLastError();
-}
-
-static void tn_unlock(MDBX_milieu *bk) {
-  if (!funlock(bk->me_dxb_fd, LCK_BODY))
-    mdbx_panic("%s failed: errcode %u", mdbx_func_, GetLastError());
-}
-
-/*----------------------------------------------------------------------------*/
-/* global `read` lock for readers registration,
- * exclusive locking `li_numreaders` (second) cacheline */
-
-#define LCK_LO_OFFSET 0
-#define LCK_LO_LEN offsetof(MDBX_lockinfo, li_numreaders)
-#define LCK_UP_OFFSET LCK_LO_LEN
-#define LCK_UP_LEN (MDBX_LOCKINFO_WHOLE_SIZE - LCK_UP_OFFSET)
-#define LCK_LOWER LCK_LO_OFFSET, LCK_LO_LEN
-#define LCK_UPPER LCK_UP_OFFSET, LCK_UP_LEN
-
-int mdbx_rdt_lock(MDBX_milieu *bk) {
-  if (bk->me_lck_fd == INVALID_HANDLE_VALUE)
-    return MDBX_SUCCESS; /* readonly database in readonly filesystem */
-
-  /* transite from S-? (used) to S-E (locked), e.g. exclusive lock upper-part */
-  if (flock(bk->me_lck_fd, LCK_EXCLUSIVE | LCK_WAITFOR, LCK_UPPER))
-    return MDBX_SUCCESS;
-  return GetLastError();
-}
-
-void mdbx_rdt_unlock(MDBX_milieu *bk) {
-  if (bk->me_lck_fd != INVALID_HANDLE_VALUE) {
-    /* transite from S-E (locked) to S-? (used), e.g. unlock upper-part */
-    if (!funlock(bk->me_lck_fd, LCK_UPPER))
-      mdbx_panic("%s failed: errcode %u", mdbx_func_, GetLastError());
+MDBX_error_t mdbx_lck_writer_lock(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
+  lck_trace(">> flags 0x%x %s", flags, (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "");
+  if (flags & MDBX_NONBLOCK) {
+    if (!TryEnterCriticalSection(&env->me_windowsbug_lock)) {
+      lck_trace("<< MDBX_EBUSY");
+      return MDBX_EBUSY;
+    }
+  } else {
+    EnterCriticalSection(&env->me_windowsbug_lock);
   }
+
+  const MDBX_error_t err = lck_exclusive(env->me_dxb_fd, flags, LCK_DXB_BODY);
+  if (err == MDBX_SUCCESS) {
+    lck_trace("<< MDBX_SUCCESS");
+    return MDBX_SUCCESS;
+  }
+
+  LeaveCriticalSection(&env->me_windowsbug_lock);
+  lck_trace("<< %s, %d", lck_is_collision(err) ? "busy" : "error", err);
+  return err;
+}
+
+void mdbx_lck_writer_unlock(MDBX_env_t *env) {
+  BOOL ok = lck_unlock(env->me_dxb_fd, LCK_DXB_BODY);
+  if (!ok)
+    lck_panic(env, "dxb-body.unlock", GetLastError());
+  LeaveCriticalSection(&env->me_windowsbug_lock);
+  lck_trace("<<");
 }
 
 /*----------------------------------------------------------------------------*/
-/* global `initial` lock for lockfile initialization,
- * exclusive/shared locking first cacheline */
+/* thread suspend/resume for remapping */
 
-/* FIXME: locking schema/algo descritpion.
- ?-?  = free
- S-?  = used
- E-?  = exclusive-read
- ?-S
- ?-E  = middle
- S-S
- S-E  = locked
- E-S
- E-E  = exclusive-write
-*/
+static MDBX_error_t suspend_and_append(mdbx_handle_array_t **array, const DWORD ThreadId) {
+  const unsigned limit = (*array)->limit;
+  if ((*array)->count == limit) {
+    void *ptr = realloc(
+        (limit > ARRAY_LENGTH((*array)->handles)) ? *array : /* don't free initial array on the stack */ NULL,
+        sizeof(mdbx_handle_array_t) + sizeof(HANDLE) * (limit * 2 - ARRAY_LENGTH((*array)->handles)));
+    if (!ptr)
+      return MDBX_ENOMEM;
+    (*array) = (mdbx_handle_array_t *)ptr;
+    (*array)->limit = limit * 2;
+  }
 
-static int lck_init(MDBX_milieu *bk) {
-  (void)bk;
+  HANDLE hThread = OpenThread(THREAD_SUSPEND_RESUME, FALSE, ThreadId);
+  if (hThread == NULL)
+    return GetLastError();
+  if (SuspendThread(hThread) == -1) {
+    CloseHandle(hThread);
+    return GetLastError();
+  }
+
+  (*array)->handles[(*array)->count++] = hThread;
   return MDBX_SUCCESS;
 }
 
-/* Seize state as 'exclusive-write' (E-E and returns MDBX_RESULT_TRUE)
- * or as 'used' (S-? and returns MDBX_RESULT_FALSE), otherwise returns an error
- */
-static int internal_seize_lck(HANDLE lfd) {
-  int rc;
-  assert(lfd != INVALID_HANDLE_VALUE);
+static MDBX_error_t mdbx_suspend_threads_before_remap(MDBX_env_t *env, mdbx_handle_array_t **array) {
+  const MDBX_pid_t CurrentTid = GetCurrentThreadId();
+  MDBX_error_t err;
+  if (env->me_lck) {
+    /* Scan LCK for threads of the current process */
+    const MDBX_reader_t *const begin = env->me_lck->li_readers;
+    const MDBX_reader_t *const end = begin + env->me_lck->li_numreaders;
+    const MDBX_tid_t WriteTxnOwner = env->me_wpa_txn ? env->me_wpa_txn->mt_owner : 0;
+    for (const MDBX_reader_t *reader = begin; reader < end; ++reader) {
+      if (reader->mr_pid != env->me_pid || !reader->mr_tid) {
+      skip_lck:
+        continue;
+      }
+      if (reader->mr_tid == CurrentTid || reader->mr_tid == WriteTxnOwner)
+        goto skip_lck;
+      if (env->me_flags32 & MDBX_NOTLS) {
+        /* Skip duplicates in no-tls mode */
+        for (const MDBX_reader_t *scan = reader; --scan >= begin;)
+          if (scan->mr_tid == reader->mr_tid)
+            goto skip_lck;
+      }
 
-  /* 1) now on ?-? (free), get ?-E (middle) */
-  mdbx_jitter4testing(false);
-  if (!flock(lfd, LCK_EXCLUSIVE | LCK_WAITFOR, LCK_UPPER)) {
-    rc = GetLastError() /* 2) something went wrong, give up */;
-    mdbx_error("%s(%s) failed: errcode %u", mdbx_func_,
-               "?-?(free) >> ?-E(middle)", rc);
-    return rc;
+      err = suspend_and_append(array, reader->mr_tid);
+      if (err != MDBX_SUCCESS) {
+      bailout_lck:
+        (void)mdbx_resume_threads_after_remap(*array);
+        return err;
+      }
+    }
+    if (WriteTxnOwner && WriteTxnOwner != CurrentTid) {
+      err = suspend_and_append(array, WriteTxnOwner);
+      if (err != MDBX_SUCCESS)
+        goto bailout_lck;
+    }
+  } else {
+    /* Without LCK (i.e. read-only mode).
+     * Walk thougth a snapshot of all running threads */
+    mdbx_assert(env, env->me_wpa_txn == nullptr);
+    const HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE)
+      return GetLastError();
+
+    THREADENTRY32 entry;
+    entry.dwSize = sizeof(THREADENTRY32);
+
+    if (!Thread32First(hSnapshot, &entry)) {
+      err = GetLastError();
+    bailout_toolhelp:
+      CloseHandle(hSnapshot);
+      (void)mdbx_resume_threads_after_remap(*array);
+      return err;
+    }
+
+    do {
+      if (entry.th32OwnerProcessID != env->me_pid || entry.th32ThreadID == CurrentTid)
+        continue;
+
+      err = suspend_and_append(array, entry.th32ThreadID);
+      if (err != MDBX_SUCCESS)
+        goto bailout_toolhelp;
+
+    } while (Thread32Next(hSnapshot, &entry));
+
+    err = GetLastError();
+    if (err != ERROR_NO_MORE_FILES)
+      goto bailout_toolhelp;
+    CloseHandle(hSnapshot);
   }
 
-  /* 3) now on ?-E (middle), try E-E (exclusive-write) */
-  mdbx_jitter4testing(false);
-  if (flock(lfd, LCK_EXCLUSIVE | LCK_DONTWAIT, LCK_LOWER))
-    return MDBX_RESULT_TRUE /* 4) got E-E (exclusive-write), done */;
-
-  /* 5) still on ?-E (middle) */
-  rc = GetLastError();
-  mdbx_jitter4testing(false);
-  if (rc != ERROR_SHARING_VIOLATION && rc != ERROR_LOCK_VIOLATION) {
-    /* 6) something went wrong, give up */
-    if (!funlock(lfd, LCK_UPPER))
-      mdbx_panic("%s(%s) failed: errcode %u", mdbx_func_,
-                 "?-E(middle) >> ?-?(free)", GetLastError());
-    return rc;
-  }
-
-  /* 7) still on ?-E (middle), try S-E (locked) */
-  mdbx_jitter4testing(false);
-  rc = flock(lfd, LCK_SHARED | LCK_DONTWAIT, LCK_LOWER) ? MDBX_RESULT_FALSE
-                                                        : GetLastError();
-
-  mdbx_jitter4testing(false);
-  if (rc != MDBX_RESULT_FALSE)
-    mdbx_error("%s(%s) failed: errcode %u", mdbx_func_,
-               "?-E(middle) >> S-E(locked)", rc);
-
-  /* 8) now on S-E (locked) or still on ?-E (middle),
-  *    transite to S-? (used) or ?-? (free) */
-  if (!funlock(lfd, LCK_UPPER))
-    mdbx_panic("%s(%s) failed: errcode %u", mdbx_func_,
-               "X-E(locked/middle) >> X-?(used/free)", GetLastError());
-
-  /* 9) now on S-? (used, DONE) or ?-? (free, FAILURE) */
-  return rc;
+  return MDBX_SUCCESS;
 }
 
-static int lck_seize(MDBX_milieu *bk) {
-  int rc;
-
-  assert(bk->me_dxb_fd != INVALID_HANDLE_VALUE);
-  if (bk->me_lck_fd == INVALID_HANDLE_VALUE) {
-    /* LY: without-lck mode (e.g. on read-only filesystem) */
-    mdbx_jitter4testing(false);
-    if (!flock(bk->me_dxb_fd, LCK_SHARED | LCK_DONTWAIT, LCK_WHOLE)) {
-      rc = GetLastError();
-      mdbx_error("%s(%s) failed: errcode %u", mdbx_func_, "without-lck", rc);
-      return rc;
-    }
-    return MDBX_RESULT_FALSE;
+static MDBX_error_t mdbx_resume_threads_after_remap(mdbx_handle_array_t *array) {
+  MDBX_error_t err = MDBX_SUCCESS;
+  for (unsigned i = 0; i < array->count; ++i) {
+    if (ResumeThread(array->handles[i]) == -1)
+      err = GetLastError();
+    CloseHandle(array->handles[i]);
   }
+  return err;
+}
 
-  rc = internal_seize_lck(bk->me_lck_fd);
-  mdbx_jitter4testing(false);
-  if (rc == MDBX_RESULT_TRUE && (bk->me_flags32 & MDBX_RDONLY) == 0) {
+/*----------------------------------------------------------------------------*/
+/* global lock for readers registration and initial seize */
+
+MDBX_error_t mdbx_lck_init(MDBX_env_t *env) {
+  (void)env;
+  return MDBX_SUCCESS;
+}
+
+static void lck_recede(MDBX_env_t *env);
+
+void mdbx_lck_detach(MDBX_env_t *env) {
+  if (env->me_dxb_fd != INVALID_HANDLE_VALUE) {
+    lck_recede(env);
+  } else {
+    assert(env->me_lck_fd == INVALID_HANDLE_VALUE);
+  }
+}
+
+#define RIT_HEAD_OFFSET 0
+#define RIT_HEAD_LEN offsetof(MDBX_lockinfo_t, li_numreaders)
+#define RIT_BODY_OFFSET RIT_HEAD_LEN
+#define RIT_BODY_LEN (MAX_MAPSIZE - RIT_BODY_OFFSET)
+#define LCK_RIT_HEAD RIT_HEAD_OFFSET, RIT_HEAD_LEN
+#define LCK_RIT_BODY RIT_BODY_OFFSET, RIT_BODY_LEN
+
+/* FIXME: locking schema/algo descritpion.
+ *
+ *     H B
+ *     ?-?  = free
+ *     S-?  = shared
+ *     E-?
+ *     ?-S
+ *     ?-E  = middle (transitional position)
+ *     S-S
+ *     S-E  = locked (i.e. for reader add/remove)
+ *     E-S
+ *     E-E  = exclusive
+ */
+
+static MDBX_error_t lck_free2middle(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
+  lck_transition_begin("?-? (free)", "?-E (middle)");
+  const MDBX_error_t err = lck_exclusive(env->me_lck_fd, flags, LCK_RIT_BODY);
+  lck_transition_end("?-? (free)", "?-E (middle)", err);
+  return err;
+}
+
+static MDBX_error_t lck_free2shared(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
+  lck_transition_begin("?-? (free)", "S-? (shared)");
+  const MDBX_error_t err = lck_shared(env->me_lck_fd, flags, LCK_RIT_HEAD);
+  lck_transition_end("?-? (free)", "S-? (shared)", err);
+  return err;
+}
+
+static MDBX_error_t lck_shared2locked(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
+  lck_transition_begin("S-? (shared)", "S-E (locked)");
+  const MDBX_error_t err = lck_exclusive(env->me_lck_fd, flags, LCK_RIT_BODY);
+  lck_transition_end("S-E (locked)", "S-? (shared)", err);
+  return err;
+}
+
+static void lck_locked2shared(MDBX_env_t *env) {
+  lck_transition_begin("S-E (locked)", "S-? (shared)");
+  if (!lck_unlock(env->me_lck_fd, LCK_RIT_BODY))
+    lck_panic(env, "lck-body.unlock", GetLastError());
+  lck_transition_end("S-E (locked)", "S-? (shared)", MDBX_SUCCESS);
+}
+
+static void lck_locked2middle(MDBX_env_t *env) {
+  lck_transition_begin("S-E (locked)", "?-E (middle)");
+  if (!lck_unlock(env->me_lck_fd, LCK_RIT_HEAD))
+    lck_panic(env, "lck-body.unlock", GetLastError());
+  lck_transition_end("S-E (locked)", "?-E (middle)", MDBX_SUCCESS);
+}
+
+static MDBX_error_t lck_middle2exclusive(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
+  lck_transition_begin("?-E (middle)", "E-E (exclusive)");
+
+  MDBX_error_t err =
+      lck_exclusive(env->me_lck_fd, (flags & MDBX_EXCLUSIVE) ? flags : MDBX_NONBLOCK, LCK_RIT_HEAD);
+
+  if (err == MDBX_SUCCESS) {
+    lck_trace("got E-E (exclusive), continue lock-dxb-body");
     /* Check that another process don't operates in without-lck mode.
-     * Doing such check by exclusive locking the body-part of db. Should be
+     * Doing such check by exclusive locking the body-part of dxb. Should be
      * noted:
      *  - we need an exclusive lock for do so;
-     *  - we can't lock meta-pages, otherwise other process could get an error
+     *  - we can't lock head, otherwise other process could get an error
      *    while opening db in valid (non-conflict) mode. */
-    if (!flock(bk->me_dxb_fd, LCK_EXCLUSIVE | LCK_DONTWAIT, LCK_BODY)) {
-      rc = GetLastError();
-      mdbx_error("%s(%s) failed: errcode %u", mdbx_func_,
-                 "lock-against-without-lck", rc);
-      mdbx_jitter4testing(false);
-      mdbx_lck_destroy(bk);
-    } else {
-      mdbx_jitter4testing(false);
-      if (!funlock(bk->me_dxb_fd, LCK_BODY))
-        mdbx_panic("%s(%s) failed: errcode %u", mdbx_func_,
-                   "unlock-against-without-lck", GetLastError());
+    err = mdbx_lck_writer_lock(env, (flags & MDBX_EXCLUSIVE) ? flags : MDBX_NONBLOCK);
+    if (err != MDBX_SUCCESS) {
+      lck_trace("unable lock-dxb-body, rollabck to %s", "?-E (middle)");
+      if (!lck_unlock(env->me_lck_fd, LCK_RIT_HEAD))
+        lck_panic(env, "lck-head.unlock", GetLastError());
     }
   }
 
-  return rc;
+  lck_transition_end("?-E (middle)", "E-E (exclusive)", err);
+  return err;
 }
 
-int mdbx_lck_downgrade(MDBX_milieu *bk, bool complete) {
-  /* Transite from exclusive state (E-?) to used (S-?) */
-  assert(bk->me_dxb_fd != INVALID_HANDLE_VALUE);
-  assert(bk->me_lck_fd != INVALID_HANDLE_VALUE);
-
-  /* 1) must be at E-E (exclusive-write) */
-  if (!complete) {
-    /* transite from E-E to E_? (exclusive-read) */
-    if (!funlock(bk->me_lck_fd, LCK_UPPER))
-      mdbx_panic("%s(%s) failed: errcode %u", mdbx_func_,
-                 "E-E(exclusive-write) >> E-?(exclusive-read)", GetLastError());
-    return MDBX_SUCCESS /* 2) now at E-? (exclusive-read), done */;
-  }
-
-  /* 3) now at E-E (exclusive-write), transite to ?_E (middle) */
-  if (!funlock(bk->me_lck_fd, LCK_LOWER))
-    mdbx_panic("%s(%s) failed: errcode %u", mdbx_func_,
-               "E-E(exclusive-write) >> ?-E(middle)", GetLastError());
-
-  /* 4) now at ?-E (middle), transite to S-E (locked) */
-  if (!flock(bk->me_lck_fd, LCK_SHARED | LCK_DONTWAIT, LCK_LOWER)) {
-    int rc = GetLastError() /* 5) something went wrong, give up */;
-    mdbx_error("%s(%s) failed: errcode %u", mdbx_func_,
-               "?-E(middle) >> S-E(locked)", rc);
-    return rc;
-  }
-
-  /* 6) got S-E (locked), continue transition to S-? (used) */
-  if (!funlock(bk->me_lck_fd, LCK_UPPER))
-    mdbx_panic("%s(%s) failed: errcode %u", mdbx_func_,
-               "S-E(locked) >> S-?(used)", GetLastError());
-
-  return MDBX_SUCCESS /* 7) now at S-? (used), done */;
+static MDBX_error_t lck_middle2locked(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
+  lck_transition_begin("?-E (middle)", "S-E (locked)");
+  const MDBX_error_t err = lck_shared(env->me_lck_fd, flags, LCK_RIT_HEAD);
+  lck_transition_end("?-E (middle)", "S-E (locked)", err);
+  return err;
 }
 
-int mdbx_lck_upgrade(MDBX_milieu *bk) {
-  /* Transite from locked state (S-E) to exclusive-write (E-E) */
-  assert(bk->me_dxb_fd != INVALID_HANDLE_VALUE);
-  assert(bk->me_lck_fd != INVALID_HANDLE_VALUE);
-
-  /* 1) must be at S-E (locked), transite to ?_E (middle) */
-  if (!funlock(bk->me_lck_fd, LCK_LOWER))
-    mdbx_panic("%s(%s) failed: errcode %u", mdbx_func_,
-               "S-E(locked) >> ?-E(middle)", GetLastError());
-
-  /* 3) now on ?-E (middle), try E-E (exclusive-write) */
-  mdbx_jitter4testing(false);
-  if (flock(bk->me_lck_fd, LCK_EXCLUSIVE | LCK_DONTWAIT, LCK_LOWER))
-    return MDBX_RESULT_TRUE; /* 4) got E-E (exclusive-write), done */
-
-  /* 5) still on ?-E (middle) */
-  int rc = GetLastError();
-  mdbx_jitter4testing(false);
-  if (rc != ERROR_SHARING_VIOLATION && rc != ERROR_LOCK_VIOLATION) {
-    /* 6) something went wrong, report but continue */
-    mdbx_error("%s(%s) failed: errcode %u", mdbx_func_,
-               "?-E(middle) >> E-E(exclusive-write)", rc);
-  }
-
-  /* 7) still on ?-E (middle), try restore S-E (locked) */
-  mdbx_jitter4testing(false);
-  rc = flock(bk->me_lck_fd, LCK_SHARED | LCK_DONTWAIT, LCK_LOWER)
-           ? MDBX_RESULT_FALSE
-           : GetLastError();
-
-  mdbx_jitter4testing(false);
-  if (rc != MDBX_RESULT_FALSE) {
-    mdbx_fatal("%s(%s) failed: errcode %u", mdbx_func_,
-               "?-E(middle) >> S-E(locked)", rc);
-    return rc;
-  }
-
-  /* 8) now on S-E (locked) */
-  return MDBX_RESULT_FALSE;
+static void lck_middle2free(MDBX_env_t *env) {
+  lck_transition_begin("?-E (middle)", "?-? (free)");
+  if (!lck_unlock(env->me_lck_fd, LCK_RIT_BODY))
+    lck_panic(env, "lck-body.unlock", GetLastError());
+  lck_transition_end("?-E (middle)", "?-? (free)", MDBX_SUCCESS);
 }
 
-void mdbx_lck_destroy(MDBX_milieu *bk) {
-  int rc;
+static void lck_exclusive2middle(MDBX_env_t *env) {
+  lck_transition_begin("E-E (exclusive)", "?-E (middle)");
+  mdbx_lck_writer_unlock(env);
+  if (!lck_unlock(env->me_lck_fd, LCK_RIT_HEAD))
+    lck_panic(env, "lck-head.unlock", GetLastError());
+  lck_transition_end("E-E (exclusive)", "?-E (middle)", MDBX_SUCCESS);
+}
 
-  if (bk->me_lck_fd != INVALID_HANDLE_VALUE) {
+/*----------------------------------------------------------------------------*/
+
+MDBX_error_t mdbx_lck_reader_registration_lock(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
+  lck_trace(">> flags 0x%x %s", flags, (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "");
+
+  AcquireSRWLockShared(&env->me_remap_guard);
+  if (env->me_lck_fd == INVALID_HANDLE_VALUE) {
+    lck_trace("<< MDBX_SUCCESS, without-lck");
+    return MDBX_SUCCESS /* readonly database in readonly filesystem */;
+  }
+
+  const MDBX_error_t err = lck_shared2locked(env, flags);
+  if (err != MDBX_SUCCESS) {
+    ReleaseSRWLockShared(&env->me_remap_guard);
+    lck_trace("<< %s, error %d", lck_is_collision(err) ? "busy" : "failed", err);
+  } else
+    lck_trace("<< ok");
+  return err;
+}
+
+void mdbx_lck_reader_registration_unlock(MDBX_env_t *env) {
+  if (env->me_lck_fd != INVALID_HANDLE_VALUE)
+    lck_locked2shared(env);
+  ReleaseSRWLockShared(&env->me_remap_guard);
+  lck_trace("<< ok");
+}
+
+MDBX_seize_result_t mdbx_lck_seize(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
+  lck_trace(">> flags 0x%x %s", flags, (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "",
+            (flags & MDBX_EXCLUSIVE) ? " (MDBX_EXCLUSIVE)" : "");
+  MDBX_error_t err;
+  assert(env->me_dxb_fd != INVALID_HANDLE_VALUE);
+  if (env->me_lck_fd == INVALID_HANDLE_VALUE) {
+    /* LY: without-lck mode (e.g. on read-only filesystem) */
+    err = lck_shared(env->me_dxb_fd, flags, LCK_DXB_WHOLE);
+    if (err != MDBX_SUCCESS) {
+      lck_trace("unable got without-lck, error %d", err);
+      goto recede;
+    }
+    lck_trace("<< %s", "SEIZE_NOLCK");
+    return seize_done(MDBX_SEIZE_NOLCK);
+  }
+
+  assert(env->me_lck_fd != INVALID_HANDLE_VALUE);
+  /* Seize state as 'exclusive' (E-E and returns MDBX_SEIZE_EXCLUSIVE_FIRST)
+   * or as 'shared' (S-? and returns MDBX_SUCCESS), otherwise returns an error */
+
+  MDBX_seize_t exclusive_result = MDBX_SEIZE_EXCLUSIVE_FIRST;
+  err = lck_free2middle(env, flags);
+  if (err != MDBX_SUCCESS) {
+    if (!lck_is_collision(err))
+      goto recede;
+
+    if ((flags & (MDBX_NONBLOCK | MDBX_EXCLUSIVE)) == (MDBX_NONBLOCK | MDBX_EXCLUSIVE)) {
+      lck_trace("<< %s", "BUSY");
+      return seize_failed(err);
+    }
+
+    err = lck_free2shared(env, flags);
+    if (err != MDBX_SUCCESS)
+      goto recede;
+
+    if (!MDBX_OPT_TEND_LCK_RESET && (flags & MDBX_EXCLUSIVE) == 0) {
+      lck_trace("<< %s", "SHARED");
+      return seize_done(MDBX_SEIZE_SHARED);
+    }
+
+    err = lck_shared2locked(env, flags);
+    if (err != MDBX_SUCCESS) {
+      if (!lck_is_collision(err))
+        goto recede;
+      if ((flags & (MDBX_NONBLOCK | MDBX_EXCLUSIVE)) == MDBX_NONBLOCK) {
+        lck_trace("<< %s", "SHARED");
+        return seize_done(MDBX_SEIZE_SHARED);
+      }
+      goto recede;
+    }
+
+    lck_locked2middle(env);
+    exclusive_result = MDBX_SEIZE_EXCLUSIVE_CONTINUE;
+  }
+
+  err = lck_middle2exclusive(env, flags);
+  if (err == MDBX_SUCCESS) {
+    assert(IS_SEIZE_EXCLUSIVE(exclusive_result));
+    lck_trace("<< %s", (exclusive_result == MDBX_SEIZE_EXCLUSIVE_FIRST) ? "MDBX_SEIZE_EXCLUSIVE_FIRST"
+                                                                        : "MDBX_SEIZE_EXCLUSIVE_LIVE");
+    return seize_done(exclusive_result);
+  }
+
+  if (!lck_is_collision(err))
+    goto recede;
+
+  err = lck_middle2locked(env, flags);
+  if (err != MDBX_SUCCESS)
+    goto recede;
+
+  lck_locked2shared(env);
+  lck_trace("<< %s", "SHARED");
+  return seize_done(MDBX_SEIZE_SHARED);
+
+recede:
+  lck_recede(env);
+  lck_trace("<< %s", lck_is_collision(err) ? "busy" : "failed");
+  return seize_failed(err);
+}
+
+MDBX_error_t mdbx_lck_downgrade(MDBX_env_t *env) {
+  lck_trace(
+      ">> transite-lck: from exclusive (E-E) to shared (S-?), transite-dxb: body-exclusive to body-free");
+  assert(env->me_dxb_fd != INVALID_HANDLE_VALUE);
+  assert(env->me_lck_fd != INVALID_HANDLE_VALUE);
+
+  lck_exclusive2middle(env);
+  const MDBX_error_t err = lck_middle2locked(env, MDBX_NONBLOCK);
+  if (err != MDBX_SUCCESS) {
+    lck_recede(env);
+    lck_trace("<< failed, unlocked, error %d", err);
+    return err;
+  }
+
+  lck_locked2shared(env);
+  lck_trace("<< now at S-? (shared), done");
+  return MDBX_SUCCESS;
+}
+
+MDBX_error_t mdbx_lck_upgrade(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
+  lck_trace(">> transite-lck: locked (S-E) to exclusive (E-E), flags 0x%x %s", flags,
+            (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "");
+  assert(env->me_dxb_fd != INVALID_HANDLE_VALUE);
+  assert(env->me_lck_fd != INVALID_HANDLE_VALUE);
+  /* lck_upgrade MUST returns:
+  *   MDBX_SUCCESS - exclusive lock acquired,
+  *                  NO other processes use DB.
+  *   MDBX_BUSY    - exclusive lock NOT acquired, other processes use DB,
+  *                  but not known readers, writers or mixed.
+  *   MDBX_SIGN    - exclusive lock NOT acquired and SURE known that
+  *                  other writer(s) is present, i.e. db-sync not required on close */
+
+  MDBX_error_t err = lck_shared2locked(env, flags);
+  if (err != MDBX_SUCCESS) {
+    if (!lck_is_collision(err))
+      goto recede;
+    lck_trace("<< %s", "busy");
+    return err;
+  }
+
+  lck_locked2middle(env);
+  err = lck_middle2exclusive(env, flags);
+  if (err == MDBX_SUCCESS) {
+    lck_trace("<< MDBX_SUCCESS");
+    return MDBX_SUCCESS;
+  }
+  if (!lck_is_collision(err))
+    goto recede;
+
+  /* unable exclusive, rollback to shared */
+  err = lck_middle2locked(env, flags);
+  if (err != MDBX_SUCCESS)
+    goto recede;
+  lck_locked2shared(env);
+
+  /* TODO: return MDBX_SIGN if at least one writer is present */
+  lck_trace("<< MDBX_EBUSY");
+  return MDBX_EBUSY;
+
+recede:
+  lck_recede(env);
+  lck_trace("<< failed, unlocked, err %d", err);
+  return err;
+}
+
+static void lck_recede(MDBX_env_t *env) {
+  /* explicitly unlock to avoid latency for other processes (windows kernel
+   * releases such locks via deferred queues) */
+
+  assert(env->me_dxb_fd != INVALID_HANDLE_VALUE);
+  lck_trace(">>");
+  MDBX_error_t err;
+  if (env->me_lck_fd != INVALID_HANDLE_VALUE) {
     /* double `unlock` for robustly remove overlapped shared/exclusive locks */
-    while (funlock(bk->me_lck_fd, LCK_LOWER))
+    while (lck_unlock(env->me_lck_fd, LCK_RIT_HEAD))
       ;
-    rc = GetLastError();
-    assert(rc == ERROR_NOT_LOCKED);
-    (void)rc;
+    err = GetLastError();
+    if (err != ERROR_NOT_LOCKED)
+      lck_trace("%s, %d", "lck-head.unlock", err);
     SetLastError(ERROR_SUCCESS);
 
-    while (funlock(bk->me_lck_fd, LCK_UPPER))
+    while (lck_unlock(env->me_lck_fd, LCK_RIT_BODY))
       ;
-    rc = GetLastError();
-    assert(rc == ERROR_NOT_LOCKED);
-    (void)rc;
-    SetLastError(ERROR_SUCCESS);
+    err = GetLastError();
+    if (err != ERROR_NOT_LOCKED)
+      lck_trace("%s, %d", "lck-head.body", err);
   }
 
-  if (bk->me_dxb_fd != INVALID_HANDLE_VALUE) {
-    /* explicitly unlock to avoid latency for other processes (windows kernel
-     * releases such locks via deferred queues) */
-    while (funlock(bk->me_dxb_fd, LCK_BODY))
-      ;
-    rc = GetLastError();
-    assert(rc == ERROR_NOT_LOCKED);
-    (void)rc;
-    SetLastError(ERROR_SUCCESS);
+  while (lck_unlock(env->me_dxb_fd, LCK_DXB_BODY))
+    ;
+  err = GetLastError();
+  if (err != ERROR_NOT_LOCKED)
+    lck_trace("%s, %d", "lck-dxb.body", err);
 
-    while (funlock(bk->me_dxb_fd, LCK_META))
-      ;
-    rc = GetLastError();
-    assert(rc == ERROR_NOT_LOCKED);
-    (void)rc;
-    SetLastError(ERROR_SUCCESS);
+  while (lck_unlock(env->me_dxb_fd, LCK_DXB_WHOLE))
+    ;
+  err = GetLastError();
+  if (err != ERROR_NOT_LOCKED)
+    lck_trace("%s, %d", "lck-dxb.whole", err);
 
-    while (funlock(bk->me_dxb_fd, LCK_WHOLE))
-      ;
-    rc = GetLastError();
-    assert(rc == ERROR_NOT_LOCKED);
-    (void)rc;
-    SetLastError(ERROR_SUCCESS);
-  }
+  lck_trace("<<");
 }
 
 /*----------------------------------------------------------------------------*/
 /* reader checking (by pid) */
 
-int mdbx_rpid_set(MDBX_milieu *bk) {
-  (void)bk;
+MDBX_error_t mdbx_lck_reader_alive_set(MDBX_env_t *env, MDBX_pid_t pid) {
+  (void)env;
+  (void)pid;
+  lck_trace("pid %ld", (long)pid);
   return MDBX_SUCCESS;
 }
 
-int mdbx_rpid_clear(MDBX_milieu *bk) {
-  (void)bk;
+MDBX_error_t mdbx_lck_reader_alive_clear(MDBX_env_t *env, MDBX_pid_t pid) {
+  (void)env;
+  (void)pid;
+  lck_trace("pid %ld", (long)pid);
   return MDBX_SUCCESS;
 }
 
 /* Checks reader by pid.
- *
- * Returns:
- *   MDBX_RESULT_TRUE, if pid is live (unable to acquire lock)
- *   MDBX_RESULT_FALSE, if pid is dead (lock acquired)
- *   or otherwise the errcode. */
-int mdbx_rpid_check(MDBX_milieu *bk, MDBX_pid_t pid) {
-  (void)bk;
+*
+* Returns:
+*   MDBX_SUCCESS, if pid is live (unable to acquire lock)
+*   MDBX_SIGN, if pid is dead (lock acquired)
+*   or otherwise the errcode. */
+MDBX_error_t mdbx_lck_reader_alive_check(MDBX_env_t *env, MDBX_pid_t pid) {
+  (void)env;
+  lck_trace(">> pid %ld", (long)pid);
   HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-  int rc;
-  if (hProcess) {
+  MDBX_error_t rc;
+  if (likely(hProcess)) {
     rc = WaitForSingleObject(hProcess, 0);
     CloseHandle(hProcess);
   } else {
@@ -435,15 +603,19 @@ int mdbx_rpid_check(MDBX_milieu *bk, MDBX_pid_t pid) {
   switch (rc) {
   case ERROR_INVALID_PARAMETER:
     /* pid seem invalid */
-    return MDBX_RESULT_FALSE;
+    lck_trace("<< pid %ld, %s", (long)pid, "MDBX_SIGN (seem invalid)");
+    return MDBX_SIGN;
   case WAIT_OBJECT_0:
     /* process just exited */
-    return MDBX_RESULT_FALSE;
+    lck_trace("<< pid %ld, %s", (long)pid, "MDBX_SIGN (just exited)");
+    return MDBX_SIGN;
   case WAIT_TIMEOUT:
     /* pid running */
-    return MDBX_RESULT_TRUE;
+    lck_trace("<< pid %ld, %s", (long)pid, "MDBX_SUCCESS (running)");
+    return MDBX_SUCCESS;
   default:
     /* failure */
+    lck_trace("<< pid %ld, failure %d", (long)pid, rc);
     return rc;
   }
 }

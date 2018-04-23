@@ -1,5 +1,5 @@
-﻿/*
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>
+/*
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -13,309 +13,415 @@
  */
 
 #include "./bits.h"
+#include "./debug.h"
+#include "./proto.h"
+#include "./ualb.h"
+
+#define lck_extra(fmt, ...) log_extra(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
+#define lck_trace(fmt, ...) log_trace(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
+#define lck_verbose(fmt, ...) log_verbose(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
+#define lck_info(fmt, ...) log_info(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
+#define lck_notice(fmt, ...) log_notice(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
+#define lck_warning(fmt, ...) log_warning(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
+#define lck_error(fmt, ...) log_error(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
+#define lck_panic(env, msg, err) mdbx_panic(env, MDBX_LOG_LCK, __func__, __LINE__, "%s, error %d", msg, err)
 
 /* Some platforms define the EOWNERDEAD error code
  * even though they don't support Robust Mutexes.
  * Compile with -DMDBX_USE_ROBUST=0. */
 #ifndef MDBX_USE_ROBUST
-/* Howard Chu: Android currently lacks Robust Mutex support */
-#if defined(EOWNERDEAD) &&                                                     \
-    !defined(ANDROID) /* LY: glibc before 2.10 has a troubles with Robust      \
-                         Mutex too. */                                         \
-    && __GLIBC_PREREQ(2, 10)
+#if defined(EOWNERDEAD) &&                                                                                    \
+    __GLIBC_PREREQ(2, 10) /* LY: glibc before 2.10 has a troubles with Robust Mutex too. */
 #define MDBX_USE_ROBUST 1
 #else
 #define MDBX_USE_ROBUST 0
 #endif
 #endif /* MDBX_USE_ROBUST */
 
-/*----------------------------------------------------------------------------*/
-/* rthc */
-
-static pthread_mutex_t mdbx_rthc_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-static void rthc_lock(void) {
-  mdbx_ensure(NULL, pthread_mutex_lock(&mdbx_rthc_mutex) == 0);
-}
-
-static void rthc_unlock(void) {
-  mdbx_ensure(NULL, pthread_mutex_unlock(&mdbx_rthc_mutex) == 0);
-}
-
-static void __attribute__((destructor)) mdbx_global_destructor(void) {
-  rthc_cleanup();
-}
-
-/*----------------------------------------------------------------------------*/
-/* lck */
-
 #ifndef OFF_T_MAX
 #define OFF_T_MAX (sizeof(off_t) > 4 ? INT64_MAX : INT32_MAX)
 #endif
-#define LCK_WHOLE OFF_T_MAX
+#define LCK_DXB_WHOLE OFF_T_MAX
 
-static int mdbx_lck_op(MDBX_filehandle_t fd, int op, int lck, off_t offset,
-                       off_t len) {
+static int fcntl_op(const MDBX_filehandle_t fd, const int op, const int lck, const size_t offset,
+                    const size_t len) {
+  STATIC_ASSERT(sizeof(off_t) >= sizeof(size_t));
   for (;;) {
-    int rc;
+    mdbx_jitter4testing(false);
     struct flock lock_op;
     memset(&lock_op, 0, sizeof(lock_op));
     lock_op.l_type = lck;
     lock_op.l_whence = SEEK_SET;
     lock_op.l_start = offset;
     lock_op.l_len = len;
-    if ((rc = fcntl(fd, op, &lock_op)) == 0) {
+    int rc = fcntl(fd, op, &lock_op);
+    mdbx_jitter4testing(false);
+    if (rc == -1) {
+      rc = errno;
+      if (rc != EINTR) {
+        if (rc != EACCES && rc != EAGAIN)
+          lck_error("fcntl(fd %d, op %d, lck %d, offset %zu, len %zu), error %d", fd, op, lck, offset, len,
+                    rc);
+        return rc /* EACCES, EAGAIN */;
+      }
+      continue;
+    } else if (rc == 0) {
       if (op == F_GETLK && lock_op.l_type != F_UNLCK)
         rc = -lock_op.l_pid;
-    } else if ((rc = errno) == EINTR) {
-      continue;
     }
     return rc;
   }
 }
 
-static inline int mdbx_lck_exclusive(int lfd) {
-  assert(lfd != MDBX_INVALID_FD);
-  if (flock(lfd, LOCK_EX | LOCK_NB))
-    return errno;
-  return mdbx_lck_op(lfd, F_SETLK, F_WRLCK, 0, 1);
-}
-
-static inline int mdbx_lck_shared(int lfd) {
-  assert(lfd != MDBX_INVALID_FD);
-  while (flock(lfd, LOCK_SH)) {
+static inline int lck_exclusive(int fd, const MDBX_flags_t flags) {
+  assert(fd != MDBX_INVALID_FD);
+  mdbx_jitter4testing(false);
+  while (flock(fd, (flags & MDBX_NONBLOCK) ? LOCK_EX | LOCK_NB : LOCK_EX)) {
     int rc = errno;
-    if (rc != EINTR)
-      return rc;
+    if (rc != EINTR) {
+      if (rc != EWOULDBLOCK)
+        lck_error("flock(fd %d, LOCK_EX%s), error %d", fd, (flags & MDBX_NONBLOCK) ? "|LOCK_NB" : "", rc);
+      return rc /* EWOULDBLOCK */;
+    }
+    mdbx_jitter4testing(false);
   }
-  return mdbx_lck_op(lfd, F_SETLKW, F_RDLCK, 0, 1);
+
+  /* exlusive lock first byte */
+  return fcntl_op(fd, (flags & MDBX_NONBLOCK) ? F_SETLK : F_SETLKW, F_WRLCK, 0, 1);
 }
 
-static int mdbx_lck_downgrade(MDBX_milieu *bk, bool complete) {
-  return complete ? mdbx_lck_shared(bk->me_lck_fd) : MDBX_SUCCESS;
+static inline int lck_shared(int fd, const MDBX_flags_t flags) {
+  assert(fd != MDBX_INVALID_FD);
+  mdbx_jitter4testing(false);
+  while (flock(fd, (flags & MDBX_NONBLOCK) ? LOCK_SH | LOCK_NB : LOCK_SH)) {
+    int rc = errno;
+    if (rc != EINTR) {
+      if (rc != EWOULDBLOCK)
+        lck_error("flock(fd %d, LOCK_SH%s), error %d", fd, (flags & MDBX_NONBLOCK) ? "|LOCK_NB" : "", rc);
+      return rc /* EWOULDBLOCK */;
+    }
+    mdbx_jitter4testing(false);
+  }
+
+  /* shared lock first byte */
+  return fcntl_op(fd, (flags & MDBX_NONBLOCK) ? F_SETLK : F_SETLKW, F_RDLCK, 0, 1);
 }
 
-static int mdbx_lck_upgrade(MDBX_milieu *bk) {
-  return mdbx_lck_exclusive(bk->me_lck_fd);
+static inline bool lck_is_collision(int err) {
+  return err == EAGAIN || err == EACCES || (EWOULDBLOCK != EAGAIN && err == EWOULDBLOCK);
 }
 
-static int mdbx_rpid_set(MDBX_milieu *bk) {
-  return mdbx_lck_op(bk->me_lck_fd, F_SETLK, F_WRLCK, bk->me_pid, 1);
+/*----------------------------------------------------------------------------*/
+
+MDBX_error_t mdbx_lck_downgrade(MDBX_env_t *env) {
+  lck_trace(">>");
+  int err = lck_shared(env->me_lck_fd, MDBX_NONBLOCK);
+  if (env->me_wpa_txn)
+    mdbx_lck_writer_unlock(env);
+
+  if (unlikely(err != MDBX_SUCCESS)) {
+    lck_trace("<< %s, %d", lck_is_collision(err) ? "busy" : "error", err);
+  } else {
+    lck_trace("<< ok");
+  }
+  return err;
 }
 
-static int mdbx_rpid_clear(MDBX_milieu *bk) {
-  return mdbx_lck_op(bk->me_lck_fd, F_SETLKW, F_UNLCK, bk->me_pid, 1);
+MDBX_error_t mdbx_lck_upgrade(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
+  lck_trace(">> flags 0x%x%s", flags, (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "");
+  /* lck_upgrade MUST returns:
+   *   MDBX_SUCCESS - exclusive lock acquired,
+   *                  NO other processes use DB.
+   *   MDBX_BUSY    - exclusive lock NOT acquired, other processes use DB,
+   *                  but not known readers, writers or mixed.
+   *   MDBX_SIGN    - exclusive lock NOT acquired and SURE known that
+   *                  other writer(s) is present, i.e. db-sync not required on close */
+  int err = mdbx_lck_writer_lock(env, flags);
+  if (err == EBUSY && (flags & MDBX_NONBLOCK)) {
+    /* Other process running a write-txn */
+    lck_trace("<< MDBX_SIGN");
+    return MDBX_SIGN;
+  }
+  if (unlikely(MDBX_IS_ERROR(err))) {
+    lck_trace("<< ERROR");
+    return err;
+  }
+
+  err = lck_exclusive(env->me_lck_fd, flags);
+  mdbx_jitter4testing(false);
+  if (err != MDBX_SUCCESS) {
+    mdbx_lck_writer_unlock(env);
+    if (lck_is_collision(err)) {
+      /* TODO: return MDBX_SIGN if at least one writer is present */
+      lck_trace("<< MDBX_EBUSY");
+      return MDBX_EBUSY;
+    }
+    lck_trace("<< ERROR");
+    return err;
+  }
+
+  lck_trace("<< MDBX_SUCCESS");
+  return MDBX_SUCCESS;
+}
+
+MDBX_error_t mdbx_lck_reader_alive_set(MDBX_env_t *env, MDBX_pid_t pid) {
+  int err = fcntl_op(env->me_lck_fd, F_SETLK, F_WRLCK, pid, 1);
+  lck_trace("pid %ld, err %d", (long)pid, err);
+  return err;
+}
+
+MDBX_error_t mdbx_lck_reader_alive_clear(MDBX_env_t *env, MDBX_pid_t pid) {
+  int err = fcntl_op(env->me_lck_fd, F_SETLKW, F_UNLCK, pid, 1);
+  lck_trace("pid %ld, err %d", (long)pid, err);
+  return err;
 }
 
 /* Checks reader by pid.
- *
  * Returns:
- *   MDBX_RESULT_TRUE, if pid is live (unable to acquire lock)
- *   MDBX_RESULT_FALSE, if pid is dead (lock acquired)
- *   or otherwise the errcode. */
-static int mdbx_rpid_check(MDBX_milieu *bk, MDBX_pid_t pid) {
-  int rc = mdbx_lck_op(bk->me_lck_fd, F_GETLK, F_WRLCK, pid, 1);
-  if (rc == 0)
-    return MDBX_RESULT_FALSE;
-  if (rc < 0 && -rc == pid)
-    return MDBX_RESULT_TRUE;
+ *   MDBX_SUCCESS, if pid is live (unable to acquire lock)
+ *   MDBX_SIGN, if pid is dead (lock acquired) or otherwise the errcode. */
+MDBX_error_t mdbx_lck_reader_alive_check(MDBX_env_t *env, MDBX_pid_t pid) {
+  lck_trace(">> pid %ld", (long)pid);
+  int rc = fcntl_op(env->me_lck_fd, F_GETLK, F_WRLCK, pid, 1);
+  if (rc == 0) {
+    lck_trace("<< pid %ld, %s", (long)pid, "MDBX_SIGN (seem invalid)");
+    return MDBX_SIGN;
+  }
+  if (rc < 0 && -rc == pid) {
+    lck_trace("<< pid %ld, %s", (long)pid, "MDBX_SUCCESS (running)");
+    return MDBX_SUCCESS;
+  }
+  lck_error("<< pid %ld, failure %d", (long)pid, rc);
   return rc;
 }
 
 /*----------------------------------------------------------------------------*/
 
-static int mdbx_lck_init(MDBX_milieu *bk) {
+MDBX_error_t mdbx_lck_init(MDBX_env_t *env) {
   pthread_mutexattr_t ma;
-  int rc = pthread_mutexattr_init(&ma);
-  if (rc)
-    return rc;
+  int err = pthread_mutexattr_init(&ma);
+  if (err)
+    return err;
 
-  rc = pthread_mutexattr_setpshared(&ma, PTHREAD_PROCESS_SHARED);
-  if (rc)
+  err = pthread_mutexattr_setpshared(&ma, PTHREAD_PROCESS_SHARED);
+  if (err)
     goto bailout;
 
 #if MDBX_USE_ROBUST
 #if __GLIBC_PREREQ(2, 12)
-  rc = pthread_mutexattr_setrobust(&ma, PTHREAD_MUTEX_ROBUST);
+  err = pthread_mutexattr_setrobust(&ma, PTHREAD_MUTEX_ROBUST);
 #else
-  rc = pthread_mutexattr_setrobust_np(&ma, PTHREAD_MUTEX_ROBUST_NP);
+  err = pthread_mutexattr_setrobust_np(&ma, PTHREAD_MUTEX_ROBUST_NP);
 #endif
-  if (rc)
+  if (err)
     goto bailout;
 #endif /* MDBX_USE_ROBUST */
 
 #if _POSIX_C_SOURCE >= 199506L
-  rc = pthread_mutexattr_setprotocol(&ma, PTHREAD_PRIO_INHERIT);
-  if (rc == ENOTSUP)
-    rc = pthread_mutexattr_setprotocol(&ma, PTHREAD_PRIO_NONE);
-  if (rc)
+  err = pthread_mutexattr_setprotocol(&ma, PTHREAD_PRIO_INHERIT);
+  if (err == ENOTSUP)
+    err = pthread_mutexattr_setprotocol(&ma, PTHREAD_PRIO_NONE);
+  if (err)
     goto bailout;
 #endif /* PTHREAD_PRIO_INHERIT */
 
-  rc = pthread_mutex_init(&bk->me_lck->li_rmutex, &ma);
-  if (rc)
+  err = pthread_mutex_init(&env->me_lck->li_rmutex, &ma);
+  if (err)
     goto bailout;
-  rc = pthread_mutex_init(&bk->me_lck->li_wmutex, &ma);
+  err = pthread_mutex_init(&env->me_lck->li_wmutex, &ma);
 
 bailout:
   pthread_mutexattr_destroy(&ma);
-  return rc;
+  return err;
 }
 
-static void mdbx_lck_destroy(MDBX_milieu *bk) {
-  if (bk->me_lck_fd != MDBX_INVALID_FD) {
+void mdbx_lck_detach(MDBX_env_t *env) {
+  if (env->me_lck_fd != MDBX_INVALID_FD) {
     /* try get exclusive access */
-    if (bk->me_lck && mdbx_lck_exclusive(bk->me_lck_fd) == 0) {
-      mdbx_info("%s: got exclusive, drown mutexes", mdbx_func_);
-      int rc = pthread_mutex_destroy(&bk->me_lck->li_rmutex);
-      if (rc == 0)
-        rc = pthread_mutex_destroy(&bk->me_lck->li_wmutex);
+    if (env->me_lck && lck_exclusive(env->me_lck_fd, MDBX_NONBLOCK) == 0) {
+      lck_info("%s: got exclusive, drown mutexes", __func__);
+      int rc = pthread_mutex_destroy(&env->me_lck->li_rmutex);
+      assert(rc == 0);
+      rc = pthread_mutex_destroy(&env->me_lck->li_wmutex);
       assert(rc == 0);
       (void)rc;
-      /* lock would be released (by kernel) while the me_lfd will be closed */
     }
+    /* files locks would be released (by kernel) while the me_lfd will be closed */
   }
 }
 
-static int mdbx_robust_lock(MDBX_milieu *bk, pthread_mutex_t *mutex) {
-  int rc = pthread_mutex_lock(mutex);
-  if (unlikely(rc != 0))
-    rc = mutex_failed(bk, mutex, rc);
+MDBX_seize_result_t mdbx_lck_seize(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_EXCLUSIVE, MDBX_NONBLOCK */) {
+  lck_trace(">> flags 0x%x%s", flags, (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "");
+  assert(env->me_dxb_fd != MDBX_INVALID_FD);
+
+  if (env->me_lck_fd == MDBX_INVALID_FD) {
+    /* LY: without-lck mode (e.g. on read-only filesystem) */
+    int err = fcntl_op(env->me_dxb_fd, F_SETLK, F_RDLCK, 0, LCK_DXB_WHOLE);
+    if (err != 0) {
+      lck_trace("<< without-lck.lock %s, %d", lck_is_collision(err) ? "busy" : "error", err);
+      return seize_failed(err);
+    }
+    lck_trace("<< %s", "SEIZE_NOLCK");
+    return seize_done(MDBX_SEIZE_NOLCK);
+  }
+
+  if ((env->me_flags32 & MDBX_RDONLY) == 0) {
+    /* Check that another process don't operates in without-lck mode. */
+    int err = fcntl_op(env->me_dxb_fd, F_SETLK, F_WRLCK, env->me_pid, 1);
+    if (err != 0) {
+      lck_trace("<< against-without-lck.lock %s, %d", lck_is_collision(err) ? "busy" : "error", err);
+      return seize_failed(err);
+    }
+  }
+
+  assert(env->me_lck_fd != MDBX_INVALID_FD);
+  /* try exclusive access for first-time initialization */
+  int err = lck_exclusive(env->me_lck_fd, ((flags & (MDBX_EXCLUSIVE | MDBX_NONBLOCK)) == MDBX_EXCLUSIVE)
+                                              ? flags /* wait for exclusive if requested */
+                                              : MDBX_NONBLOCK /* avoid non-necessary blocking */);
+  if (err == 0) {
+    /* got exclusive */
+    lck_trace("<< %s", "MDBX_SEIZE_EXCLUSIVE_FIRST");
+    return seize_done(MDBX_SEIZE_EXCLUSIVE_FIRST);
+  }
+
+  if (lck_is_collision(err)) {
+    /* get shared access */
+    err = lck_shared(env->me_lck_fd, flags);
+    if (err == 0) {
+      /* got shared */
+      if (!MDBX_OPT_TEND_LCK_RESET && (flags & MDBX_EXCLUSIVE) == 0) {
+        lck_trace("<< %s", "MDBX_SEIZE_SHARED");
+        return seize_done(MDBX_SEIZE_SHARED);
+      }
+
+      lck_trace("got shared, try exclusive again");
+      err = lck_exclusive(env->me_lck_fd, MDBX_NONBLOCK /* avoid non-necessary blocking */);
+      if (err == 0) {
+        /* now got exclusive */
+        lck_trace("<< %s", "MDBX_SEIZE_EXCLUSIVE_LIVE");
+        return seize_done(MDBX_SEIZE_EXCLUSIVE_CONTINUE);
+      }
+
+      if (lck_is_collision(err)) {
+        /* unable exclusive, but stay shared */
+        lck_trace("<< %s", "MDBX_SEIZE_SHARED");
+        return seize_done(MDBX_SEIZE_SHARED);
+      }
+    }
+  }
+
+  lck_trace("<< ERROR");
+  return seize_failed(err);
+}
+
+/*----------------------------------------------------------------------------*/
+
+static int mdbx_robust_mutex_failed(MDBX_env_t *env, pthread_mutex_t *mutex, int err);
+
+static inline int mdbx_robust_lock(MDBX_env_t *env, pthread_mutex_t *mutex,
+                                   MDBX_flags_t flags /* MDBX_NONBLOCK */) {
+  int rc = (flags & MDBX_NONBLOCK) ? pthread_mutex_trylock(mutex) : pthread_mutex_lock(mutex);
+  STATIC_ASSERT(EBUSY == MDBX_EBUSY);
+  if (unlikely(rc != 0 && rc != EBUSY))
+    rc = mdbx_robust_mutex_failed(env, mutex, rc);
   return rc;
 }
 
-static int mdbx_robust_unlock(MDBX_milieu *bk, pthread_mutex_t *mutex) {
+static inline int mdbx_robust_unlock(MDBX_env_t *env, pthread_mutex_t *mutex) {
   int rc = pthread_mutex_unlock(mutex);
   if (unlikely(rc != 0))
-    rc = mutex_failed(bk, mutex, rc);
+    rc = mdbx_robust_mutex_failed(env, mutex, rc);
   return rc;
 }
 
-static int mdbx_rdt_lock(MDBX_milieu *bk) {
-  mdbx_trace(">>");
-  int rc = mdbx_robust_lock(bk, &bk->me_lck->li_rmutex);
-  mdbx_trace("<< rc %d", rc);
+MDBX_error_t mdbx_lck_reader_registration_lock(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
+  lck_trace(">> flags 0x%x%s", flags, (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "");
+  int rc = mdbx_robust_lock(env, &env->me_lck->li_rmutex, flags);
+  if (unlikely(MDBX_IS_ERROR(rc))) {
+    lck_trace("<< %s, %d", (rc == MDBX_EBUSY) ? "busy" : "error", rc);
+  } else {
+    lck_trace("<< ok%s", (rc == MDBX_SIGN) ? " (mutex recovered)" : "");
+  }
   return rc;
 }
 
-static void mdbx_rdt_unlock(MDBX_milieu *bk) {
-  mdbx_trace(">>");
-  int rc = mdbx_robust_unlock(bk, &bk->me_lck->li_rmutex);
-  mdbx_trace("<< rc %d", rc);
+void mdbx_lck_reader_registration_unlock(MDBX_env_t *env) {
+  lck_trace(">>");
+  int rc = mdbx_robust_unlock(env, &env->me_lck->li_rmutex);
   if (unlikely(MDBX_IS_ERROR(rc)))
-    mdbx_panic("%s() failed: errcode %d\n", mdbx_func_, rc);
+    lck_panic(env, "robust-r.unlock", rc);
+  lck_trace("<<");
 }
 
-static int mdbx_tn_lock(MDBX_milieu *bk) {
-  mdbx_trace(">>");
-  int rc = mdbx_robust_lock(bk, &bk->me_lck->li_wmutex);
-  mdbx_trace("<< rc %d", rc);
-  return MDBX_IS_ERROR(rc) ? rc : MDBX_SUCCESS;
+MDBX_error_t mdbx_lck_writer_lock(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
+  lck_trace(">> flags 0x%x%s", flags, (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "");
+  assert(env->me_wpa_txn->mt_owner != mdbx_thread_self());
+  int rc = mdbx_robust_lock(env, &env->me_lck->li_wmutex, flags);
+  if (unlikely(MDBX_IS_ERROR(rc))) {
+    lck_trace("<< %s, %d", (rc == MDBX_EBUSY) ? "busy" : "error", rc);
+    return rc;
+  } else {
+    lck_trace("<< ok%s", (rc == MDBX_SIGN) ? " (mutex recovered)" : "");
+    return MDBX_SUCCESS;
+  }
 }
 
-static void mdbx_tn_unlock(MDBX_milieu *bk) {
-  mdbx_trace(">>");
-  int rc = mdbx_robust_unlock(bk, &bk->me_lck->li_wmutex);
-  mdbx_trace("<< rc %d", rc);
+void mdbx_lck_writer_unlock(MDBX_env_t *env) {
+  lck_trace(">>");
+  int rc = mdbx_robust_unlock(env, &env->me_lck->li_wmutex);
   if (unlikely(MDBX_IS_ERROR(rc)))
-    mdbx_panic("%s() failed: errcode %d\n", mdbx_func_, rc);
-}
-
-static int internal_seize_lck(int lfd) {
-  assert(lfd != MDBX_INVALID_FD);
-
-  /* try exclusive access */
-  int rc = mdbx_lck_exclusive(lfd);
-  if (rc == 0)
-    /* got exclusive */
-    return MDBX_RESULT_TRUE;
-  if (rc == EAGAIN || rc == EACCES || rc == EBUSY || rc == EWOULDBLOCK) {
-    /* get shared access */
-    rc = mdbx_lck_shared(lfd);
-    if (rc == 0) {
-      /* got shared, try exclusive again */
-      rc = mdbx_lck_exclusive(lfd);
-      if (rc == 0)
-        /* now got exclusive */
-        return MDBX_RESULT_TRUE;
-      if (rc == EAGAIN || rc == EACCES || rc == EBUSY || rc == EWOULDBLOCK)
-        /* unable exclusive, but stay shared */
-        return MDBX_RESULT_FALSE;
-    }
-  }
-  assert(MDBX_IS_ERROR(rc));
-  return rc;
-}
-
-static int mdbx_lck_seize(MDBX_milieu *bk) {
-  assert(bk->me_dxb_fd != MDBX_INVALID_FD);
-
-  if (bk->me_lck_fd == MDBX_INVALID_FD) {
-    /* LY: without-lck mode (e.g. on read-only filesystem) */
-    int rc = mdbx_lck_op(bk->me_dxb_fd, F_SETLK, F_RDLCK, 0, LCK_WHOLE);
-    if (rc != 0) {
-      mdbx_error("%s(%s) failed: errcode %u", mdbx_func_, "without-lck", rc);
-      return rc;
-    }
-    return MDBX_RESULT_FALSE;
-  }
-
-  if ((bk->me_flags32 & MDBX_RDONLY) == 0) {
-    /* Check that another process don't operates in without-lck mode. */
-    int rc = mdbx_lck_op(bk->me_dxb_fd, F_SETLK, F_WRLCK, bk->me_pid, 1);
-    if (rc != 0) {
-      mdbx_error("%s(%s) failed: errcode %u", mdbx_func_,
-                 "lock-against-without-lck", rc);
-      return rc;
-    }
-  }
-
-  return internal_seize_lck(bk->me_lck_fd);
+    lck_panic(env, "robust-w.unlock", rc);
+  lck_trace("<<");
 }
 
 #if !__GLIBC_PREREQ(2, 12) && !defined(pthread_mutex_consistent)
 #define pthread_mutex_consistent(mutex) pthread_mutex_consistent_np(mutex)
 #endif
 
-static int __cold mutex_failed(MDBX_milieu *bk, pthread_mutex_t *mutex,
-                               int rc) {
+static int __cold mdbx_robust_mutex_failed(MDBX_env_t *env, pthread_mutex_t *mutex, int err) {
+  assert(err != EBUSY);
 #if MDBX_USE_ROBUST
-  if (rc == EOWNERDEAD) {
-    /* We own the mutex. Clean up after dead previous owner. */
-
-    int rlocked = (mutex == &bk->me_lck->li_rmutex);
-    rc = MDBX_SUCCESS;
+  if (err == EOWNERDEAD /* We own the mutex. Clean up after dead previous owner */) {
+    int rlocked = (mutex == &env->me_lck->li_rmutex);
+    err = MDBX_SUCCESS;
     if (!rlocked) {
-      if (unlikely(bk->me_txn)) {
-        /* bk is hosed if the dead thread was ours */
-        bk->me_flags |= MDBX_FATAL_ERROR;
-        bk->me_txn = NULL;
-        rc = MDBX_PANIC;
+      if (unlikely(env->me_current_txn)) {
+        /* env is hosed if the dead thread was ours */
+        env->me_flags32 |= MDBX_ENV_TAINTED;
+        env->me_current_txn = NULL;
+        err = MDBX_PANIC;
       }
     }
-    mdbx_notice("%cmutex owner died, %s", (rlocked ? 'r' : 'w'),
-                (rc ? "this process' bk is hosed" : "recovering"));
+    lck_notice("%c-mutex owner died, %s", (rlocked ? 'r' : 'w'),
+               (err ? "this process' env is hosed" : "recovering"));
 
-    int check_rc = reader_check(bk, rlocked, NULL);
-    check_rc = (check_rc == MDBX_SUCCESS) ? MDBX_RESULT_TRUE : check_rc;
+    int check_rc = check_registered_readers(env, rlocked).err;
+    check_rc = (check_rc == MDBX_SUCCESS) ? MDBX_SIGN : check_rc;
 
+    mdbx_jitter4testing(false);
     int mreco_rc = pthread_mutex_consistent(mutex);
     check_rc = (mreco_rc == 0) ? check_rc : mreco_rc;
 
+    mdbx_jitter4testing(false);
     if (unlikely(mreco_rc))
-      mdbx_error("mutex recovery failed, %s", mdbx_strerror(mreco_rc));
+      lck_error("mutex recovery failed, %s", mdbx_strerror(mreco_rc));
 
-    rc = (rc == MDBX_SUCCESS) ? check_rc : rc;
-    if (MDBX_IS_ERROR(rc))
+    err = (err == MDBX_SUCCESS) ? check_rc : err;
+    if (MDBX_IS_ERROR(err))
       pthread_mutex_unlock(mutex);
-    return rc;
+
+    mdbx_jitter4testing(false);
+    return err;
   }
+#else
+  (void)mutex;
 #endif /* MDBX_USE_ROBUST */
 
-  mdbx_error("mutex (un)lock failed, %s", mdbx_strerror(rc));
-  if (rc != EDEADLK) {
-    bk->me_flags32 |= MDBX_FATAL_ERROR;
-    rc = MDBX_PANIC;
+  lck_error("robust-mutex (un)lock failed, %s", mdbx_strerror(err));
+  if (err != EDEADLK) {
+    env->me_flags32 |= MDBX_ENV_TAINTED;
+    err = MDBX_PANIC;
   }
-  return rc;
+  return err;
 }

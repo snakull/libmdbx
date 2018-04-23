@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -13,40 +13,56 @@
  */
 
 #include "./bits.h"
+#include "./debug.h"
 #include "./proto.h"
+#include "./ualb.h"
+
+#define page_extra(fmt, ...) log_extra(MDBX_LOG_PAGE, fmt, ##__VA_ARGS__)
+#define page_trace(fmt, ...) log_trace(MDBX_LOG_PAGE, fmt, ##__VA_ARGS__)
+#define page_verbose(fmt, ...) log_verbose(MDBX_LOG_PAGE, fmt, ##__VA_ARGS__)
+#define page_info(fmt, ...) log_info(MDBX_LOG_PAGE, fmt, ##__VA_ARGS__)
+#define page_notice(fmt, ...) log_notice(MDBX_LOG_PAGE, fmt, ##__VA_ARGS__)
+#define page_warning(fmt, ...) log_warning(MDBX_LOG_PAGE, fmt, ##__VA_ARGS__)
+#define page_error(fmt, ...) log_error(MDBX_LOG_PAGE, fmt, ##__VA_ARGS__)
+#define page_panic(env, msg, err) mdbx_panic(env, MDBX_LOG_PAGE, __func__, __LINE__, "%s, error %d", msg, err)
+
+/*----------------------------------------------------------------------------*/
 
 /* Allocate memory for a page.
  * Re-use old malloc'd pages first for singletons, otherwise just malloc.
  * Set MDBX_TXN_ERROR on failure. */
-static page_t *page_malloc(MDBX_txn *txn, unsigned num) {
-  MDBX_milieu *bk = txn->mt_book;
-  page_t *np = bk->me_dpages;
-  size_t size = bk->me_psize;
+static page_t *page_malloc(MDBX_txn_t *txn, unsigned num) {
+  MDBX_env_t *env = txn->mt_env;
+  page_t *np = env->me_dpages;
+  size_t size = env->me_psize;
   if (likely(num == 1 && np)) {
     ASAN_UNPOISON_MEMORY_REGION(np, size);
-    VALGRIND_MEMPOOL_ALLOC(bk, np, size);
+    VALGRIND_MEMPOOL_ALLOC(env, np, size);
     VALGRIND_MAKE_MEM_DEFINED(&np->mp_next, sizeof(np->mp_next));
-    bk->me_dpages = np->mp_next;
+    env->me_dpages = np->mp_next;
   } else {
-    size = pgno2bytes(bk, num);
+    size = pgno2bytes(env, num);
     np = malloc(size);
     if (unlikely(!np)) {
       txn->mt_flags |= MDBX_TXN_ERROR;
       return np;
     }
-    VALGRIND_MEMPOOL_ALLOC(bk, np, size);
+    VALGRIND_MEMPOOL_ALLOC(env, np, size);
   }
 
-  if ((bk->me_flags32 & MDBX_NOMEMINIT) == 0) {
+  if ((env->me_flags32 & MDBX_NOMEMINIT) == 0) {
     /* For a single page alloc, we init everything after the page header.
      * For multi-page, we init the final page; if the caller needed that
      * many pages they will be filling in at least up to the last page. */
     size_t skip = PAGEHDRSZ;
     if (num > 1)
-      skip += pgno2bytes(bk, num - 1);
+      skip += pgno2bytes(env, num - 1);
     memset((char *)np + skip, 0, size - skip);
   }
-  VALGRIND_MAKE_MEM_UNDEFINED(np, size);
+#if MDBX_DEBUG
+  np->mp_pgno = 0;
+#endif
+  VALGRIND_MAKE_MEM_UNDEFINED_ERASE(np, size);
   np->mp_flags16 = 0;
   np->mp_pages = num;
   return np;
@@ -54,44 +70,47 @@ static page_t *page_malloc(MDBX_txn *txn, unsigned num) {
 
 /* Free a dirty page.
  * Saves singlev (not multi-page overflow) pages to a list, for future reuse. */
-static void dpage_free(MDBX_milieu *bk, page_t *dp) {
+static void dpage_free(MDBX_env_t *env, page_t *dp) {
+#if MDBX_DEBUG
+  dp->mp_pgno = MAX_PAGENO;
+#endif
   if (!IS_OVERFLOW(dp) || dp->mp_pages == 1) {
-    dp->mp_next = bk->me_dpages;
-    VALGRIND_MEMPOOL_FREE(bk, dp);
-    bk->me_dpages = dp;
+    dp->mp_next = env->me_dpages;
+    VALGRIND_MEMPOOL_FREE(env, dp);
+    env->me_dpages = dp;
   } else {
     /* large pages just get freed directly */
-    VALGRIND_MEMPOOL_FREE(bk, dp);
+    VALGRIND_MEMPOOL_FREE(env, dp);
     free(dp);
   }
 }
 
 /* Return all dirty pages to dpage list */
-static void dlist_free(MDBX_txn *txn) {
-  MDBX_milieu *bk = txn->mt_book;
+static void dlist_free(MDBX_txn_t *txn) {
+  MDBX_env_t *env = txn->mt_env;
   MDBX_ID2L dl = txn->mt_rw_dirtylist;
   size_t i, n = dl[0].mid;
 
-  for (i = 1; i <= n; i++) {
-    dpage_free(bk, dl[i].mptr);
-  }
+  for (i = 1; i <= n; i++)
+    dpage_free(env, dl[i].mptr);
+
   dl[0].mid = 0;
 }
 
-static void __cold kill_page(MDBX_milieu *bk, pgno_t pgno) {
-  const size_t offs = pgno2bytes(bk, pgno);
+static void __cold kill_page(MDBX_env_t *env, pgno_t pgno) {
+  const size_t offs = pgno2bytes(env, pgno);
   const size_t shift = offsetof(page_t, mp_pages);
 
-  if (bk->me_flags32 & MDBX_WRITEMAP) {
-    page_t *mp = (page_t *)(bk->me_map + offs);
-    memset(&mp->mp_pages, 0x6F /* 'o', 111 */, bk->me_psize - shift);
-    VALGRIND_MAKE_MEM_NOACCESS(&mp->mp_pages, bk->me_psize - shift);
-    ASAN_POISON_MEMORY_REGION(&mp->mp_pages, bk->me_psize - shift);
+  if (env->me_flags32 & MDBX_WRITEMAP) {
+    page_t *mp = (page_t *)(env->me_map + offs);
+    memset(&mp->mp_pages, 0x6F /* 'o', 111 */, env->me_psize - shift);
+    VALGRIND_MAKE_MEM_NOACCESS(&mp->mp_pages, env->me_psize - shift);
+    ASAN_POISON_MEMORY_REGION(&mp->mp_pages, env->me_psize - shift);
   } else {
-    intptr_t len = bk->me_psize - shift;
+    intptr_t len = env->me_psize - shift;
     void *buf = alloca(len);
     memset(buf, 0x6F /* 'o', 111 */, len);
-    (void)mdbx_pwrite(bk->me_dxb_fd, buf, len, offs + shift);
+    (void)mdbx_pwrite(env->me_dxb_fd, buf, len, offs + shift);
   }
 }
 
@@ -108,10 +127,11 @@ static void __cold kill_page(MDBX_milieu *bk, pgno_t pgno) {
 static int page_loose(cursor_t *mc, page_t *mp) {
   int loose = 0;
   const pgno_t pgno = mp->mp_pgno;
-  MDBX_txn *txn = mc->mc_txn;
+  MDBX_txn_t *txn = mc->mc_txn;
 
   if ((mp->mp_flags16 & P_DIRTY) && mc->mc_aht != mc->mc_txn->txn_aht_array) {
     if (txn->mt_parent) {
+      mdbx_assert(txn->mt_env, (txn->mt_env->me_flags32 & MDBX_WRITEMAP) == 0);
       MDBX_ID2 *dl = txn->mt_rw_dirtylist;
       /* If txn has a parent,
        * make sure the page is in our dirty list. */
@@ -119,9 +139,8 @@ static int page_loose(cursor_t *mc, page_t *mp) {
         unsigned x = mdbx_mid2l_search(dl, pgno);
         if (x <= dl[0].mid && dl[x].mid == pgno) {
           if (unlikely(mp != dl[x].mptr)) { /* bad cursor? */
-            mdbx_error("wrong page 0x%p #%" PRIaPGNO
-                       " in the dirtylist[%d], expecting %p",
-                       dl[x].mptr, pgno, x, mp);
+            mdbx_error("wrong page 0x%p #%" PRIaPGNO " in the dirtylist[%d], expecting %p", dl[x].mptr, pgno,
+                       x, mp);
             mc->mc_state8 &= ~(C_INITIALIZED | C_EOF);
             txn->mt_flags |= MDBX_TXN_ERROR;
             return MDBX_PROBLEM;
@@ -138,10 +157,10 @@ static int page_loose(cursor_t *mc, page_t *mp) {
   if (loose) {
     mdbx_debug("loosen db %d page %" PRIaPGNO, DAAH(mc), mp->mp_pgno);
     page_t **link = &NEXT_LOOSE_PAGE(mp);
-    if (unlikely(txn->mt_book->me_flags32 & MDBX_PAGEPERTURB)) {
-      kill_page(txn->mt_book, pgno);
-      VALGRIND_MAKE_MEM_UNDEFINED(link, sizeof(page_t *));
+    if (unlikely(txn->mt_env->me_flags32 & MDBX_PAGEPERTURB)) {
+      kill_page(txn->mt_env, pgno);
       ASAN_UNPOISON_MEMORY_REGION(link, sizeof(page_t *));
+      VALGRIND_MAKE_MEM_UNDEFINED_ERASE(link, sizeof(page_t *));
     }
     *link = txn->mt_loose_pages;
     txn->mt_loose_pages = mp;
@@ -182,18 +201,18 @@ tail_recursion:
 
     if ((cursor->mc_kind8 & S_HAVESUB) && page && (page->mp_flags16 & P_LEAF)) {
       node_t *leaf = node_ptr(page, cursor->mc_ki[cursor->mc_snum - 1]);
-      /* Proceed to subordinate if it is at a sub-database */
+      /* Proceed to nested if it is at a sub-database */
       if (leaf->node_flags8 & NODE_SUBTREE) {
-        cursor = cursor_subordinate(cursor);
+        cursor = cursor_nested(cursor);
         goto tail_recursion;
       }
     }
   }
 }
 
-static int pages_xkeep(MDBX_txn *txn, unsigned pageflags_match, bool all) {
+static int pages_xkeep(MDBX_txn_t *txn, unsigned pageflags_match, bool all) {
   for (unsigned i = 0; i < txn->txn_ah_num; ++i) {
-    for (MDBX_cursor *mc = txn->mt_cursors[i]; mc != nullptr; mc = mc->mc_next)
+    for (MDBX_cursor_t *mc = txn->mt_cursors[i]; mc != nullptr; mc = mc->mc_next)
       cursor_toogle_keep(&mc->primal, pageflags_match);
   }
 
@@ -217,7 +236,7 @@ static int pages_xkeep(MDBX_txn *txn, unsigned pageflags_match, bool all) {
 }
 
 /* Add a page to the txn's dirty list */
-static void mdbx_page_dirty(MDBX_txn *txn, page_t *mp) {
+static void mdbx_page_dirty(MDBX_txn_t *txn, page_t *mp) {
   MDBX_ID2 mid;
   int rc, (*insert)(MDBX_ID2L, MDBX_ID2 *);
 
@@ -230,6 +249,7 @@ static void mdbx_page_dirty(MDBX_txn *txn, page_t *mp) {
   mid.mptr = mp;
   rc = insert(txn->mt_rw_dirtylist, &mid);
   assert(rc == 0);
+  (void)rc;
   txn->mt_dirtyroom--;
 }
 
@@ -242,7 +262,7 @@ static void mdbx_page_dirty(MDBX_txn *txn, page_t *mp) {
  *
  * 2) child txns may run out of space if their parents dirtied a
  *  lot of pages and never spilled them. TODO: we probably should do
- *  a preemptive spill during mdbx_tn_begin() of a child txn, if
+ *  a preemptive spill during mdbx_begin() of a child txn, if
  *  the parent's dirtyroom is below a given threshold.
  *
  * Otherwise, if not using nested txns, it is expected that apps will
@@ -267,11 +287,11 @@ static void mdbx_page_dirty(MDBX_txn *txn, page_t *mp) {
  * [in] data  For a put operation, the data being stored.
  *
  * Returns 0 on success, non-zero on failure. */
-static int page_spill(cursor_t *cursor, MDBX_iov *key, MDBX_iov *data) {
+static int page_spill(cursor_t *cursor, MDBX_iov_t *key, MDBX_iov_t *data) {
   if (cursor->mc_kind8 & S_SUBCURSOR)
     return MDBX_SUCCESS;
 
-  MDBX_txn *txn = cursor->mc_txn;
+  MDBX_txn_t *txn = cursor->mc_txn;
   /* Estimate how much space this op will take */
   pgno_t need = cursor->mc_aht->aa.depth16 + aht_gaco(txn)->aa.depth16;
   /* Named AAs also dirty the main AA */
@@ -280,10 +300,10 @@ static int page_spill(cursor_t *cursor, MDBX_iov *key, MDBX_iov *data) {
   /* For puts, roughly factor in the key+data size */
   if (key) {
     size_t sz = LEAFSIZE(key, data);
-    if (sz > txn->mt_book->me_nodemax)
+    if (sz > txn->mt_env->me_nodemax)
       /* put requires an overflow page */
-      sz += sizeof(pgno_t) + PAGEHDRSZ + txn->mt_book->me_psize - 1;
-    need += bytes2pgno(txn->mt_book, sz);
+      sz += sizeof(pgno_t) + PAGEHDRSZ + txn->mt_env->me_psize - 1;
+    need += bytes2pgno(txn->mt_env, sz);
   }
 
   if (likely(txn->mt_dirtyroom > need))
@@ -324,18 +344,18 @@ static int page_spill(cursor_t *cursor, MDBX_iov *key, MDBX_iov *data) {
   MDBX_ID2L dl = txn->mt_rw_dirtylist;
   unsigned left_dirty;
   for (left_dirty = dl[0].mid; left_dirty && need; left_dirty--) {
-    pgno_t pn = dl[left_dirty].mid << 1;
+    const pgno_t pgno2 = dl[left_dirty].mid << 1;
     page_t *dp = dl[left_dirty].mptr;
     if (dp->mp_flags16 & (P_LOOSE | P_KEEP))
       continue;
     /* Can't spill twice,
      * make sure it's not already in a parent's spill list. */
     if (txn->mt_parent) {
-      MDBX_txn *tx2;
+      MDBX_txn_t *tx2;
       for (tx2 = txn->mt_parent; tx2; tx2 = tx2->mt_parent) {
         if (tx2->mt_spill_pages) {
-          unsigned j = mdbx_pnl_search(tx2->mt_spill_pages, pn);
-          if (j <= tx2->mt_spill_pages[0] && tx2->mt_spill_pages[j] == pn) {
+          size_t pos = mdbx_pnl_search(tx2->mt_spill_pages, pgno2);
+          if (pos <= tx2->mt_spill_pages[0] && tx2->mt_spill_pages[pos] == pgno2) {
             dp->mp_flags16 |= P_KEEP;
             break;
           }
@@ -344,7 +364,7 @@ static int page_spill(cursor_t *cursor, MDBX_iov *key, MDBX_iov *data) {
       if (tx2)
         continue;
     }
-    rc = mdbx_pnl_append(&txn->mt_spill_pages, pn);
+    rc = mdbx_pnl_append(&txn->mt_spill_pages, pgno2);
     if (unlikely(rc != MDBX_SUCCESS))
       goto bailout;
     need--;
@@ -364,425 +384,6 @@ bailout:
   return rc;
 }
 
-/* Allocate page numbers and memory for writing.  Maintain me_last_reclaimed,
- * me_reclaimed_pglist and mt_next_pgno.  Set MDBX_TXN_ERROR on failure.
- *
- * If there are free pages available from older transactions, they
- * are re-used first. Otherwise allocate a new page at mt_next_pgno.
- * Do not modify the GACO, just merge GACO records into me_reclaimed_pglist
- * and move me_last_reclaimed to say which records were consumed.  Only this
- * function can create me_reclaimed_pglist and move
- * me_last_reclaimed/mt_next_pgno.
- *
- * [in] mc    cursor A cursor handle identifying the transaction and
- *            database for which we are allocating.
- * [in] num   the number of pages to allocate.
- * [out] mp   Address of the allocated page(s). Requests for multiple pages
- *            will always be satisfied by a single contiguous chunk of memory.
- *
- * Returns 0 on success, non-zero on failure.*/
-
-static int page_alloc(cursor_t *mc, unsigned num, page_t **mp, int flags) {
-  int rc;
-  MDBX_txn *txn = mc->mc_txn;
-  MDBX_milieu *bk = txn->mt_book;
-  page_t *np;
-
-  if (likely(flags & MDBX_ALLOC_GC)) {
-    flags |= bk->me_flags32 & (MDBX_COALESCE | MDBX_LIFORECLAIM);
-    if (unlikely(mc->mc_state8 & C_RECLAIMING)) {
-      /* If mc is updating the GACO, then the freelist cannot play
-       * catch-up with itself by growing while trying to save it. */
-      flags &=
-          ~(MDBX_ALLOC_GC | MDBX_ALLOC_KICK | MDBX_COALESCE | MDBX_LIFORECLAIM);
-    }
-  }
-
-  if (likely(flags & MDBX_ALLOC_CACHE)) {
-    /* If there are any loose pages, just use them */
-    assert(mp && num);
-    if (likely(num == 1 && txn->mt_loose_pages)) {
-      np = txn->mt_loose_pages;
-      txn->mt_loose_pages = NEXT_LOOSE_PAGE(np);
-      txn->mt_loose_count--;
-      mdbx_debug("db %d use loose page %" PRIaPGNO, DAAH(mc), np->mp_pgno);
-      ASAN_UNPOISON_MEMORY_REGION(np, bk->me_psize);
-      assert(np->mp_pgno < txn->mt_next_pgno);
-      *mp = np;
-      return MDBX_SUCCESS;
-    }
-  }
-
-  assert(mdbx_pnl_check(bk->me_reclaimed_pglist));
-  pgno_t pgno, *repg_list = bk->me_reclaimed_pglist;
-  unsigned repg_pos = 0, repg_len = repg_list ? repg_list[0] : 0;
-  txnid_t oldest = 0, last = 0;
-  const unsigned wanna_range = num - 1;
-
-  while (1) { /* RBR-kick retry loop */
-    /* If our dirty list is already full, we can't do anything */
-    if (unlikely(txn->mt_dirtyroom == 0)) {
-      rc = MDBX_TXN_FULL;
-      goto fail;
-    }
-
-    MDBX_cursor recur;
-    for (enum MDBX_cursor_op op = MDBX_FIRST;;
-         op = (flags & MDBX_LIFORECLAIM) ? MDBX_PREV : MDBX_NEXT) {
-      MDBX_iov key, data;
-
-      /* Seek a big enough contiguous page range.
-       * Prefer pages with lower pgno. */
-      assert(mdbx_pnl_check(bk->me_reclaimed_pglist));
-      if (likely(flags & MDBX_ALLOC_CACHE) && repg_len > wanna_range &&
-          (!(flags & MDBX_COALESCE) || op == MDBX_FIRST)) {
-#if MDBX_PNL_ASCENDING
-        for (repg_pos = 1; repg_pos <= repg_len - wanna_range; ++repg_pos) {
-          pgno = repg_list[repg_pos];
-          if (likely(repg_list[repg_pos + wanna_range - 1] ==
-                     pgno + wanna_range - 1))
-            goto done;
-        }
-#else
-        repg_pos = repg_len;
-        do {
-          pgno = repg_list[repg_pos];
-          if (likely(repg_list[repg_pos - wanna_range] == pgno + wanna_range))
-            goto done;
-        } while (--repg_pos > wanna_range);
-#endif /* MDBX_PNL sort-order */
-      }
-
-      if (op == MDBX_FIRST) { /* 1st iteration, setup cursor, etc */
-        if (unlikely(!(flags & MDBX_ALLOC_GC)))
-          break /* reclaiming is prohibited for now */;
-
-        /* Prepare to fetch more and coalesce */
-        oldest =
-            (flags & MDBX_LIFORECLAIM) ? find_oldest(txn) : bk->me_oldest[0];
-        rc = cursor_init(&recur, txn, aht_gaco(txn));
-        if (unlikely(rc != MDBX_SUCCESS))
-          break;
-        if (flags & MDBX_LIFORECLAIM) {
-          /* Begin from oldest reader if any */
-          if (oldest > 2) {
-            last = oldest - 1;
-            op = MDBX_SET_RANGE;
-          }
-        } else if (bk->me_last_reclaimed) {
-          /* Continue lookup from bk->me_last_reclaimed to oldest reader */
-          last = bk->me_last_reclaimed;
-          op = MDBX_SET_RANGE;
-        }
-
-        key.iov_base = &last;
-        key.iov_len = sizeof(last);
-      }
-
-      if (!(flags & MDBX_LIFORECLAIM)) {
-        /* Do not try fetch more if the record will be too recent */
-        if (op != MDBX_FIRST && ++last >= oldest) {
-          oldest = find_oldest(txn);
-          if (oldest <= last)
-            break;
-        }
-      }
-
-      rc = mdbx_cursor_get(&recur, &key, nullptr, op);
-      if (rc == MDBX_NOTFOUND && (flags & MDBX_LIFORECLAIM)) {
-        if (op == MDBX_SET_RANGE)
-          continue;
-        if (oldest < find_oldest(txn)) {
-          oldest = *bk->me_oldest;
-          last = oldest - 1;
-          key.iov_base = &last;
-          key.iov_len = sizeof(last);
-          op = MDBX_SET_RANGE;
-          rc = mdbx_cursor_get(&recur, &key, nullptr, op);
-        }
-      }
-      if (unlikely(rc != MDBX_SUCCESS)) {
-        if (rc == MDBX_NOTFOUND)
-          break;
-        goto fail;
-      }
-
-      last = *(txnid_t *)key.iov_base;
-      if (oldest <= last) {
-        oldest = find_oldest(txn);
-        if (oldest <= last) {
-          if (flags & MDBX_LIFORECLAIM)
-            continue;
-          break;
-        }
-      }
-
-      if (flags & MDBX_LIFORECLAIM) {
-        /* skip IDs of records that already reclaimed */
-        if (txn->mt_lifo_reclaimed) {
-          unsigned i;
-          for (i = (unsigned)txn->mt_lifo_reclaimed[0]; i > 0; --i)
-            if (txn->mt_lifo_reclaimed[i] == last)
-              break;
-          if (i)
-            continue;
-        }
-      }
-
-      /* Reading next GACO record */
-      np = recur.primal.mc_pg[recur.primal.mc_top];
-      node_t *leaf = node_ptr(np, recur.primal.mc_ki[recur.primal.mc_top]);
-      if (unlikely((rc = node_read(&recur.primal, leaf, &data)) !=
-                   MDBX_SUCCESS))
-        goto fail;
-
-      if ((flags & MDBX_LIFORECLAIM) && !txn->mt_lifo_reclaimed) {
-        txn->mt_lifo_reclaimed = mdbx_txl_alloc();
-        if (unlikely(!txn->mt_lifo_reclaimed)) {
-          rc = MDBX_ENOMEM;
-          goto fail;
-        }
-      }
-
-      /* Append PNL from GACO record to me_reclaimed_pglist */
-      pgno_t *re_pnl = (pgno_t *)data.iov_base;
-      assert(re_pnl[0] == 0 ||
-             data.iov_len == (re_pnl[0] + 1) * sizeof(pgno_t));
-      assert(mdbx_pnl_check(re_pnl));
-      repg_pos = re_pnl[0];
-      if (!repg_list) {
-        if (unlikely(!(bk->me_reclaimed_pglist = repg_list =
-                           mdbx_pnl_alloc(repg_pos)))) {
-          rc = MDBX_ENOMEM;
-          goto fail;
-        }
-      } else {
-        if (unlikely((rc = mdbx_pnl_need(&bk->me_reclaimed_pglist, repg_pos)) !=
-                     0))
-          goto fail;
-        repg_list = bk->me_reclaimed_pglist;
-      }
-
-      /* Remember ID of GACO record */
-      if (flags & MDBX_LIFORECLAIM) {
-        if ((rc = mdbx_txl_append(&txn->mt_lifo_reclaimed, last)) != 0)
-          goto fail;
-      }
-      bk->me_last_reclaimed = last;
-
-      if (mdbx_debug_enabled(MDBX_DBG_EXTRA)) {
-        mdbx_debug_extra("PNL read txn %" PRIaTXN " root %" PRIaPGNO
-                         " num %u, PNL",
-                         last, aht_gaco(txn)->aa.root, repg_pos);
-        unsigned i;
-        for (i = repg_pos; i; i--)
-          mdbx_debug_extra_print(" %" PRIaPGNO "", re_pnl[i]);
-        mdbx_debug_extra_print("\n");
-      }
-
-      /* Merge in descending sorted order */
-      mdbx_pnl_xmerge(repg_list, re_pnl);
-      repg_len = repg_list[0];
-      if (unlikely((flags & MDBX_ALLOC_CACHE) == 0)) {
-        /* Done for a kick-reclaim mode, actually no page needed */
-        return MDBX_SUCCESS;
-      }
-
-      assert(repg_len == 0 || repg_list[repg_len] < txn->mt_next_pgno);
-      if (repg_len) {
-        /* Refund suitable pages into "unallocated" space */
-        pgno_t tail = txn->mt_next_pgno;
-        pgno_t *const begin = repg_list + 1;
-        pgno_t *const end = begin + repg_len;
-        pgno_t *higest;
-#if MDBX_PNL_ASCENDING
-        for (higest = end; --higest >= begin;) {
-#else
-        for (higest = begin; higest < end; ++higest) {
-#endif /* MDBX_PNL sort-order */
-          assert(*higest >= NUM_METAS && *higest < tail);
-          if (*higest != tail - 1)
-            break;
-          tail -= 1;
-        }
-        if (tail != txn->mt_next_pgno) {
-#if MDBX_PNL_ASCENDING
-          repg_len = (unsigned)(higest + 1 - begin);
-#else
-          repg_len -= (unsigned)(higest - begin);
-          for (pgno_t *move = begin; higest < end; ++move, ++higest)
-            *move = *higest;
-#endif /* MDBX_PNL sort-order */
-          repg_list[0] = repg_len;
-          mdbx_info("refunded %" PRIaPGNO " pages: %" PRIaPGNO " -> %" PRIaPGNO,
-                    tail - txn->mt_next_pgno, tail, txn->mt_next_pgno);
-          txn->mt_next_pgno = tail;
-          assert(mdbx_pnl_check(bk->me_reclaimed_pglist));
-        }
-      }
-
-      /* Don't try to coalesce too much. */
-      if (repg_len > MDBX_PNL_UM_SIZE / 2)
-        break;
-      if (flags & MDBX_COALESCE) {
-        if (repg_len /* current size */ >= bk->me_maxfree_1pg / 2 ||
-            repg_pos /* prev size */ >= bk->me_maxfree_1pg / 4)
-          flags &= ~MDBX_COALESCE;
-      }
-    }
-
-    if ((flags & (MDBX_COALESCE | MDBX_ALLOC_CACHE)) ==
-            (MDBX_COALESCE | MDBX_ALLOC_CACHE) &&
-        repg_len > wanna_range) {
-#if MDBX_PNL_ASCENDING
-      for (repg_pos = 1; repg_pos <= repg_len - wanna_range; ++repg_pos) {
-        pgno = repg_list[repg_pos];
-        if (likely(repg_list[repg_pos + wanna_range - 1] ==
-                   pgno + wanna_range - 1))
-          goto done;
-      }
-#else
-      repg_pos = repg_len;
-      do {
-        pgno = repg_list[repg_pos];
-        if (likely(repg_list[repg_pos - wanna_range] == pgno + wanna_range))
-          goto done;
-      } while (--repg_pos > wanna_range);
-#endif /* MDBX_PNL sort-order */
-    }
-
-    /* Use new pages from the map when nothing suitable in the GACO */
-    repg_pos = 0;
-    pgno = txn->mt_next_pgno;
-    rc = MDBX_MAP_FULL;
-    const pgno_t next = pgno_add(pgno, num);
-    if (likely(next <= txn->mt_end_pgno)) {
-      rc = MDBX_NOTFOUND;
-      if (likely(flags & MDBX_ALLOC_NEW))
-        goto done;
-    }
-
-    const meta_t *head = meta_head(bk);
-    if ((flags & MDBX_ALLOC_GC) &&
-        ((flags & MDBX_ALLOC_KICK) || rc == MDBX_MAP_FULL)) {
-      meta_t *steady = meta_steady(bk);
-
-      if (oldest == meta_txnid_stable(bk, steady) && !META_IS_STEADY(head) &&
-          META_IS_STEADY(steady)) {
-        /* LY: Here an RBR was happened:
-         *  - all pages had allocated;
-         *  - reclaiming was stopped at the last steady-sync;
-         *  - the head-sync is weak.
-         * Now we need make a sync to resume reclaiming. If both
-         * MDBX_NOSYNC and MDBX_MAPASYNC flags are set, then assume that
-         * utterly no-sync write mode was requested. In such case
-         * don't make a steady-sync, but only a legacy-mode checkpoint,
-         * just for resume reclaiming only, not for data consistency. */
-
-        mdbx_debug("kick-gc: head %" PRIaTXN "-%s, tail %" PRIaTXN
-                   "-%s, oldest %" PRIaTXN "",
-                   meta_txnid_stable(bk, head), durable_str(head),
-                   meta_txnid_stable(bk, steady), durable_str(steady), oldest);
-
-        const unsigned syncflags = F_ISSET(bk->me_flags32, MDBX_UTTERLY_NOSYNC)
-                                       ? bk->me_flags32
-                                       : bk->me_flags32 & MDBX_WRITEMAP;
-        meta_t meta = *head;
-        if (mdbx_sync_locked(bk, syncflags, &meta) == MDBX_SUCCESS) {
-          txnid_t snap = find_oldest(txn);
-          if (snap > oldest)
-            continue;
-        }
-      }
-
-      if (rc == MDBX_MAP_FULL && oldest < txn->mt_txnid - 1) {
-        if (rbr(bk, oldest) > oldest)
-          continue;
-      }
-    }
-
-    if (rc == MDBX_MAP_FULL && next < head->mm_geo.upper) {
-      mdbx_assert(bk, next > txn->mt_end_pgno);
-      pgno_t aligned = pgno_align2os_pgno(
-          bk, pgno_add(next, head->mm_geo.grow16 - next % head->mm_geo.grow16));
-
-      if (aligned > head->mm_geo.upper)
-        aligned = head->mm_geo.upper;
-      mdbx_assert(bk, aligned > txn->mt_end_pgno);
-
-      mdbx_info("try growth datafile to %" PRIaPGNO " pages (+%" PRIaPGNO ")",
-                aligned, aligned - txn->mt_end_pgno);
-      rc = mdbx_mapresize(bk, aligned, head->mm_geo.upper);
-      if (rc == MDBX_SUCCESS) {
-        assert(txn->mt_end_pgno >= next);
-        if (!mp)
-          return rc;
-        goto done;
-      }
-
-      mdbx_warning("unable growth datafile to %" PRIaPGNO "pages (+%" PRIaPGNO
-                   "), errcode %d",
-                   aligned, aligned - txn->mt_end_pgno, rc);
-    }
-
-  fail:
-    assert(mdbx_pnl_check(bk->me_reclaimed_pglist));
-    if (mp) {
-      *mp = nullptr;
-      txn->mt_flags |= MDBX_TXN_ERROR;
-    }
-    assert(rc);
-    return rc;
-  }
-
-done:
-  assert(mp && num);
-  assert(pgno >= NUM_METAS);
-  if (unlikely(pgno < NUM_METAS)) {
-    rc = MDBX_PANIC;
-    goto fail;
-  }
-
-  if (bk->me_flags32 & MDBX_WRITEMAP) {
-    np = pgno2page(bk, pgno);
-    /* LY: reset no-access flag from kill_page() */
-    VALGRIND_MAKE_MEM_UNDEFINED(np, pgno2bytes(bk, num));
-    ASAN_UNPOISON_MEMORY_REGION(np, pgno2bytes(bk, num));
-  } else {
-    if (unlikely(!(np = page_malloc(txn, num)))) {
-      rc = MDBX_ENOMEM;
-      goto fail;
-    }
-  }
-
-  if (repg_pos) {
-    assert(pgno < txn->mt_next_pgno);
-    assert(pgno == repg_list[repg_pos]);
-    /* Cutoff allocated pages from me_reclaimed_pglist */
-    repg_list[0] = repg_len -= num;
-    for (unsigned i = repg_pos - num; i < repg_len;)
-      repg_list[++i] = repg_list[++repg_pos];
-    assert(mdbx_pnl_check(bk->me_reclaimed_pglist));
-  } else {
-    txn->mt_next_pgno = pgno + num;
-    assert(txn->mt_next_pgno <= txn->mt_end_pgno);
-  }
-
-  if (bk->me_flags32 & MDBX_PAGEPERTURB)
-    memset(np, 0x71 /* 'q', 113 */, pgno2bytes(bk, num));
-  VALGRIND_MAKE_MEM_UNDEFINED(np, pgno2bytes(bk, num));
-
-  np->mp_pgno = pgno;
-  np->mp_leaf2_ksize16 = 0;
-  np->mp_flags16 = 0;
-  np->mp_pages = num;
-  mdbx_page_dirty(txn, np);
-  *mp = np;
-
-  assert(mdbx_pnl_check(bk->me_reclaimed_pglist));
-  return MDBX_SUCCESS;
-}
-
 /* Copy the used portions of a non-overflow page.
  * [in] dst page to copy into
  * [in] src page to copy from
@@ -798,8 +399,7 @@ static void page_copy(page_t *dst, page_t *src, unsigned psize) {
   if ((unused &= -Align) && !IS_DFL(src)) {
     upper = (upper + PAGEHDRSZ) & -Align;
     memcpy(dst, src, (lower + PAGEHDRSZ + (Align - 1)) & -Align);
-    memcpy((pgno_t *)((char *)dst + upper), (pgno_t *)((char *)src + upper),
-           psize - upper);
+    memcpy((pgno_t *)((char *)dst + upper), (pgno_t *)((char *)src + upper), psize - upper);
   } else {
     memcpy(dst, src, psize - unused);
   }
@@ -814,42 +414,39 @@ static void page_copy(page_t *dst, page_t *src, unsigned psize) {
  * [in] mp    the page being referenced. It must not be dirty.
  * [out] ret  the writable page, if any.
  *            ret is unchanged if mp wasn't spilled. */
-static int page_unspill(MDBX_txn *txn, page_t *mp, page_t **ret) {
-  MDBX_milieu *bk = txn->mt_book;
-  const MDBX_txn *tx2;
-  unsigned x;
-  pgno_t pgno = mp->mp_pgno, pn = pgno << 1;
+static int page_unspill(MDBX_txn_t *txn, page_t *mp, page_t **ret) {
+  MDBX_env_t *env = txn->mt_env;
+  const pgno_t pgno = mp->mp_pgno, pgno2 = pgno << 1;
 
-  for (tx2 = txn; tx2; tx2 = tx2->mt_parent) {
+  for (const MDBX_txn_t *tx2 = txn; tx2; tx2 = tx2->mt_parent) {
     if (!tx2->mt_spill_pages)
       continue;
-    x = mdbx_pnl_search(tx2->mt_spill_pages, pn);
-    if (x <= tx2->mt_spill_pages[0] && tx2->mt_spill_pages[x] == pn) {
-      page_t *np;
-      int num;
+    size_t pos = mdbx_pnl_search(tx2->mt_spill_pages, pgno2);
+    if (pos <= tx2->mt_spill_pages[0] && tx2->mt_spill_pages[pos] == pgno2) {
       if (txn->mt_dirtyroom == 0)
         return MDBX_TXN_FULL;
-      num = IS_OVERFLOW(mp) ? mp->mp_pages : 1;
-      if (bk->me_flags32 & MDBX_WRITEMAP) {
+      int num = IS_OVERFLOW(mp) ? mp->mp_pages : 1;
+      page_t *np;
+      if (env->me_flags32 & MDBX_WRITEMAP) {
         np = mp;
       } else {
         np = page_malloc(txn, num);
         if (unlikely(!np))
           return MDBX_ENOMEM;
         if (unlikely(num > 1))
-          memcpy(np, mp, pgno2bytes(bk, num));
+          memcpy(np, mp, pgno2bytes(env, num));
         else
-          page_copy(np, mp, bk->me_psize);
+          page_copy(np, mp, env->me_psize);
       }
       mdbx_debug("unspill page %" PRIaPGNO, mp->mp_pgno);
       if (tx2 == txn) {
         /* If in current txn, this page is no longer spilled.
          * If it happens to be the last page, truncate the spill list.
          * Otherwise mark it as deleted by setting the LSB. */
-        if (x == txn->mt_spill_pages[0])
+        if (pos == txn->mt_spill_pages[0])
           txn->mt_spill_pages[0]--;
         else
-          txn->mt_spill_pages[x] |= 1;
+          txn->mt_spill_pages[pos] |= 1;
       } /* otherwise, if belonging to a parent txn, the
          * page remains spilled until child commits */
 
@@ -866,8 +463,8 @@ static int page_unspill(MDBX_txn *txn, page_t *mp, page_t **ret) {
  * [in] txn   the transaction that's being committed
  * [in] keep  number of initial pages in dirtylist to keep dirty.
  * Returns 0 on success, non-zero on failure. */
-static int page_flush(MDBX_txn *txn, pgno_t keep) {
-  MDBX_milieu *bk = txn->mt_book;
+static int page_flush(MDBX_txn_t *txn, pgno_t keep) {
+  MDBX_env_t *env = txn->mt_env;
   MDBX_ID2L dl = txn->mt_rw_dirtylist;
   unsigned i, j, pagecount = dl[0].mid;
   int rc;
@@ -881,7 +478,7 @@ static int page_flush(MDBX_txn *txn, pgno_t keep) {
 
   j = i = keep;
 
-  if (bk->me_flags32 & MDBX_WRITEMAP) {
+  if (env->me_flags32 & MDBX_WRITEMAP) {
     /* Clear dirty flags */
     while (++i <= pagecount) {
       dp = dl[i].mptr;
@@ -893,8 +490,7 @@ static int page_flush(MDBX_txn *txn, pgno_t keep) {
       }
       dp->mp_flags16 &= ~P_DIRTY;
       dp->page_checksum = 0 /* TODO */;
-      bk->me_lck->li_dirty_volume +=
-          IS_OVERFLOW(dp) ? pgno2bytes(bk, dp->mp_pages) : bk->me_psize;
+      env->me_lck->li_dirty_volume += IS_OVERFLOW(dp) ? pgno2bytes(env, dp->mp_pages) : env->me_psize;
     }
     goto done;
   }
@@ -913,15 +509,15 @@ static int page_flush(MDBX_txn *txn, pgno_t keep) {
       /* clear dirty flag */
       dp->mp_flags16 &= ~P_DIRTY;
       dp->page_checksum = 0 /* TODO */;
-      pos = pgno2bytes(bk, pgno);
-      size = IS_OVERFLOW(dp) ? pgno2bytes(bk, dp->mp_pages) : bk->me_psize;
-      bk->me_lck->li_dirty_volume += size;
+      pos = pgno2bytes(env, pgno);
+      size = IS_OVERFLOW(dp) ? pgno2bytes(env, dp->mp_pages) : env->me_psize;
+      env->me_lck->li_dirty_volume += size;
     }
     /* Write up to MDBX_COMMIT_PAGES dirty pages at a time. */
     if (pos != next_pos || n == MDBX_COMMIT_PAGES || wsize + size > MAX_WRITE) {
       if (n) {
         /* Write previous page(s) */
-        rc = mdbx_pwritev(bk->me_dxb_fd, iov, n, wpos, wsize);
+        rc = mdbx_pwritev(env->me_dxb_fd, iov, n, wpos, wsize);
         if (unlikely(rc != MDBX_SUCCESS)) {
           mdbx_debug("Write error: %s", strerror(rc));
           return rc;
@@ -941,7 +537,7 @@ static int page_flush(MDBX_txn *txn, pgno_t keep) {
     n++;
   }
 
-  mdbx_invalidate_cache(bk->me_map, pgno2bytes(bk, txn->mt_next_pgno));
+  mdbx_invalidate_cache(env->me_map, pgno2bytes(env, txn->mt_next_pgno));
 
   for (i = keep; ++i <= pagecount;) {
     dp = dl[i].mptr;
@@ -951,7 +547,7 @@ static int page_flush(MDBX_txn *txn, pgno_t keep) {
       dl[j].mid = dp->mp_pgno;
       continue;
     }
-    dpage_free(bk, dp);
+    dpage_free(env, dp);
   }
 
 done:

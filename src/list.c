@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -13,11 +13,24 @@
  */
 
 #include "./bits.h"
+#include "./debug.h"
 #include "./proto.h"
+#include "./ualb.h"
+
+#define list_extra(fmt, ...) log_extra(MDBX_LOG_LIST, fmt, ##__VA_ARGS__)
+#define list_trace(fmt, ...) log_trace(MDBX_LOG_LIST, fmt, ##__VA_ARGS__)
+#define list_verbose(fmt, ...) log_verbose(MDBX_LOG_LIST, fmt, ##__VA_ARGS__)
+#define list_info(fmt, ...) log_info(MDBX_LOG_LIST, fmt, ##__VA_ARGS__)
+#define list_notice(fmt, ...) log_notice(MDBX_LOG_LIST, fmt, ##__VA_ARGS__)
+#define list_warning(fmt, ...) log_warning(MDBX_LOG_LIST, fmt, ##__VA_ARGS__)
+#define list_error(fmt, ...) log_error(MDBX_LOG_LIST, fmt, ##__VA_ARGS__)
+#define list_panic(env, msg, err) mdbx_panic(env, MDBX_LOG_LIST, __func__, __LINE__, "%s, error %d", msg, err)
+
+/*----------------------------------------------------------------------------*/
 
 /* Allocate an PNL.
  * Allocates memory for an PNL of the given size.
- * Returns PNL on success, nullptr on failure. */
+ * Returns PNL on succsess, nullptr on failure. */
 static MDBX_PNL mdbx_pnl_alloc(size_t size) {
   MDBX_PNL pl = malloc((size + 2) * sizeof(pgno_t));
   if (likely(pl)) {
@@ -29,9 +42,8 @@ static MDBX_PNL mdbx_pnl_alloc(size_t size) {
 
 static MDBX_TXL mdbx_txl_alloc(void) {
   const size_t malloc_overhead = sizeof(void *) * 2;
-  const size_t bytes = mdbx_roundup2(malloc_overhead + sizeof(txnid_t) * 61,
-                                     MDBX_CACHELINE_SIZE) -
-                       malloc_overhead;
+  const size_t bytes =
+      mdbx_roundup2(malloc_overhead + sizeof(txnid_t) * 61, MDBX_CACHELINE_SIZE) - malloc_overhead;
   MDBX_TXL ptr = malloc(bytes);
   if (likely(ptr)) {
     *ptr++ = bytes / sizeof(txnid_t) - 2;
@@ -58,11 +70,12 @@ static void mdbx_pnl_xappend(MDBX_PNL pl, pgno_t id) {
   pl[pl[0] += 1] = id;
 }
 
-static bool mdbx_pnl_check(MDBX_PNL pl) {
+static __maybe_unused bool mdbx_pnl_check(MDBX_PNL pl) {
   if (pl) {
     for (const pgno_t *ptr = pl + pl[0]; --ptr > pl;) {
       assert(MDBX_PNL_ORDERED(ptr[0], ptr[1]));
-      if (unlikely(MDBX_PNL_DISORDERED(ptr[0], ptr[1])))
+      assert(ptr[0] >= NUM_METAS);
+      if (unlikely(MDBX_PNL_DISORDERED(ptr[0], ptr[1]) || ptr[0] < NUM_METAS))
         return false;
     }
   }
@@ -79,11 +92,11 @@ static void __hot mdbx_pnl_sort(MDBX_PNL pnl) {
 
 /* Quicksort + Insertion sort for small arrays */
 #define PNL_SMALL 8
-#define PNL_SWAP(a, b)                                                         \
-  do {                                                                         \
-    pgno_t tmp_pgno = (a);                                                     \
-    (a) = (b);                                                                 \
-    (b) = tmp_pgno;                                                            \
+#define PNL_SWAP(a, b)                                                                                        \
+  do {                                                                                                        \
+    pgno_t tmp_pgno = (a);                                                                                    \
+    (a) = (b);                                                                                                \
+    (b) = tmp_pgno;                                                                                           \
   } while (0)
 
   ir = (int)pnl[0];
@@ -167,8 +180,7 @@ static size_t mdbx_pnl_search(MDBX_PNL pnl, pgno_t id) {
   while (n > 0) {
     size_t pivot = n >> 1;
     cursor = base + pivot + 1;
-    val = MDBX_PNL_ASCENDING ? mdbx_cmp2int(pnl[cursor], id)
-                             : mdbx_cmp2int(id, pnl[cursor]);
+    val = MDBX_PNL_ASCENDING ? mdbx_cmp2int(pnl[cursor], id) : mdbx_cmp2int(id, pnl[cursor]);
 
     if (val < 0) {
       n = pivot;
@@ -331,8 +343,7 @@ static void __hot mdbx_pnl_xmerge(MDBX_PNL pnl, MDBX_PNL merge) {
   assert(mdbx_pnl_check(pnl));
   assert(mdbx_pnl_check(merge));
   pgno_t old_id, merge_id, i = merge[0], j = pnl[0], k = i + j, total = k;
-  pnl[0] =
-      MDBX_PNL_ASCENDING ? 0 : ~(pgno_t)0; /* delimiter for pl scan below */
+  pnl[0] = MDBX_PNL_ASCENDING ? 0 : ~(pgno_t)0; /* delimiter for pl scan below */
   old_id = pnl[j];
   while (i) {
     merge_id = merge[i--];
@@ -357,6 +368,13 @@ static unsigned __hot mdbx_mid2l_search(MDBX_ID2L pnl, pgno_t id) {
   unsigned cursor = 1;
   int val = 0;
   unsigned n = (unsigned)pnl[0].mid;
+
+#if MDBX_DEBUG
+  for (const MDBX_ID2 *ptr = pnl + pnl[0].mid; --ptr > pnl;) {
+    assert(ptr[0].mid < ptr[1].mid);
+    assert(ptr[0].mid >= NUM_METAS);
+  }
+#endif
 
   while (n > 0) {
     unsigned pivot = n >> 1;
@@ -407,6 +425,14 @@ static int mdbx_mid2l_insert(MDBX_ID2L pnl, MDBX_ID2 *id) {
  * [in] id The ID2 to append.
  * Returns 0 on success, -2 if the ID2L is too big. */
 static int mdbx_mid2l_append(MDBX_ID2L pnl, MDBX_ID2 *id) {
+#if MDBX_DEBUG
+  for (unsigned i = pnl[0].mid; i > 0; --i) {
+    assert(pnl[i].mid != id->mid);
+    if (unlikely(pnl[i].mid == id->mid))
+      return -1;
+  }
+#endif
+
   /* Too big? */
   if (unlikely(pnl[0].mid >= MDBX_PNL_UM_MAX))
     return -2;

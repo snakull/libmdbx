@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -22,23 +22,18 @@ void __noreturn usage(void) {
 
 //-----------------------------------------------------------------------------
 
-void actor_params::set_defaults(void) {
+void actor_params::set_defaults(const std::string &tmpdir) {
   pathname_log = "";
   loglevel =
 #ifdef NDEBUG
-      logging::notice;
+      logging::info;
 #else
       logging::trace;
 #endif
 
-  pathname_db =
-#ifdef __linux__
-      "/dev/shm/test_tmpdb.mdbx";
-#else
-      "test_tmpdb.mdbx";
-#endif
-  mode_flags = MDBX_WRITEMAP | MDBX_MAPASYNC | MDBX_NORDAHEAD | MDBX_NOMEMINIT |
-               MDBX_COALESCE | MDBX_LIFORECLAIM;
+  pathname_db = tmpdir + "mdbx-test.db";
+  mode_flags = MDBX_WRITEMAP | MDBX_MAPASYNC | MDBX_NORDAHEAD | MDBX_NOMEMINIT | MDBX_COALESCE |
+               MDBX_LIFORECLAIM | MDBX_CREATE;
   table_flags = MDBX_DUPSORT;
   size = 1024 * 1024 * 4;
 
@@ -65,6 +60,7 @@ void actor_params::set_defaults(void) {
 
   delaystart = 0;
   waitfor_nops = 0;
+  inject_writefaultn = 0;
 
   drop_table = false;
 
@@ -84,7 +80,7 @@ namespace global {
 std::vector<actor_config> actors;
 std::unordered_map<unsigned, actor_config *> events;
 std::unordered_map<MDBX_pid_t, actor_config *> pid2actor;
-std::set<std::string> databases;
+std::set<fs::path> databases;
 unsigned nactors;
 chrono::time start_motonic;
 chrono::time deadline_motonic;
@@ -105,13 +101,22 @@ bool progress_indicator;
 
 const char global::thunk_param_prefix[] = "--execute=";
 
-std::string thunk_param(const actor_config &config) {
-  return config.serialize(global::thunk_param_prefix);
-}
+std::string thunk_param(const actor_config &config) { return config.serialize(global::thunk_param_prefix); }
 
 void cleanup() {
   log_trace(">> cleanup");
-  /* TODO: remove each database */
+  for (auto pathname : global::databases) {
+    std::error_code ec;
+    if (fs::exists(pathname) && !fs::remove(pathname, ec)) {
+      fs::filesystem_error err("Unable remove", pathname, ec);
+      failure("%s", err.what());
+    }
+    pathname += MDBX_LOCK_SUFFIX;
+    if (fs::exists(pathname) && !fs::remove(pathname, ec)) {
+      fs::filesystem_error err("Unable remove", pathname, ec);
+      failure("%s", err.what());
+    }
+  }
   log_trace("<< cleanup");
 }
 
@@ -126,16 +131,12 @@ int main(int argc, char *const argv[]) {
   if (argc < 2)
     failure("No parameters given\n");
 
-  if (argc == 2 &&
-      strncmp(argv[1], global::thunk_param_prefix,
-              strlen(global::thunk_param_prefix)) == 0)
-    return test_execute(
-               actor_config(argv[1] + strlen(global::thunk_param_prefix)))
-               ? EXIT_SUCCESS
-               : EXIT_FAILURE;
+  if (argc == 2 && strncmp(argv[1], global::thunk_param_prefix, strlen(global::thunk_param_prefix)) == 0)
+    return test_execute(actor_config(argv[1] + strlen(global::thunk_param_prefix))) ? EXIT_SUCCESS
+                                                                                    : EXIT_FAILURE;
 
   actor_params params;
-  params.set_defaults();
+  params.set_defaults(osal_tempdir());
   global::config::dump_config = true;
   logging::setup((logging::loglevel)params.loglevel, "main");
   unsigned last_space_id = 0;
@@ -149,92 +150,72 @@ int main(int argc, char *const argv[]) {
     }
     if (config::parse_option(argc, argv, narg, "pathname", params.pathname_db))
       continue;
-    if (config::parse_option(argc, argv, narg, "mode", params.mode_flags,
-                             config::mode_bits))
+    if (config::parse_option(argc, argv, narg, "mode", params.mode_flags, config::mode_bits))
       continue;
-    if (config::parse_option(argc, argv, narg, "table", params.table_flags,
-                             config::table_bits))
+    if (config::parse_option(argc, argv, narg, "table", params.table_flags, config::table_bits))
       continue;
-    if (config::parse_option(argc, argv, narg, "size", params.size,
-                             config::binary, 4096 * 4))
+    if (config::parse_option(argc, argv, narg, "size", params.size, config::binary, 4096 * 4))
       continue;
 
-    if (config::parse_option(argc, argv, narg, "keygen.width",
-                             params.keygen.width, 1, 64))
+    if (config::parse_option(argc, argv, narg, "keygen.width", params.keygen.width, 1, 64))
       continue;
-    if (config::parse_option(argc, argv, narg, "keygen.mesh",
-                             params.keygen.mesh, 1, 64))
+    if (config::parse_option(argc, argv, narg, "keygen.mesh", params.keygen.mesh, 1, 64))
       continue;
-    if (config::parse_option(argc, argv, narg, "keygen.seed",
-                             params.keygen.seed, config::no_scale))
+    if (config::parse_option(argc, argv, narg, "keygen.seed", params.keygen.seed, config::no_scale))
       continue;
-    if (config::parse_option(argc, argv, narg, "keygen.split",
-                             params.keygen.split, 1, 64))
+    if (config::parse_option(argc, argv, narg, "keygen.split", params.keygen.split, 1, 64))
       continue;
-    if (config::parse_option(argc, argv, narg, "keygen.rotate",
-                             params.keygen.rotate, 1, 64))
+    if (config::parse_option(argc, argv, narg, "keygen.rotate", params.keygen.rotate, 1, 64))
       continue;
-    if (config::parse_option(argc, argv, narg, "keygen.offset",
-                             params.keygen.offset, config::binary))
+    if (config::parse_option(argc, argv, narg, "keygen.offset", params.keygen.offset, config::binary))
       continue;
     if (config::parse_option(argc, argv, narg, "keygen.case", &value)) {
       keycase_setup(value, params);
       continue;
     }
 
-    if (config::parse_option(argc, argv, narg, "repeat", params.nrepeat,
-                             config::no_scale))
+    if (config::parse_option(argc, argv, narg, "repeat", params.nrepeat, config::no_scale))
       continue;
-    if (config::parse_option(argc, argv, narg, "threads", params.nthreads,
-                             config::no_scale, 1, 64))
+    if (config::parse_option(argc, argv, narg, "threads", params.nthreads, config::no_scale, 1, 64))
       continue;
-    if (config::parse_option(argc, argv, narg, "timeout",
-                             global::config::timeout_duration_seconds,
+    if (config::parse_option(argc, argv, narg, "timeout", global::config::timeout_duration_seconds,
                              config::duration, 1))
       continue;
-    if (config::parse_option(argc, argv, narg, "keylen.min", params.keylen_min,
-                             config::no_scale, 0, params.keylen_max))
+    if (config::parse_option(argc, argv, narg, "keylen.min", params.keylen_min, config::no_scale, 0,
+                             params.keylen_max))
       continue;
-    if (config::parse_option(argc, argv, narg, "keylen.max", params.keylen_max,
-                             config::no_scale, params.keylen_min,
-                             mdbx_pagesize2maxkeylen(0)))
+    if (config::parse_option(argc, argv, narg, "keylen.max", params.keylen_max, config::no_scale,
+                             params.keylen_min, (unsigned)mdbx_pagesize2maxkeylen(0).value))
       continue;
-    if (config::parse_option(argc, argv, narg, "datalen.min",
-                             params.datalen_min, config::no_scale, 0,
+    if (config::parse_option(argc, argv, narg, "datalen.min", params.datalen_min, config::no_scale, 0,
                              params.datalen_max))
       continue;
-    if (config::parse_option(argc, argv, narg, "datalen.max",
-                             params.datalen_max, config::no_scale,
+    if (config::parse_option(argc, argv, narg, "datalen.max", params.datalen_max, config::no_scale,
                              params.datalen_min, MDBX_MAXDATASIZE))
       continue;
-    if (config::parse_option(argc, argv, narg, "batch.read", params.batch_read,
-                             config::no_scale, 1))
+    if (config::parse_option(argc, argv, narg, "batch.read", params.batch_read, config::no_scale, 1))
       continue;
-    if (config::parse_option(argc, argv, narg, "batch.write",
-                             params.batch_write, config::no_scale, 1))
+    if (config::parse_option(argc, argv, narg, "batch.write", params.batch_write, config::no_scale, 1))
       continue;
-    if (config::parse_option(argc, argv, narg, "delay", params.delaystart,
-                             config::duration))
+    if (config::parse_option(argc, argv, narg, "delay", params.delaystart, config::duration))
       continue;
-    if (config::parse_option(argc, argv, narg, "wait4ops", params.waitfor_nops,
+    if (config::parse_option(argc, argv, narg, "wait4ops", params.waitfor_nops, config::decimal))
+      continue;
+    if (config::parse_option(argc, argv, narg, "inject-writefault", params.inject_writefaultn,
                              config::decimal))
       continue;
     if (config::parse_option(argc, argv, narg, "drop", params.drop_table))
       continue;
-    if (config::parse_option(argc, argv, narg, "dump-config",
-                             global::config::dump_config))
+    if (config::parse_option(argc, argv, narg, "dump-config", global::config::dump_config))
       continue;
-    if (config::parse_option(argc, argv, narg, "cleanup-before",
-                             global::config::cleanup_before))
+    if (config::parse_option(argc, argv, narg, "cleanup-before", global::config::cleanup_before))
       continue;
-    if (config::parse_option(argc, argv, narg, "cleanup-after",
-                             global::config::cleanup_after))
+    if (config::parse_option(argc, argv, narg, "cleanup-after", global::config::cleanup_after))
       continue;
-    if (config::parse_option(argc, argv, narg, "max-readers",
-                             params.max_readers, config::no_scale, 1, 255))
+    if (config::parse_option(argc, argv, narg, "max-readers", params.max_readers, config::no_scale, 1, 255))
       continue;
-    if (config::parse_option(argc, argv, narg, "max-tables", params.max_tables,
-                             config::no_scale, 1, INT16_MAX))
+    if (config::parse_option(argc, argv, narg, "max-tables", params.max_tables, config::no_scale, 1,
+                             INT16_MAX))
       continue;
 
     if (config::parse_option(argc, argv, narg, "no-delay", nullptr)) {
@@ -245,13 +226,11 @@ int main(int argc, char *const argv[]) {
       params.waitfor_nops = 0;
       continue;
     }
-    if (config::parse_option(argc, argv, narg, "duration", params.test_duration,
-                             config::duration, 1)) {
+    if (config::parse_option(argc, argv, narg, "duration", params.test_duration, config::duration, 1)) {
       params.test_nops = 0;
       continue;
     }
-    if (config::parse_option(argc, argv, narg, "nops", params.test_nops,
-                             config::decimal, 1)) {
+    if (config::parse_option(argc, argv, narg, "nops", params.test_nops, config::decimal, 1)) {
       params.test_duration = 0;
       continue;
     }
@@ -271,11 +250,9 @@ int main(int argc, char *const argv[]) {
       configure_actor(last_space_id, ac_deadwrite, value, params);
       continue;
     }
-    if (config::parse_option(argc, argv, narg, "failfast",
-                             global::config::failfast))
+    if (config::parse_option(argc, argv, narg, "failfast", global::config::failfast))
       continue;
-    if (config::parse_option(argc, argv, narg, "progress",
-                             global::config::progress_indicator))
+    if (config::parse_option(argc, argv, narg, "progress", global::config::progress_indicator))
       continue;
 
     if (*argv[narg] != '-')
@@ -300,8 +277,7 @@ int main(int argc, char *const argv[]) {
       (global::config::timeout_duration_seconds == 0)
           ? chrono::infinite().fixedpoint
           : global::start_motonic.fixedpoint +
-                chrono::from_seconds(global::config::timeout_duration_seconds)
-                    .fixedpoint;
+                chrono::from_seconds(global::config::timeout_duration_seconds).fixedpoint;
 
   if (global::config::cleanup_before)
     cleanup();
@@ -328,8 +304,7 @@ int main(int argc, char *const argv[]) {
         log_trace(">> killall_actors: (%s)", "start failed");
         osal_killall_actors();
         log_trace("<< killall_actors");
-        failure("Failed to start actor #%u (%s)\n", a.actor_id,
-                test_strerror(rc));
+        failure("Failed to start actor #%u (%s)\n", a.actor_id, test_strerror(rc));
       }
       global::pid2actor[pid] = &a;
     }
@@ -349,8 +324,7 @@ int main(int argc, char *const argv[]) {
         timeout_seconds_left = 0;
       else {
         chrono::time left_motonic;
-        left_motonic.fixedpoint =
-            global::deadline_motonic.fixedpoint - now_motonic.fixedpoint;
+        left_motonic.fixedpoint = global::deadline_motonic.fixedpoint - now_motonic.fixedpoint;
         timeout_seconds_left = left_motonic.seconds();
       }
 
@@ -365,8 +339,7 @@ int main(int argc, char *const argv[]) {
         if (!actor)
           continue;
 
-        log_info("actor #%u, id %d, pid %u: %s\n", actor->actor_id,
-                 actor->space_id, pid, status2str(status));
+        log_info("actor #%u, id %d, pid %u: %s\n", actor->actor_id, actor->space_id, pid, status2str(status));
         if (status > as_running) {
           left -= 1;
           if (status != as_successful) {
@@ -387,7 +360,7 @@ int main(int argc, char *const argv[]) {
   }
 
   log_notice("RESULT: %s\n", failed ? "Failed" : "Successful");
-  if (global::config::cleanup_before) {
+  if (global::config::cleanup_after) {
     if (failed)
       log_info("skip cleanup");
     else

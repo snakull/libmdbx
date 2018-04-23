@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -65,9 +65,8 @@ void osal_setup(const std::vector<actor_config> &actors) {
   if (rc)
     failure_perror("pthread_condattr_setpshared()", rc);
 
-  shared = (shared_t *)mmap(
-      nullptr, sizeof(shared_t) + actors.size() * sizeof(pthread_cond_t),
-      PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  shared = (shared_t *)mmap(nullptr, sizeof(shared_t) + actors.size() * sizeof(pthread_cond_t),
+                            PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
   if (MAP_FAILED == (void *)shared)
     failure_perror("mmap(shared_conds)", errno);
 
@@ -85,8 +84,7 @@ void osal_setup(const std::vector<actor_config> &actors) {
     rc = pthread_cond_init(event, &condattr);
     if (rc)
       failure_perror("pthread_cond_init(shared)", rc);
-    log_trace("osal_setup: event(shared pthread_cond) %" PRIuPTR " -> %p", i,
-              event);
+    log_trace("osal_setup: event(shared pthread_cond) %" PRIuPTR " -> %p", i, event);
   }
   shared->conds_size = actors.size() + 1;
 
@@ -129,15 +127,13 @@ int osal_waitfor(unsigned id) {
 
 //-----------------------------------------------------------------------------
 
-const std::string
-actor_config::osal_serialize(simple_checksum &checksum) const {
+const std::string actor_config::osal_serialize(simple_checksum &checksum) const {
   (void)checksum;
   /* not used in workload, but just for testing */
   return "unix.fork";
 }
 
-bool actor_config::osal_deserialize(const char *str, const char *end,
-                                    simple_checksum &checksum) {
+bool actor_config::osal_deserialize(const char *str, const char *end, simple_checksum &checksum) {
   (void)checksum;
   /* not used in workload, but just for testing */
   return strncmp(str, "unix.fork", 9) == 0 && str + 9 == end;
@@ -194,8 +190,7 @@ retry:
 
   if (pid > 0) {
     if (WIFEXITED(status))
-      childs[pid] =
-          (WEXITSTATUS(status) == EXIT_SUCCESS) ? as_successful : as_failed;
+      childs[pid] = (WEXITSTATUS(status) == EXIT_SUCCESS) ? as_successful : as_failed;
     else if (WIFSIGNALED(status) || WCOREDUMP(status))
       childs[pid] = as_killed;
     else if (WIFSTOPPED(status))
@@ -272,3 +267,22 @@ void osal_udelay(unsigned us) {
 }
 
 bool osal_istty(int fd) { return isatty(fd) == 1; }
+
+std::string osal_tempdir(void) {
+  const char *tempdir = getenv("TMPDIR");
+  if (!tempdir)
+    tempdir = getenv("TMP");
+  if (!tempdir)
+    tempdir = getenv("TEMPDIR");
+  if (!tempdir)
+    tempdir = getenv("TEMP");
+  if (tempdir) {
+    std::string dir(tempdir);
+    if (!dir.empty() && dir.at(dir.length() - 1) != '/')
+      dir.append("/");
+    return dir;
+  }
+  if (access("/dev/shm/", R_OK | W_OK | X_OK) == 0)
+    return "/dev/shm/";
+  return "";
+}

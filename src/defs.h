@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -59,6 +59,14 @@
 #   define __has_builtin(x) (0)
 #endif
 
+#ifndef __has_warning
+#   define __has_warning(x) (0)
+#endif
+
+#ifndef __has_include
+#   define __has_include(x) (0)
+#endif
+
 #if __has_feature(thread_sanitizer)
 #   define __SANITIZE_THREAD__ 1
 #endif
@@ -77,18 +85,6 @@
 #   endif
 #endif /* __extern_C */
 
-#ifndef __cplusplus
-#   ifndef bool
-#       define bool _Bool
-#   endif
-#   ifndef true
-#       define true (1)
-#   endif
-#   ifndef false
-#       define false (0)
-#   endif
-#endif
-
 #if !defined(nullptr) && !defined(__cplusplus) || (__cplusplus < 201103L && !defined(_MSC_VER))
 #   define nullptr NULL
 #endif
@@ -101,7 +97,7 @@
 
 #ifndef __always_inline
 #   if defined(__GNUC__) || __has_attribute(always_inline)
-#       define __always_inline inline __attribute__((always_inline))
+#       define __always_inline __inline __attribute__((always_inline))
 #   elif defined(_MSC_VER)
 #       define __always_inline __forceinline
 #   else
@@ -139,23 +135,66 @@
 #   endif
 #endif /* __deprecated */
 
-#ifndef __packed
-#   if defined(__GNUC__) || __has_attribute(packed)
-#       define __packed __attribute__((packed))
+#ifndef __weak
+#   if defined(__GNUC__) || __has_attribute(weak)
+#       define __weak __attribute__((weak))
 #   else
-#       define __packed
+#       define __weak
 #   endif
-#endif /* __packed */
+#endif /* __deprecated */
 
-#ifndef __aligned
-#   if defined(__GNUC__) || __has_attribute(aligned)
-#       define __aligned(N) __attribute__((aligned(N)))
-#   elif defined(_MSC_VER)
-#       define __aligned(N) __declspec(align(N))
+#if !defined(__maybe_unused)
+#   if __GNUC_PREREQ(4, 3) || __has_attribute(unused)
+#       define __maybe_unused __attribute__((unused))
 #   else
-#       define __aligned(N)
+#       define __maybe_unused
 #   endif
-#endif /* __aligned */
+#endif /* __maybe_unused */
+
+#if !defined(__noop) && !defined(_MSC_VER)
+#	ifdef __cplusplus
+		static inline void __noop_consume_args() {}
+		template <typename First, typename... Rest>
+		static inline void
+		__noop_consume_args(const First &first, const Rest &... rest) {
+			(void) first; __noop_consume_args(rest...);
+		}
+#		define __noop(...) __noop_consume_args(__VA_ARGS__)
+#	elif defined(__GNUC__) && (!defined(__STRICT_ANSI__) || !__STRICT_ANSI__)
+		static __inline void __noop_consume_args(void* anchor, ...) {
+			(void) anchor;
+		}
+#		define __noop(...) __noop_consume_args(0, ##__VA_ARGS__)
+#	else
+#		define __noop(...) do {} while(0)
+#	endif
+#endif /* __noop */
+
+#ifndef __fallthrough
+#	if __GNUC_PREREQ(7, 0) || __has_attribute(fallthrough)
+#		define __fallthrough __attribute__((fallthrough))
+#	else
+#		define __fallthrough __noop()
+#	endif
+#endif /* __fallthrough */
+
+#ifndef __unreachable
+#	if __GNUC_PREREQ(4,5) || __has_builtin(unreachable)
+#		define __unreachable() __builtin_unreachable()
+#	elif defined(_MSC_VER)
+#		define __unreachable() __assume(0)
+#	else
+#		define __unreachable() __noop()
+#	endif
+#endif /* __unreachable */
+
+#ifndef __prefetch
+#	if __GNUC_PREREQ(3,1) || __has_builtin(prefetch)
+#		define __prefetch(ptr) __builtin_prefetch(ptr)
+#	else
+#		define __prefetch(ptr) __noop(ptr)
+#	endif
+#endif /* __prefetch */
 
 #ifndef __noreturn
 #   if defined(__GNUC__) || __has_attribute(noreturn)
@@ -231,7 +270,9 @@
 
 #ifndef __hot
 #   if defined(__OPTIMIZE__)
-#       if defined(__clang__) && !__has_attribute(hot)
+#       if defined(__e2k__)
+#           define __hot __attribute__((hot)) __optimize(3)
+#       elif defined(__clang__) && !__has_attribute(hot)
             /* just put frequently used functions in separate section */
 #           define __hot __attribute__((section("text.hot"))) __optimize("O3")
 #       elif defined(__GNUC__) || __has_attribute(hot)
@@ -246,7 +287,9 @@
 
 #ifndef __cold
 #   if defined(__OPTIMIZE__)
-#       if defined(__clang__) && !__has_attribute(cold)
+#       if defined(__e2k__)
+#           define __cold __attribute__((cold)) __optimize(1)
+#       elif defined(__clang__) && !__has_attribute(cold)
             /* just put infrequently used functions in separate section */
 #           define __cold __attribute__((section("text.unlikely"))) __optimize("Os")
 #       elif defined(__GNUC__) || __has_attribute(cold)
@@ -283,22 +326,6 @@
 #   endif
 #endif /* unlikely */
 
-#if !defined(__noop) && !defined(_MSC_VER)
-    static inline int __do_noop(void* crutch, ...) {
-      (void) crutch; return 0;
-    }
-#   define __noop(...) __do_noop(0, __VA_ARGS__)
-#endif /* __noop */
-
-/* Wrapper around __func__, which is a C99 feature */
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
-#   define mdbx_func_ __func__
-#elif (defined(__GNUC__) && __GNUC__ >= 2) || defined(__clang__) || defined(_MSC_VER)
-#   define mdbx_func_ __FUNCTION__
-#else
-#   define mdbx_func_ "<mdbx_unknown>"
-#endif
-
 /*----------------------------------------------------------------------------*/
 
 #if defined(USE_VALGRIND)
@@ -308,7 +335,7 @@
 #       define VALGRIND_DISABLE_ADDR_ERROR_REPORTING_IN_RANGE(a,s)
 #       define VALGRIND_ENABLE_ADDR_ERROR_REPORTING_IN_RANGE(a,s)
 #   endif
-#else
+#elif !defined(RUNNING_ON_VALGRIND)
 #   define VALGRIND_CREATE_MEMPOOL(h,r,z)
 #   define VALGRIND_DESTROY_MEMPOOL(h)
 #   define VALGRIND_MEMPOOL_TRIM(h,a,s)
@@ -325,9 +352,27 @@
 #   define RUNNING_ON_VALGRIND (0)
 #endif /* USE_VALGRIND */
 
+#if !defined(NDEBUG) || defined(_DEBUG)
+#   define MEMSET4DEBUG(addr, value, size) memset(addr, value, size)
+#else
+#   define MEMSET4DEBUG(addr, value, size) __noop()
+#endif
+
+#define VALGRIND_MAKE_MEM_UNDEFINED_ERASE(a, s)                                \
+  do {                                                                         \
+    MEMSET4DEBUG(a, 0xCC, s);                                                  \
+    VALGRIND_MAKE_MEM_UNDEFINED(a, s);                                         \
+  } while (0)
+
+#define VALGRIND_MAKE_MEM_NOACCESS_ERASE(a, s)                                 \
+  do {                                                                         \
+    MEMSET4DEBUG(a, 0xDD, s);                                                  \
+    VALGRIND_MAKE_MEM_NOACCESS(a, s);                                          \
+  } while (0)
+
 #ifdef __SANITIZE_ADDRESS__
 #   include <sanitizer/asan_interface.h>
-#else
+#elif !defined(ASAN_POISON_MEMORY_REGION)
 #   define ASAN_POISON_MEMORY_REGION(addr, size) \
         ((void)(addr), (void)(size))
 #   define ASAN_UNPOISON_MEMORY_REGION(addr, size) \

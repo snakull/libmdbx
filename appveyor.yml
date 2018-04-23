@@ -1,13 +1,9 @@
-version: 0.1.2.{build}
+version: 1.0.0.{build}
 
 environment:
   matrix:
     - APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2017
       TOOLSET: v141
-    - APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2015
-      TOOLSET: v140
-    - APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2013
-      TOOLSET: v120
 
 branches:
   except:
@@ -20,7 +16,8 @@ configuration:
 platform:
 - x86
 - x64
-#- ARM
+- ARM
+- ARM64
 
 build_script:
 - ps: >
@@ -32,11 +29,11 @@ build_script:
 
 test_script:
 - ps: |
-    if (($env:PLATFORM -eq "x86") -and (Test-Path "C:\projects\libmdbx\Win32\$env:CONFIGURATION\test.exe" -PathType Leaf)) {
-      $test = "C:\projects\libmdbx\Win32\$env:CONFIGURATION\test.exe"
+    if (($env:PLATFORM -eq "x86") -and (Test-Path "C:\projects\libmdbx\Win32\$env:CONFIGURATION\mdbx_test.exe" -PathType Leaf)) {
+      $test = "C:\projects\libmdbx\Win32\$env:CONFIGURATION\mdbx_test.exe"
       $mdbx_chk = "C:\projects\libmdbx\Win32\$env:CONFIGURATION\mdbx_chk.exe"
     } elseif (($env:PLATFORM -ne "ARM") -and ($env:PLATFORM -ne "ARM64")) {
-      $test = "C:\projects\libmdbx\$env:PLATFORM\$env:CONFIGURATION\test.exe"
+      $test = "C:\projects\libmdbx\$env:PLATFORM\$env:CONFIGURATION\mdbx_test.exe"
       $mdbx_chk = "C:\projects\libmdbx\$env:PLATFORM\$env:CONFIGURATION\mdbx_chk.exe"
     } else {
       $test = ""

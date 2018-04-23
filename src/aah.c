@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -13,9 +13,20 @@
  */
 
 #include "./bits.h"
+#include "./debug.h"
 #include "./proto.h"
+#include "./ualb.h"
 
-static const char mdbx_droppped_name_stub[8];
+#define aah_extra(fmt, ...) log_extra(MDBX_LOG_AAH, fmt, ##__VA_ARGS__)
+#define aah_trace(fmt, ...) log_trace(MDBX_LOG_AAH, fmt, ##__VA_ARGS__)
+#define aah_verbose(fmt, ...) log_verbose(MDBX_LOG_AAH, fmt, ##__VA_ARGS__)
+#define aah_info(fmt, ...) log_info(MDBX_LOG_AAH, fmt, ##__VA_ARGS__)
+#define aah_notice(fmt, ...) log_notice(MDBX_LOG_AAH, fmt, ##__VA_ARGS__)
+#define aah_warning(fmt, ...) log_warning(MDBX_LOG_AAH, fmt, ##__VA_ARGS__)
+#define aah_error(fmt, ...) log_error(MDBX_LOG_AAH, fmt, ##__VA_ARGS__)
+#define aah_panic(env, msg, err) mdbx_panic(env, MDBX_LOG_AAH, __func__, __LINE__, "%s, error %d", msg, err)
+
+static const char mdbx_droppped_name_stub[8] = "";
 
 //-----------------------------------------------------------------------------
 
@@ -29,60 +40,106 @@ static inline aht_rc_t txn_rh(int rc, aht_t *aht) {
   return result;
 }
 
-static ahe_t *bk_aah2ahe(MDBX_milieu *bk, MDBX_aah aah) {
+static ahe_t *bk_aah2ahe(MDBX_env_t *env, MDBX_aah_t aah) {
   const size_t index = (uint16_t)aah;
-  if (unlikely(aah >= bk->env_ah_num))
+  if (unlikely(index >= env->env_ah_num))
     return nullptr;
 
-  ahe_t *ahe = &bk->env_ahe_array[index];
+  ahe_t *ahe = &env->env_ahe_array[index];
   if (unlikely(ahe->ax_refcounter16 < 1 || ahe->ax_aah != aah))
     return nullptr;
 
   return ahe;
 }
 
-static checksum_t aa_checksum(const aatree_t *entry) {
+static inline MDBX_cursor_t **aa_txn_cursor_tracking_head(MDBX_txn_t *txn, MDBX_aah_t aah) {
+  const size_t index = (uint16_t)aah;
+  assert(txn->mt_env->env_ah_num > index);
+  assert(txn->txn_ah_num > index);
+  assert(txn->mt_env->env_ahe_array[index].ax_refcounter16 > 0);
+  assert(txn->mt_env->env_ahe_array[index].ax_aah == aah);
+  return &txn->mt_cursors[index];
+}
+
+static checksum_t aa_checksum(const MDBX_env_t *env, const aatree_t *entry) {
+  (void)env;
   (void)entry;
   /* TODO: t1ha */
   return 0;
 }
 
-static inline int aa_db2txn(const aatree_t *src, aht_t *aht) {
-  if (unlikely(aa_checksum(src) != get_le64_aligned(&src->aa_merkle)))
+static inline int aa_db2txn(const MDBX_env_t *env, const aatree_t *src, aht_t *aht,
+                            const enum aat_format format) {
+#if !UNALIGNED_OK || !defined(NDEBUG) || defined(_DEBUG)
+  aatree_t aligned;
+  if ((uintptr_t)src & 7)
+    src = (const aatree_t *)memcpy(&aligned, src, sizeof(aligned));
+#endif
+  if (unlikely(aa_checksum(env, src) != get_le64_aligned(&src->aa_merkle)))
     return MDBX_CORRUPTED /* checksum mismatch */;
 
-  aht->aa.flags16 = get_le16_unaligned(&src->aa_flags16);
-  aht->aa.depth16 = get_le16_unaligned(&src->aa_depth16);
-  aht->aa.xsize32 = get_le32_unaligned(&src->aa_xsize32);
   if (sizeof(pgno_t) == 4) {
     aht->aa.root = get_le32_unaligned(&src->aa_root);
     aht->aa.branch_pages = get_le32_unaligned(&src->aa_branch_pages);
     aht->aa.leaf_pages = get_le32_unaligned(&src->aa_leaf_pages);
     aht->aa.overflow_pages = get_le32_unaligned(&src->aa_overflow_pages);
   } else {
-    aht->aa.root = get_le64_unaligned(&src->aa_root);
-    aht->aa.branch_pages = get_le64_unaligned(&src->aa_branch_pages);
-    aht->aa.leaf_pages = get_le64_unaligned(&src->aa_leaf_pages);
-    aht->aa.overflow_pages = get_le64_unaligned(&src->aa_overflow_pages);
+    aht->aa.root = (pgno_t)get_le64_unaligned(&src->aa_root);
+    aht->aa.branch_pages = (pgno_t)get_le64_unaligned(&src->aa_branch_pages);
+    aht->aa.leaf_pages = (pgno_t)get_le64_unaligned(&src->aa_leaf_pages);
+    aht->aa.overflow_pages = (pgno_t)get_le64_unaligned(&src->aa_overflow_pages);
   }
   aht->aa.entries = get_le64_unaligned(&src->aa_entries);
   aht->aa.genseq = get_le64_unaligned(&src->aa_genseq);
   aht->aa.created = get_le64_unaligned(&src->aa_created);
 
-  if (likely(aht->ahe)) {
-    aht->ahe->ax_since = get_le64_unaligned(&src->aa_created);
-    aht->ah.seq16 = aht->ahe->ax_seqaah16;
-  } else {
-    aht->ah.seq16 = UINT16_MAX;
+  aht->aa.depth16 = get_le16_unaligned(&src->aa_depth16);
+  switch (format) {
+  case af_gaco:
+    aht->aa.flags16 = MDBX_INTEGERKEY /* ignore mm_extra_flags16 from [MDBX_GACO_AAH].aa_flags16 */;
+    aht->aa.xsize32 = 0 /* ignore mm_psize32 from [MDBX_GACO_AAH].aa_xsize32 */;
+    aht->ahe = &env->env_ahe_array[MDBX_GACO_AAH];
+    aht->ahe->ax_since = 0;
+    aht->ah.seq16 = env->env_ahe_array[MDBX_GACO_AAH].ax_seqaah16;
+    break;
+  case af_main:
+    aht->aa.flags16 = get_le16_unaligned(&src->aa_flags16);
+    aht->aa.xsize32 = get_le32_unaligned(&src->aa_xsize32);
+    aht->ahe = &env->env_ahe_array[MDBX_MAIN_AAH];
+    aht->ahe->ax_since = aht->aa.created;
+    aht->ah.seq16 = env->env_ahe_array[MDBX_MAIN_AAH].ax_seqaah16;
+    break;
+  default:
+    aht->aa.flags16 = get_le16_unaligned(&src->aa_flags16);
+    aht->aa.xsize32 = get_le32_unaligned(&src->aa_xsize32);
+    assert(aht->ahe);
+    if (likely(aht->ahe)) {
+      aht->ahe->ax_since = aht->aa.created;
+      aht->ah.seq16 = aht->ahe->ax_seqaah16;
+    } else {
+      aht->ah.seq16 = UINT16_MAX;
+    }
   }
 
   return MDBX_SUCCESS;
 }
 
-static inline void aa_txn2db(const aht_t *aht, aatree_t *dst) {
-  set_le16_unaligned(&dst->aa_flags16, aht->aa.flags16);
+static inline void aa_txn2db(const MDBX_env_t *env, const aht_t *aht, aatree_t *dst,
+                             const enum aat_format format) {
+#if !UNALIGNED_OK || !defined(NDEBUG) || defined(_DEBUG)
+  aatree_t aligned, *const target = dst;
+  if ((uintptr_t)dst & 7)
+    dst = &aligned;
+#endif
   set_le16_unaligned(&dst->aa_depth16, aht->aa.depth16);
-  set_le32_unaligned(&dst->aa_xsize32, aht->aa.xsize32);
+  if (likely(format != af_gaco)) {
+    set_le16_unaligned(&dst->aa_flags16, aht->aa.flags16);
+    set_le32_unaligned(&dst->aa_xsize32, aht->aa.xsize32);
+  } else {
+    set_le16_unaligned(&dst->aa_flags16, 0); /* set mm_extra_flags16 at [MDBX_GACO_AAH].aa_flags16 */
+    set_le32_unaligned(&dst->aa_xsize32, env->me_psize) /* set mm_psize32 at [MDBX_GACO_AAH].aa_xsize32 */;
+  }
+
   if (sizeof(pgno_t) == 4) {
     set_le32_unaligned(&dst->aa_root, aht->aa.root);
     set_le32_unaligned(&dst->aa_branch_pages, aht->aa.branch_pages);
@@ -98,43 +155,39 @@ static inline void aa_txn2db(const aht_t *aht, aatree_t *dst) {
   set_le64_unaligned(&dst->aa_genseq, aht->aa.genseq);
   set_le64_unaligned(&dst->aa_created, aht->aa.created);
 
-  set_le64_aligned(&dst->aa_merkle, aa_checksum(dst));
+  set_le64_aligned(&dst->aa_merkle, aa_checksum(env, dst));
+#if !UNALIGNED_OK || !defined(NDEBUG) || defined(_DEBUG)
+  if (dst == &aligned)
+    memcpy(target, &aligned, sizeof(aligned));
+#endif
 }
 
-static inline MDBX_aah bk_ahe2aah(struct MDBX_milieu_ *bk, ahe_t *ahe) {
-  assert(ahe >= bk->env_ahe_array && ahe < &bk->env_ahe_array[bk->env_ah_num]);
-  assert(ahe == bk_aah2ahe(bk, ahe->ax_aah));
+static inline MDBX_aah_t bk_ahe2aah(MDBX_env_t *env, ahe_t *ahe) {
+  assert(ahe >= env->env_ahe_array && ahe < &env->env_ahe_array[env->env_ah_num]);
+  assert(ahe == bk_aah2ahe(env, ahe->ax_aah));
+  (void)env;
   return ahe->ax_aah;
 }
 
-static inline ahe_t *ahe_main(MDBX_milieu *bk) {
-  return &bk->env_ahe_array[MDBX_MAIN_AAH];
-}
+static inline ahe_t *ahe_main(MDBX_env_t *env) { return &env->env_ahe_array[MDBX_MAIN_AAH]; }
 
-static inline ahe_t *ahe_gaco(MDBX_milieu *bk) {
-  return &bk->env_ahe_array[MDBX_GACO_AAH];
-}
+static inline ahe_t *ahe_gaco(MDBX_env_t *env) { return &env->env_ahe_array[MDBX_GACO_AAH]; }
 
-static inline aht_t *aht_main(MDBX_txn *txn) {
-  return &txn->txn_aht_array[MDBX_MAIN_AAH];
-}
+static inline aht_t *aht_main(MDBX_txn_t *txn) { return &txn->txn_aht_array[MDBX_MAIN_AAH]; }
 
-static inline aht_t *aht_gaco(MDBX_txn *txn) {
-  return &txn->txn_aht_array[MDBX_GACO_AAH];
-}
+static inline aht_t *aht_gaco(MDBX_txn_t *txn) { return &txn->txn_aht_array[MDBX_GACO_AAH]; }
 
-static inline aht_t *tnx_ahe2aht(MDBX_txn *txn, ahe_t *ahe) {
-  assert(ahe >= txn->mt_book->env_ahe_array &&
-         ahe < &txn->mt_book->env_ahe_array[txn->mt_book->env_ah_max]);
+static inline aht_t *txn_ahe2aht(MDBX_txn_t *txn, ahe_t *ahe) {
+  assert(ahe >= txn->mt_env->env_ahe_array && ahe < &txn->mt_env->env_ahe_array[txn->mt_env->env_ah_max]);
   assert(ahe->ax_ord16 < txn->txn_ah_num);
   return &txn->txn_aht_array[ahe->ax_ord16];
 }
 
-static ahe_rc_t __cold aa_lookup(MDBX_milieu *bk, MDBX_txn *txn,
-                                 const MDBX_iov aa_ident) {
+static ahe_rc_t __cold aa_lookup(MDBX_env_t *env, MDBX_txn_t *txn, const MDBX_iov_t aa_ident) {
   ahe_t *free;
-  ahe_t *const begin = &bk->env_ahe_array[CORE_AAH];
-  ahe_t *const end = &bk->env_ahe_array[bk->env_ah_num];
+  ahe_t *const begin = &env->env_ahe_array[CORE_AAH];
+  ahe_t *const end = &env->env_ahe_array[env->env_ah_num];
+  assert(begin <= end);
   ahe_rc_t rp;
 
   rp.ahe = free = nullptr;
@@ -187,11 +240,14 @@ static ahe_rc_t __cold aa_lookup(MDBX_milieu *bk, MDBX_txn *txn,
     rp.ahe = free;
     if (!rp.ahe) {
       rp.ahe = end;
-      if (unlikely(rp.ahe >= &bk->env_ahe_array[bk->env_ah_max])) {
+      if (unlikely(rp.ahe >= &env->env_ahe_array[env->env_ah_max])) {
         rp.err = MDBX_DBS_FULL;
         return rp;
       }
-      bk->env_ah_num += 1;
+      VALGRIND_MAKE_MEM_UNDEFINED_ERASE(rp.ahe, sizeof(*rp.ahe));
+      rp.ahe->ax_ord16 = (uint16_t)env->env_ah_num;
+      rp.ahe->ax_refcounter16 = 0;
+      env->env_ah_num++;
     }
 
     assert(rp.ahe->ax_refcounter16 < 1);
@@ -201,36 +257,39 @@ static ahe_rc_t __cold aa_lookup(MDBX_milieu *bk, MDBX_txn *txn,
   return rp;
 }
 
-static int aa_fetch(MDBX_txn *txn, aht_t *aht) {
+static int aa_fetch(MDBX_txn_t *txn, aht_t *aht) {
   assert(aht->ah.state8 == MDBX_AAH_STALE);
 
-  MDBX_cursor bundle;
+  MDBX_cursor_t bundle;
   int rc = cursor_init(&bundle, txn, aht_main(txn));
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
   ahe_t *env_aah = aht->ahe;
   rc = page_search(&bundle.primal, &env_aah->ax_ident, 0);
-  if (unlikely(rc != MDBX_SUCCESS))
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    aht->ah.state8 = MDBX_AAH_ABSENT;
     return rc;
+  }
 
-  int exact = 0;
-  node_t *node = node_search(&bundle.primal, env_aah->ax_ident, &exact);
-  if (unlikely(!exact))
+  node_rc_t rp = node_search(&bundle.primal, env_aah->ax_ident);
+  if (unlikely(!rp.exact)) {
+    aht->ah.state8 = MDBX_AAH_ABSENT;
     return MDBX_NOTFOUND;
+  }
 
-  if (unlikely((node->node_flags8 & (NODE_DUP | NODE_SUBTREE)) != NODE_SUBTREE))
+  if (unlikely((rp.node->node_flags8 & (NODE_DUP | NODE_SUBTREE)) != NODE_SUBTREE))
     return MDBX_INCOMPATIBLE /* not a named AA */;
 
-  MDBX_iov data;
-  rc = node_read(&bundle.primal, node, &data);
+  MDBX_iov_t data;
+  rc = node_read(&bundle.primal, rp.node, &data);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
   if (unlikely(data.iov_len != sizeof(aatree_t)))
     return MDBX_CORRUPTED /* wrong length */;
 
-  rc = aa_db2txn((aatree_t *)data.iov_base, aht);
+  rc = aa_db2txn(txn->mt_env, (aatree_t *)data.iov_base, aht, af_user);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
@@ -247,9 +306,8 @@ static int aa_fetch(MDBX_txn *txn, aht_t *aht) {
 static void aht_bind(aht_t *aht, ahe_t *ahe) {
   aht->ahe = ahe;
   aht->ah.seq16 = ahe->ax_seqaah16;
-  aht->ah.kind_and_state16 = (aht->ahe->ax_flags16 & MDBX_DUPSORT)
-                                 ? MDBX_AAH_STALE
-                                 : MDBX_AAH_STALE | MDBX_AAH_DUPS;
+  aht->ah.kind_and_state16 =
+      (aht->ahe->ax_flags16 & MDBX_DUPSORT) ? MDBX_AAH_STALE : MDBX_AAH_STALE | MDBX_AAH_DUPS;
   paranoia_barrier();
 }
 
@@ -265,10 +323,10 @@ static void aht_bare4create(aht_t *aht) {
   aht->aa.genseq = 0;
 }
 
-static int __cold aa_create(MDBX_txn *txn, aht_t *aht) {
+static int __cold aa_create(MDBX_txn_t *txn, aht_t *aht) {
   assert(aht->ah.state8 == MDBX_AAH_ABSENT);
 
-  MDBX_cursor cursor;
+  MDBX_cursor_t cursor;
   int rc = cursor_init(&cursor, txn, aht_main(txn));
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
@@ -276,48 +334,42 @@ static int __cold aa_create(MDBX_txn *txn, aht_t *aht) {
   aatree_t record;
   aht_bare4create(aht);
   aht->aa.created = txn->mt_txnid;
-  aa_txn2db(aht, &record);
+  aa_txn2db(txn->mt_env, aht, &record, af_user);
 
-  MDBX_iov data;
-  data.iov_len = sizeof(aatree_t);
-  data.iov_base = &record;
-
-  WITH_CURSOR_TRACKING(
-      cursor, rc = cursor_put(&cursor.primal, &aht->ahe->ax_ident, &data,
-                              NODE_SUBTREE | MDBX_IUD_NOOVERWRITE));
+  MDBX_iov_t data = {&record, sizeof(aatree_t)};
+  WITH_CURSOR_TRACKING(cursor, rc = cursor_put(&cursor.primal, &aht->ahe->ax_ident, &data,
+                                               NODE_SUBTREE | MDBX_IUD_NOOVERWRITE));
 
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  aht->ah.kind_and_state16 =
-      (aht->ahe->ax_flags16 & MDBX_DUPSORT)
-          ? MDBX_AAH_VALID | MDBX_AAH_CREATED
-          : MDBX_AAH_VALID | MDBX_AAH_CREATED | MDBX_AAH_DUPS;
+  aht->ah.kind_and_state16 = (aht->ahe->ax_flags16 & MDBX_DUPSORT)
+                                 ? MDBX_AAH_VALID | MDBX_AAH_CREATED
+                                 : MDBX_AAH_VALID | MDBX_AAH_CREATED | MDBX_AAH_DUPS;
   return MDBX_SUCCESS;
 }
 
-static aht_t *ahe2aht(MDBX_txn *txn, ahe_t *ahe) {
+static aht_t *ahe2aht(MDBX_txn_t *txn, ahe_t *ahe) {
   aht_t *aht = &txn->txn_aht_array[ahe->ax_ord16];
   if (unlikely(txn->txn_ah_num <= ahe->ax_ord16)) {
     aht_t *last = &txn->txn_aht_array[txn->txn_ah_num];
-    size_t bytes = (char *)aht - (char *)last;
-    memset(last, 0, bytes + sizeof(aht_t));
-    txn->txn_ah_num = ahe->ax_ord16 + 1;
+    ptrdiff_t bytes = (char *)aht - (char *)last;
+    memset(last, 0, (size_t)bytes + sizeof(aht_t));
+    txn->txn_ah_num = ahe->ax_ord16 + 1u;
   }
   return aht;
 }
 
-static unsigned aa_state(MDBX_txn *txn, ahe_t *ahe) {
+static unsigned aa_state(MDBX_txn_t *txn, ahe_t *ahe) {
   if (unlikely(ahe->ax_ord16 >= txn->txn_ah_num))
     return MDBX_AAH_STALE;
 
   aht_t *aht = &txn->txn_aht_array[ahe->ax_ord16];
-  return (aht->ah.seq16 == ahe->ax_seqaah16) ? aht->ah.kind_and_state16
-                                             : MDBX_AAH_BAD;
+  return (aht->ah.seq16 == ahe->ax_seqaah16) ? aht->ah.kind_and_state16 : MDBX_AAH_BAD;
 }
 
-static aht_rc_t aa_take(MDBX_txn *txn, MDBX_aah aah) {
-  ahe_t *ahe = bk_aah2ahe(txn->mt_book, aah);
+static aht_rc_t aa_take(MDBX_txn_t *txn, MDBX_aah_t aah) {
+  ahe_t *ahe = bk_aah2ahe(txn->mt_env, aah);
   if (unlikely(!ahe))
     return txn_rh(MDBX_BAD_AAH, nullptr);
 
@@ -353,11 +405,10 @@ static aht_rc_t aa_take(MDBX_txn *txn, MDBX_aah aah) {
   return txn_rh(rc, nullptr);
 }
 
-static int __cold aa_drop(MDBX_txn *txn, enum mdbx_drop_flags_t flags,
-                          aht_t *aht) {
+static int __cold aa_drop(MDBX_txn_t *txn, mdbx_drop_flags_t flags, aht_t *aht) {
   assert(aht > txn->txn_aht_array);
 
-  MDBX_cursor bc;
+  MDBX_cursor_t bc;
   int rc = cursor_open(txn, aht, &bc);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
@@ -365,46 +416,21 @@ static int __cold aa_drop(MDBX_txn *txn, enum mdbx_drop_flags_t flags,
   rc = tree_drop(&bc.primal, aht->aa.flags16 & MDBX_DUPSORT);
 
   /* Invalidate the dropped AA's cursors */
-  for (MDBX_cursor *scan = *cursor_listhead(&bc); scan != nullptr;
-       scan = scan->mc_next)
+  for (MDBX_cursor_t *scan = *cursor_tracking_head(&bc); scan != nullptr; scan = scan->mc_next)
     scan->primal.mc_state8 &= ~(C_INITIALIZED | C_EOF);
 
   if (likely(rc == MDBX_SUCCESS)) {
+    /* reset the AA record */
     aht_bare4create(aht);
     aht->ah.state8 |= MDBX_AAH_DIRTY;
-    if (aht->ahe == ahe_main(txn->mt_book)) {
-      /* reset the AA record */
+    if (aht->ahe == ahe_main(txn->mt_env)) {
       txn->mt_flags |= MDBX_TXN_DIRTY;
     } else if (flags & MDBX_DELETE_AA) {
-      rc = mdbx_del0(txn, MDBX_MAIN_AAH, &aht->ahe->ax_ident, nullptr,
-                     NODE_SUBTREE);
+      /* remove the AA record */
+      rc = mdbx_del_ex(txn, MDBX_MAIN_AAH, &aht->ahe->ax_ident, nullptr, NODE_SUBTREE);
       if (likely(rc == MDBX_SUCCESS)) {
-        aht->ah.state8 = (aht->ah.state8 & MDBX_AAH_CREATED)
-                             ? MDBX_AAH_ABSENT
-                             : MDBX_AAH_DROPPED | MDBX_AAH_ABSENT;
-        if (flags & MDBX_CLOSE_HANDLE) {
-          aht->ah.kind_and_state16 |= MDBX_AAH_INTERIM | MDBX_AAH_BAD;
-          rc = mdbx_fastmutex_acquire(&txn->mt_book->me_aah_lock, 0);
-          if (unlikely(rc == MDBX_SUCCESS)) {
-            if (unlikely(aht->ahe->ax_seqaah16 != aht->ah.seq16 ||
-                         aht->ahe->ax_refcounter16 < 1)) {
-              rc = MDBX_BAD_AAH;
-              aht->ah.kind_and_state16 = MDBX_AAH_BAD;
-            } else if (aht->ahe->ax_refcounter16 == 1) {
-              aht->ah.kind_and_state16 = MDBX_AAH_STALE;
-              aht->ahe->ax_refcounter16 = 0;
-              aht->ahe->ax_seqaah16 += 1;
-              paranoia_barrier();
-              mdbx_iov_free(&aht->ahe->ax_ident);
-            } else {
-              /* handle will be released at end of txn */
-            }
-
-            mdbx_ensure(txn->mt_book,
-                        mdbx_fastmutex_release(&txn->mt_book->me_aah_lock) ==
-                            MDBX_SUCCESS);
-          }
-        }
+        aht->ah.state8 =
+            (aht->ah.state8 & MDBX_AAH_CREATED) ? MDBX_AAH_ABSENT : MDBX_AAH_DROPPED | MDBX_AAH_ABSENT;
       }
     }
   }
@@ -416,7 +442,7 @@ static int __cold aa_drop(MDBX_txn *txn, enum mdbx_drop_flags_t flags,
   return rc;
 }
 
-static int aa_return(MDBX_txn *txn, unsigned txn_end_flags) {
+static int aa_return(MDBX_txn_t *txn, unsigned txn_end_flags) {
   int rc = MDBX_SUCCESS;
   bool locked = false;
   aht_t *const end = &txn->txn_aht_array[txn->txn_ah_num];
@@ -425,28 +451,26 @@ static int aa_return(MDBX_txn *txn, unsigned txn_end_flags) {
       continue;
 
     ahe_t *ahe = aht->ahe;
-    if (unlikely(ahe->ax_seqaah16 != aht->ah.seq16 ||
-                 ahe->ax_refcounter16 < 1)) {
+    if (unlikely(ahe->ax_seqaah16 != aht->ah.seq16 || ahe->ax_refcounter16 < 1)) {
       rc = MDBX_BAD_AAH;
       continue; /* should release other interim handles */
     }
 
     if (aht->ah.kind_and_state16 & MDBX_AAH_INTERIM) {
       if (!locked) {
-        int err = mdbx_fastmutex_acquire(&txn->mt_book->me_aah_lock, 0);
+        int err = mdbx_fastmutex_acquire(&txn->mt_env->me_aah_lock, 0);
         if (unlikely(err != MDBX_SUCCESS))
           return err;
         locked = true;
       }
 
-      if (unlikely(ahe->ax_seqaah16 != aht->ah.seq16 ||
-                   ahe->ax_refcounter16 < 1)) {
+      if (unlikely(ahe->ax_seqaah16 != aht->ah.seq16 || ahe->ax_refcounter16 < 1)) {
         rc = MDBX_BAD_AAH;
         continue; /* should release other interim handles */
       }
 
       if (--ahe->ax_refcounter16 < 1) {
-        ahe->ax_seqaah16 += 1;
+        ahe->ax_seqaah16++;
         mdbx_iov_free(&ahe->ax_ident);
         continue;
       }
@@ -462,14 +486,12 @@ static int aa_return(MDBX_txn *txn, unsigned txn_end_flags) {
     }
   }
   if (locked)
-    mdbx_ensure(txn->mt_book, mdbx_fastmutex_release(
-                                  &txn->mt_book->me_aah_lock) == MDBX_SUCCESS);
+    mdbx_ensure(txn->mt_env, mdbx_fastmutex_release(&txn->mt_env->me_aah_lock) == MDBX_SUCCESS);
   return rc;
 }
 
-static ahe_rc_t __cold aa_open(MDBX_milieu *bk, MDBX_txn *txn,
-                               const MDBX_iov aa_ident, unsigned flags,
-                               MDBX_comparer *keycmp, MDBX_comparer *datacmp) {
+static ahe_rc_t __cold aa_open(MDBX_env_t *env, MDBX_txn_t *txn, const MDBX_iov_t aa_ident, unsigned flags,
+                               MDBX_comparer_t *keycmp, MDBX_comparer_t *datacmp) {
   if (flags & MDBX_INTERIM)
     assert(txn != nullptr);
 
@@ -478,29 +500,29 @@ static ahe_rc_t __cold aa_open(MDBX_milieu *bk, MDBX_txn *txn,
   if (flags & MDBX_DUPFIXED)
     flags |= MDBX_DUPSORT;
 
-  flags |= MDBX_KCMP;
+  flags |= MDBX_ALIEN_KCMP;
   if (keycmp == nullptr) {
-    flags -= MDBX_KCMP;
+    flags -= MDBX_ALIEN_KCMP;
     keycmp = default_keycmp(flags);
   }
 
-  flags |= MDBX_DCMP;
+  flags |= MDBX_ALIEN_DCMP;
   if (datacmp == nullptr) {
-    flags -= MDBX_DCMP;
+    flags -= MDBX_ALIEN_DCMP;
     datacmp = default_datacmp(flags);
   }
 
-  ahe_t *const ax_main = ahe_main(bk);
+  ahe_t *const ax_main = ahe_main(env);
   ahe_rc_t rp = env_rh(MDBX_SUCCESS, ax_main);
   if (aa_ident.iov_len) {
-    rp = aa_lookup(bk, txn, aa_ident);
+    rp = aa_lookup(env, txn, aa_ident);
     if (unlikely(rp.err != MDBX_SUCCESS))
       return rp;
   }
 
+  assert(rp.ahe->ax_ord16 < env->env_ah_num);
   if (rp.ahe->ax_refcounter16 > 0) {
-    if (unlikely(rp.ahe->ax_kcmp != keycmp || rp.ahe->ax_dcmp != datacmp ||
-                 rp.ahe->ax_flags16 != flags)) {
+    if (unlikely(rp.ahe->ax_kcmp != keycmp || rp.ahe->ax_dcmp != datacmp || rp.ahe->ax_flags16 != flags)) {
       rp.err = MDBX_INCOMPATIBLE;
       return rp;
     }
@@ -512,20 +534,16 @@ static ahe_rc_t __cold aa_open(MDBX_milieu *bk, MDBX_txn *txn,
 
   } else {
     if (rp.ahe != ax_main) {
-      if (ax_main->ax_flags16 &
-          (MDBX_DUPSORT | MDBX_INTEGERKEY | MDBX_KCMP | MDBX_DCMP)) {
+      assert(rp.ahe->ax_ord16 >= CORE_AAH);
+      if (ax_main->ax_flags16 & (MDBX_DUPSORT | MDBX_INTEGERKEY | MDBX_ALIEN_KCMP | MDBX_ALIEN_DCMP)) {
         /* can't mix named table with some main-table flags */
         rp.err = (flags & MDBX_CREATE) ? MDBX_INCOMPATIBLE : MDBX_NOTFOUND;
         return rp;
       }
-      if (ax_main->ax_kcmp == nullptr) {
-        /* setup comparators for MAIN_AA if no ones yet */
-        ax_main->ax_kcmp = default_keycmp(ax_main->ax_flags16);
-        ax_main->ax_dcmp = default_datacmp(ax_main->ax_flags16);
-      }
+      assert(ax_main->ax_kcmp != nullptr);
     }
 
-    rp.ahe->ax_seqaah16 += 1;
+    rp.ahe->ax_seqaah16++;
     paranoia_barrier();
     rp.ahe->ax_ident = aa_ident;
     rp.err = mdbx_iov_dup(&rp.ahe->ax_ident);
@@ -555,7 +573,7 @@ static ahe_rc_t __cold aa_open(MDBX_milieu *bk, MDBX_txn *txn,
   if (rp.err == MDBX_SUCCESS) {
     if (aht)
       assert(aht->ah.state8 & MDBX_AAH_VALID);
-    rp.ahe->ax_refcounter16 += 1;
+    rp.ahe->ax_refcounter16++;
     if (flags & MDBX_INTERIM) {
       assert(aht != nullptr);
       aht->ah.kind_and_state16 |= MDBX_AAH_INTERIM;
@@ -566,32 +584,32 @@ static ahe_rc_t __cold aa_open(MDBX_milieu *bk, MDBX_txn *txn,
     if (aht)
       assert(!(aht->ah.state8 & MDBX_AAH_VALID));
     mdbx_iov_free(&rp.ahe->ax_ident);
-    if (rp.ahe == &bk->env_ahe_array[bk->env_ah_num - 1])
-      bk->env_ah_num -= 1;
+    if (rp.ahe == &env->env_ahe_array[env->env_ah_num - 1])
+      env->env_ah_num--;
   }
 
   return rp;
 }
 
-static int aa_addref(MDBX_milieu *bk, MDBX_aah aah) {
-  ahe_t *ahe = bk_aah2ahe(bk, aah);
+static int aa_addref(MDBX_env_t *env, MDBX_aah_t aah) {
+  ahe_t *ahe = bk_aah2ahe(env, aah);
   if (unlikely(!ahe))
     return MDBX_BAD_AAH;
 
   if (unlikely(ahe->ax_refcounter16 >= INT16_MAX))
     return MDBX_EREFCNT_OVERFLOW;
 
-  ahe->ax_refcounter16 += 1;
+  ahe->ax_refcounter16++;
   return MDBX_SUCCESS;
 }
 
-static int aa_close(MDBX_milieu *bk, MDBX_aah aah) {
-  ahe_t *ahe = bk_aah2ahe(bk, aah);
-  if (unlikely(!ahe || ahe <= ahe_main(bk)))
+static int aa_close(MDBX_env_t *env, MDBX_aah_t aah) {
+  ahe_t *ahe = bk_aah2ahe(env, aah);
+  if (unlikely(!ahe || ahe <= ahe_main(env)))
     return MDBX_BAD_AAH;
 
   if (--ahe->ax_refcounter16 < 1) {
-    ahe->ax_seqaah16 += 1;
+    ahe->ax_seqaah16++;
     paranoia_barrier();
     mdbx_iov_free(&ahe->ax_ident);
   }
@@ -599,17 +617,23 @@ static int aa_close(MDBX_milieu *bk, MDBX_aah aah) {
   return MDBX_SUCCESS;
 }
 
-static int aa_sequence(MDBX_txn *txn, aht_t *aht, uint64_t *result,
-                       uint64_t increment) {
-  if (likely(result))
-    *result = aht->aa.genseq;
+static void aa_release(MDBX_env_t *env, ahe_t *ahe) {
+  (void)env;
+  mdbx_iov_free(&ahe->ax_ident);
+}
+
+static MDBX_sequence_result_t aa_sequence(MDBX_txn_t *txn, aht_t *aht, uint64_t increment) {
+  MDBX_sequence_result_t result;
+  result.value = aht->aa.genseq;
 
   if (likely(increment > 0)) {
     assert((txn->mt_flags & MDBX_RDONLY) == 0);
 
     uint64_t altered = aht->aa.genseq + increment;
-    if (unlikely(altered < increment))
-      return MDBX_RESULT_TRUE /* overflow */;
+    if (unlikely(altered < increment)) {
+      result.err = MDBX_SIGN /* overflow */;
+      return result;
+    }
 
     assert(altered > aht->aa.genseq);
     aht->ah.state8 |= MDBX_AAH_DIRTY;
@@ -617,7 +641,18 @@ static int aa_sequence(MDBX_txn *txn, aht_t *aht, uint64_t *result,
     txn->mt_flags |= MDBX_TXN_DIRTY;
   }
 
-  return MDBX_SUCCESS;
+  result.err = MDBX_SUCCESS;
+  return result;
+}
+
+static inline bool aht_valid(const aht_t *aht) {
+  if (unlikely(aht->ah.state8 & MDBX_AAH_BAD))
+    return false;
+  if (unlikely(aht->ahe->ax_seqaah16 != aht->ah.seq16))
+    return false;
+  if (unlikely(aht->ahe->ax_refcounter16 < 1))
+    return false;
+  return true;
 }
 
 //-----------------------------------------------------------------------------
@@ -629,7 +664,7 @@ static int aa_sequence(MDBX_txn *txn, aht_t *aht, uint64_t *result,
 static int tree_drop(cursor_t *mc, int subs) {
   int rc = page_search(mc, nullptr, MDBX_PS_FIRST);
   if (likely(rc == MDBX_SUCCESS)) {
-    MDBX_txn *txn = mc->mc_txn;
+    MDBX_txn_t *txn = mc->mc_txn;
     node_t *ni;
     cursor_t clone;
     unsigned i;
@@ -638,8 +673,7 @@ static int tree_drop(cursor_t *mc, int subs) {
      * This also avoids any P_DFL pages, which have no nodes.
      * Also if the AA doesn't have sub-DBs and has no overflow
      * pages, omit scanning leaves. */
-    if ((mc->mc_state8 & S_SUBCURSOR) ||
-        (!subs && !mc->mc_aht->aa.overflow_pages))
+    if ((mc->mc_state8 & S_SUBCURSOR) || (!subs && !mc->mc_aht->aa.overflow_pages))
       cursor_pop(mc);
 
     cursor_copy(mc, &clone);
@@ -651,20 +685,19 @@ static int tree_drop(cursor_t *mc, int subs) {
           ni = node_ptr(mp, i);
           if (ni->node_flags8 & NODE_BIG) {
             page_t *omp;
-            pgno_t pg = get_pgno_lea16(NODEDATA(ni));
+            pgno_t pg = get_pgno_aligned2(NODEDATA(ni));
             rc = page_get(txn, pg, &omp, nullptr);
             if (unlikely(rc != MDBX_SUCCESS))
               goto done;
             assert(IS_OVERFLOW(omp));
-            rc =
-                mdbx_pnl_append_range(&txn->mt_befree_pages, pg, omp->mp_pages);
+            rc = mdbx_pnl_append_range(&txn->mt_befree_pages, pg, omp->mp_pages);
             if (unlikely(rc != MDBX_SUCCESS))
               goto done;
             mc->mc_aht->aa.overflow_pages -= omp->mp_pages;
             if (!mc->mc_aht->aa.overflow_pages && !subs)
               break;
           } else if (subs && (ni->node_flags8 & NODE_SUBTREE)) {
-            rc = tree_drop(subordinate_setup(mc, ni), 0);
+            rc = tree_drop(nested_setup(mc, ni), 0);
             if (unlikely(rc != MDBX_SUCCESS))
               goto done;
           }

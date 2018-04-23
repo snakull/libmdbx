@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -13,30 +13,41 @@
  */
 
 #include "./bits.h"
+#include "./debug.h"
 #include "./proto.h"
+#include "./ualb.h"
+
+#define cmp_extra(fmt, ...) log_extra(MDBX_LOG_CMP, fmt, ##__VA_ARGS__)
+#define cmp_trace(fmt, ...) log_trace(MDBX_LOG_CMP, fmt, ##__VA_ARGS__)
+#define cmp_verbose(fmt, ...) log_verbose(MDBX_LOG_CMP, fmt, ##__VA_ARGS__)
+#define cmp_info(fmt, ...) log_info(MDBX_LOG_CMP, fmt, ##__VA_ARGS__)
+#define cmp_notice(fmt, ...) log_notice(MDBX_LOG_CMP, fmt, ##__VA_ARGS__)
+#define cmp_warning(fmt, ...) log_warning(MDBX_LOG_CMP, fmt, ##__VA_ARGS__)
+#define cmp_error(fmt, ...) log_error(MDBX_LOG_CMP, fmt, ##__VA_ARGS__)
+#define cmp_panic(env, msg, err) mdbx_panic(env, MDBX_LOG_CMP, __func__, __LINE__, "%s, error %d", msg, err)
+
+//-----------------------------------------------------------------------------
 
 /* Compare two items pointing at aligned unsigned int's. */
-static ptrdiff_t __hot cmp_int_aligned(const MDBX_iov a, const MDBX_iov b) {
+static ptrdiff_t __hot cmp_int_aligned(const MDBX_iov_t a, const MDBX_iov_t b) {
   mdbx_assert(nullptr, a.iov_len == b.iov_len);
-  mdbx_assert(nullptr, 0 == (uintptr_t)a.iov_base % sizeof(int) &&
-                           0 == (uintptr_t)b.iov_base % sizeof(int));
+  mdbx_assert(nullptr, 0 == (uintptr_t)a.iov_base % sizeof(int) && 0 == (uintptr_t)b.iov_base % sizeof(int));
   switch (a.iov_len) {
   case 4:
     return mdbx_cmp2int(*(uint32_t *)a.iov_base, *(uint32_t *)b.iov_base);
   case 8:
     return mdbx_cmp2int(*(uint64_t *)a.iov_base, *(uint64_t *)b.iov_base);
   default:
-    mdbx_assert_fail(nullptr, "invalid size for INTEGERKEY/INTEGERDUP",
-                     mdbx_func_, __LINE__);
+    mdbx_assert_fail(nullptr, "invalid size for INTEGERKEY/INTEGERDUP", __func__, __LINE__);
     return 0;
   }
 }
 
 /* Compare two items pointing at 2-byte aligned unsigned int's. */
-static ptrdiff_t __hot cmp_int_aligned_to2(const MDBX_iov a, const MDBX_iov b) {
+static ptrdiff_t __hot cmp_int_aligned_to2(const MDBX_iov_t a, const MDBX_iov_t b) {
   mdbx_assert(nullptr, a.iov_len == b.iov_len);
-  mdbx_assert(nullptr, 0 == (uintptr_t)a.iov_base % sizeof(uint16_t) &&
-                           0 == (uintptr_t)b.iov_base % sizeof(uint16_t));
+  mdbx_assert(nullptr,
+              0 == (uintptr_t)a.iov_base % sizeof(uint16_t) && 0 == (uintptr_t)b.iov_base % sizeof(uint16_t));
 #if UNALIGNED_OK
   switch (a.iov_len) {
   case 4:
@@ -44,8 +55,7 @@ static ptrdiff_t __hot cmp_int_aligned_to2(const MDBX_iov a, const MDBX_iov b) {
   case 8:
     return mdbx_cmp2int(*(uint64_t *)a.iov_base, *(uint64_t *)b.iov_base);
   default:
-    mdbx_assert_fail(nullptr, "invalid size for INTEGERKEY/INTEGERDUP",
-                     mdbx_func_, __LINE__);
+    mdbx_assert_fail(nullptr, "invalid size for INTEGERKEY/INTEGERDUP", __func__, __LINE__);
     return 0;
   }
 #else
@@ -60,7 +70,7 @@ static ptrdiff_t __hot cmp_int_aligned_to2(const MDBX_iov a, const MDBX_iov b) {
     pb = (const uint16_t *)((char *)b.iov_base + a.iov_len);
     do {
       diff = *--pa - *--pb;
-#else  /* __BYTE_ORDER__ */
+#else /* __BYTE_ORDER__ */
     end = (const uint16_t *)((char *)a.iov_base + a.iov_len);
     pa = (const uint16_t *)a.iov_base;
     pb = (const uint16_t *)b.iov_base;
@@ -79,7 +89,7 @@ static ptrdiff_t __hot cmp_int_aligned_to2(const MDBX_iov a, const MDBX_iov b) {
  *
  * This is also set as MDBX_INTEGERDUP|MDBX_DUPFIXED's
  * runtime_auxiliary_AA_context.aa_dcmp. */
-static ptrdiff_t __hot cmp_int_unaligned(const MDBX_iov a, const MDBX_iov b) {
+static ptrdiff_t __hot cmp_int_unaligned(const MDBX_iov_t a, const MDBX_iov_t b) {
   mdbx_assert(nullptr, a.iov_len == b.iov_len);
 #if UNALIGNED_OK
   switch (a.iov_len) {
@@ -88,8 +98,7 @@ static ptrdiff_t __hot cmp_int_unaligned(const MDBX_iov a, const MDBX_iov b) {
   case 8:
     return mdbx_cmp2int(*(uint64_t *)a.iov_base, *(uint64_t *)b.iov_base);
   default:
-    mdbx_assert_fail(nullptr, "invalid size for INTEGERKEY/INTEGERDUP",
-                     mdbx_func_, __LINE__);
+    mdbx_assert_fail(nullptr, "invalid size for INTEGERKEY/INTEGERDUP", __func__, __LINE__);
     return 0;
   }
 #else
@@ -115,36 +124,31 @@ static ptrdiff_t __hot cmp_int_unaligned(const MDBX_iov a, const MDBX_iov b) {
 #endif /* UNALIGNED_OK */
 }
 
-static ptrdiff_t __hot cmp_int_aligned_to2_reverse(const MDBX_iov a,
-                                                   const MDBX_iov b) {
+static ptrdiff_t __hot cmp_int_aligned_to2_reverse(const MDBX_iov_t a, const MDBX_iov_t b) {
   /* FIXME: TODO */
-  mdbx_ensure_msg(
-      nullptr, false,
-      "MDBX_DUPSORT|MDBX_REVERSEDUP|MDBX_INTEGERDUP not yet implemented");
+  mdbx_ensure_msg(nullptr, false, "MDBX_DUPSORT|MDBX_REVERSEDUP|MDBX_INTEGERDUP not yet implemented");
   (void)a;
   (void)b;
   return 0;
 }
 
-static ptrdiff_t __hot cmp_int_unaligned_reverse(const MDBX_iov a,
-                                                 const MDBX_iov b) {
+static ptrdiff_t __hot cmp_int_unaligned_reverse(const MDBX_iov_t a, const MDBX_iov_t b) {
   /* FIXME: TODO */
-  mdbx_ensure_msg(
-      nullptr, false,
-      "MDBX_DUPSORT|MDBX_REVERSEDUP|MDBX_INTEGERDUP not yet implemented");
+  mdbx_ensure_msg(nullptr, false, "MDBX_DUPSORT|MDBX_REVERSEDUP|MDBX_INTEGERDUP not yet implemented");
   (void)a;
   (void)b;
   return 0;
 }
 
-static ptrdiff_t __cold cmp_none(const MDBX_iov a, const MDBX_iov b) {
+static ptrdiff_t __cold cmp_none(const MDBX_iov_t a, const MDBX_iov_t b) {
   (void)a;
   (void)b;
+  mdbx_ensure_msg(nullptr, false, "cmp_none() called");
   return 0;
 }
 
 /* Compare two items lexically */
-static ptrdiff_t __hot cmp_binstr_obverse(const MDBX_iov a, const MDBX_iov b) {
+static ptrdiff_t __hot cmp_binstr_obverse(const MDBX_iov_t a, const MDBX_iov_t b) {
 /* LY: assumes that length of keys are NOT equal for most cases,
  * if no then branch-prediction should mitigate the problem */
 #if 0
@@ -164,7 +168,7 @@ static ptrdiff_t __hot cmp_binstr_obverse(const MDBX_iov a, const MDBX_iov b) {
 }
 
 /* Compare two items in reverse byte order */
-static ptrdiff_t __hot cmp_bytestr_reverse(const MDBX_iov a, const MDBX_iov b) {
+static ptrdiff_t __hot cmp_bytestr_reverse(const MDBX_iov_t a, const MDBX_iov_t b) {
   const uint8_t *pa, *pb, *end;
 
   pa = (const uint8_t *)a.iov_base + a.iov_len;
@@ -182,7 +186,7 @@ static ptrdiff_t __hot cmp_bytestr_reverse(const MDBX_iov a, const MDBX_iov b) {
 
 //-----------------------------------------------------------------------------
 
-static MDBX_comparer *default_keycmp(unsigned flags) {
+static MDBX_comparer_t *default_keycmp(unsigned flags) {
   if (flags & MDBX_INTEGERKEY) {
     if (flags & MDBX_REVERSEKEY)
       return cmp_int_aligned_to2_reverse;
@@ -193,7 +197,7 @@ static MDBX_comparer *default_keycmp(unsigned flags) {
   return cmp_binstr_obverse;
 }
 
-static MDBX_comparer *default_datacmp(unsigned flags) {
+static MDBX_comparer_t *default_datacmp(unsigned flags) {
   if (flags & MDBX_DUPSORT) {
     if (flags & MDBX_REVERSEDUP) {
       if (flags & MDBX_INTEGERDUP)

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -20,16 +20,9 @@
 
 #define ACTOR_ID_MAX INT16_MAX
 
-enum actor_testcase { ac_none, ac_hill, ac_deadread, ac_deadwrite, ac_jitter };
+enum actor_testcase { ac_none, ac_hill, ac_deadread, ac_deadwrite, ac_jitter, ac_try };
 
-enum actor_status {
-  as_unknown,
-  as_debuging,
-  as_running,
-  as_successful,
-  as_killed,
-  as_failed
-};
+enum actor_status { as_unknown, as_debuging, as_running, as_successful, as_killed, as_failed };
 
 const char *testcase2str(const actor_testcase);
 const char *status2str(actor_status status);
@@ -49,34 +42,30 @@ namespace config {
 
 enum scale_mode { no_scale, decimal, binary, duration };
 
-bool parse_option(int argc, char *const argv[], int &narg, const char *option,
-                  const char **value, const char *default_value = nullptr);
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, const char **value,
+                  const char *default_value = nullptr);
 
-bool parse_option(int argc, char *const argv[], int &narg, const char *option,
-                  std::string &value, bool allow_empty = false);
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, std::string &value,
+                  bool allow_empty = false);
 
-bool parse_option(int argc, char *const argv[], int &narg, const char *option,
-                  bool &value);
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, bool &value);
 
 struct option_verb {
   const char *const verb;
-  unsigned mask;
+  uint_fast32_t mask;
 };
 
-bool parse_option(int argc, char *const argv[], int &narg, const char *option,
-                  unsigned &mask, const option_verb *verbs);
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, unsigned &mask,
+                  const option_verb *verbs);
 
-bool parse_option(int argc, char *const argv[], int &narg, const char *option,
-                  uint64_t &value, const scale_mode scale,
-                  const uint64_t minval = 0, const uint64_t maxval = INT64_MAX);
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, uint64_t &value,
+                  const scale_mode scale, const uint64_t minval = 0, const uint64_t maxval = INT64_MAX);
 
-bool parse_option(int argc, char *const argv[], int &narg, const char *option,
-                  unsigned &value, const scale_mode scale,
-                  const unsigned minval = 0, const unsigned maxval = INT32_MAX);
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, unsigned &value,
+                  const scale_mode scale, const unsigned minval = 0, const unsigned maxval = INT32_MAX);
 
-bool parse_option(int argc, char *const argv[], int &narg, const char *option,
-                  uint8_t &value, const uint8_t minval = 0,
-                  const uint8_t maxval = 255);
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, uint8_t &value,
+                  const uint8_t minval = 0, const uint8_t maxval = 255);
 
 //-----------------------------------------------------------------------------
 
@@ -194,8 +183,8 @@ struct keygen_params_pod {
 struct actor_params_pod {
   unsigned loglevel;
 
-  unsigned mode_flags;
-  unsigned table_flags;
+  uint32_t mode_flags;
+  uint32_t table_flags;
   uint64_t size;
 
   unsigned test_duration;
@@ -211,6 +200,7 @@ struct actor_params_pod {
 
   unsigned delaystart;
   unsigned waitfor_nops;
+  unsigned inject_writefaultn;
 
   unsigned max_readers;
   unsigned max_tables;
@@ -237,7 +227,7 @@ void dump(const char *title = "config-dump: ");
 struct actor_params : public config::actor_params_pod {
   std::string pathname_log;
   std::string pathname_db;
-  void set_defaults(void);
+  void set_defaults(const std::string &tmpdir);
 };
 
 struct actor_config : public config::actor_config_pod {
@@ -245,8 +235,7 @@ struct actor_config : public config::actor_config_pod {
 
   bool wanna_event4signalling() const { return true /* TODO ? */; }
 
-  actor_config(actor_testcase testcase, const actor_params &params,
-               unsigned space_id, unsigned wait4id);
+  actor_config(actor_testcase testcase, const actor_params &params, unsigned space_id, unsigned wait4id);
 
   actor_config(const char *str) {
     if (!deserialize(str, *this))
@@ -264,6 +253,7 @@ struct actor_config : public config::actor_config_pod {
     case ac_hill:
       if (!params.test_nops || params.test_nops >= nops)
         return true;
+    /* fallthrough */
     default:
       return false;
     }

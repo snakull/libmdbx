@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -71,14 +71,10 @@ namespace keygen {
 
 typedef uint64_t serial_t;
 
-enum : serial_t {
-  serial_minwith = 8,
-  serial_maxwith = sizeof(serial_t) * 8,
-  serial_allones = ~(serial_t)0
-};
+enum : serial_t { serial_minwith = 8, serial_maxwith = sizeof(serial_t) * 8, serial_allones = ~(serial_t)0 };
 
 struct result {
-  MDBX_iov value;
+  MDBX_iov_t value;
   size_t limit;
   union {
     uint8_t bytes[sizeof(uint64_t)];
@@ -89,7 +85,7 @@ struct result {
 
 //-----------------------------------------------------------------------------
 
-struct buffer_deleter : public std::unary_function<void, result *> {
+struct buffer_deleter {
   void operator()(result *buffer) const { free(buffer); }
 };
 
@@ -113,8 +109,7 @@ class maker {
 public:
   maker() { memset(this, 0, sizeof(*this)); }
 
-  void pair(serial_t serial, const buffer &key, buffer &value,
-            serial_t value_age);
+  void pair(serial_t serial, const buffer &key, buffer &value, serial_t value_age);
   void setup(const config::actor_params_pod &actor, unsigned thread_number);
 
   bool increment(serial_t &serial, int delta);

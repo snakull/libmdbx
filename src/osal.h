@@ -1,7 +1,7 @@
-﻿/* https://en.wikipedia.org/wiki/Operating_system_abstraction_layer */
+/* https://en.wikipedia.org/wiki/Operating_system_abstraction_layer */
 
 /*
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -21,12 +21,12 @@
 
 #ifdef _MSC_VER
 #pragma warning(push, 1)
-#pragma warning(disable : 4548) /* expression before comma has no effect;      \
+#pragma warning(disable : 4548) /* expression before comma has no effect;                                     \
                                    expected expression with side - effect */
-#pragma warning(disable : 4530) /* C++ exception handler used, but unwind      \
+#pragma warning(disable : 4530) /* C++ exception handler used, but unwind                                     \
                                  * semantics are not enabled. Specify /EHsc */
-#pragma warning(disable : 4577) /* 'noexcept' used with no exception handling  \
-                                 * mode specified; termination on exception is \
+#pragma warning(disable : 4577) /* 'noexcept' used with no exception handling                                 \
+                                 * mode specified; termination on exception is                                \
                                  * not guaranteed. Specify /EHsc */
 #if !defined(_CRT_SECURE_NO_WARNINGS)
 #define _CRT_SECURE_NO_WARNINGS
@@ -65,6 +65,7 @@
 /* Systems includes */
 
 #if defined(_WIN32) || defined(_WIN64)
+#include <tlhelp32.h>
 #include <windows.h>
 #include <winnt.h>
 #define HAVE_SYS_STAT_H
@@ -72,7 +73,6 @@
 typedef HANDLE mdbx_thread_t;
 typedef unsigned mdbx_thread_key_t;
 #define MDBX_INVALID_FD INVALID_HANDLE_VALUE
-#define MDBX_OSAL_SECTION HANDLE
 #define MAP_FAILED NULL
 #define HIGH_DWORD(v) ((DWORD)((sizeof(v) > 4) ? ((uint64_t)(v) >> 32) : 0))
 #define THREAD_CALL WINAPI
@@ -105,24 +105,42 @@ typedef pthread_mutex_t mdbx_fastmutex_t;
 #define MDBX_PATH_SEPARATOR "/"
 #endif /* Platform */
 
+/* *INDENT-OFF* */
+/* clang-format off */
+#if defined(HAVE_SYS_STAT_H) || __has_include(<sys/stat.h>)
+#include <sys/stat.h>
+#endif
+#if defined(HAVE_SYS_TYPES_H) || __has_include(<sys/types.h>)
+#include <sys/types.h>
+#endif
+#if defined(HAVE_SYS_FILE_H) || __has_include(<sys/file.h>)
+#include <sys/file.h>
+#endif
+/* *INDENT-ON* */
+/* clang-format on */
+
 #ifndef SSIZE_MAX
 #define SSIZE_MAX INTPTR_MAX
 #endif
 
-#ifdef HAVE_SYS_STAT_H
-#include <sys/stat.h>
-#endif
-#ifdef HAVE_SYS_TYPES_H
-#include <sys/types.h>
-#endif
-#ifdef HAVE_SYS_FILE_H
-#include <sys/file.h>
-#endif
+#if defined(i386) || defined(__386) || defined(__i386) || defined(__i386__) || defined(i486) ||               \
+    defined(__i486) || defined(__i486__) || defined(i586) | defined(__i586) || defined(__i586__) ||           \
+    defined(i686) || defined(__i686) || defined(__i686__) || defined(_M_IX86) || defined(_X86_) ||            \
+    defined(__THW_INTEL__) || defined(__I86__) || defined(__INTEL__) || defined(__x86_64) ||                  \
+    defined(__x86_64__) || defined(__amd64__) || defined(__amd64) || defined(_M_X64) || defined(_M_AMD64) ||  \
+    defined(__IA32__) || defined(__INTEL__)
+#ifndef __ia32__
+/* LY: define neutral __ia32__ for x86 and x86-64 archs */
+#define __ia32__ 1
+#endif /* __ia32__ */
+#if !defined(__amd64__) && (defined(__x86_64) || defined(__x86_64__) || defined(__amd64) || defined(_M_X64))
+/* LY: define trusty __amd64__ for all AMD64/x86-64 arch */
+#define __amd64__ 1
+#endif /* __amd64__ */
+#endif /* all x86 */
 
 #if !defined(UNALIGNED_OK)
-#if defined(__i386) || defined(__x86_64__) || defined(_M_IX86) ||              \
-    defined(_M_X64) || defined(i386) || defined(_X86_) || defined(__i386__) || \
-    defined(_X86_64_)
+#if (defined(__ia32__) || defined(__e2k__) || defined(__ARM_FEATURE_UNALIGNED)) && !defined(__ALIGNED__)
 #define UNALIGNED_OK 1
 #else
 #define UNALIGNED_OK 0
@@ -130,37 +148,24 @@ typedef pthread_mutex_t mdbx_fastmutex_t;
 #endif /* UNALIGNED_OK */
 
 #if (-6 & 5) || CHAR_BIT != 8 || UINT_MAX < 0xffffffff || ULONG_MAX % 0xFFFF
-#error                                                                         \
-    "Sanity checking failed: Two's complement, reasonably sized integer types"
+#error "Sanity checking failed: Two's complement, reasonably sized integer types"
 #endif
 
 /*----------------------------------------------------------------------------*/
 /* Compiler's includes for builtins/intrinsics */
 
-#ifdef _MSC_VER
-
-#if _MSC_FULL_VER < 190024215
-#if _MSC_FULL_VER < 180040629 && defined(_M_IX86)
-#error Please use Visual Studio 2015 (MSC 19.0) or newer for 32-bit target.
-#else
-#pragma message(                                                               \
-    "It is recommended to use Visual Studio 2015 (MSC 19.0) or newer.")
-#endif
-#endif
-
+#if defined(_MSC_VER) || defined(__INTEL_COMPILER)
 #include <intrin.h>
-
 #elif __GNUC_PREREQ(4, 4) || defined(__clang__)
-#if defined(__i386__) || defined(__x86_64__)
-#include <cpuid.h>
+#if defined(__ia32__) || defined(__e2k__)
 #include <x86intrin.h>
-#endif
-#elif defined(__INTEL_COMPILER)
-#include <intrin.h>
+#endif /* __ia32__ */
+#if defined(__ia32__)
+#include <cpuid.h>
+#endif /* __ia32__ */
 #elif defined(__SUNPRO_C) || defined(__sun) || defined(sun)
 #include <mbarrier.h>
-#elif (defined(_HPUX_SOURCE) || defined(__hpux) || defined(__HP_aCC)) &&       \
-    (defined(HP_IA64) || defined(__ia64))
+#elif (defined(_HPUX_SOURCE) || defined(__hpux) || defined(__HP_aCC)) && (defined(HP_IA64) || defined(__ia64))
 #include <machine/sys/inline.h>
 #elif defined(__IBMC__) && defined(__powerpc)
 #include <atomic.h>
@@ -175,9 +180,73 @@ typedef pthread_mutex_t mdbx_fastmutex_t;
 #pragma gcc_extensions
 #elif defined(__SNC__)
 /* Sony PS3 - troubles ? */
+#elif defined(__hppa__) || defined(__hppa)
+#include <machine/inline.h>
 #else
-#error Unknown C compiler, please use GNU C 5.x or newer
+#error Unsupported C compiler, please use GNU C 4.4 or newer
 #endif /* Compiler */
+
+/*----------------------------------------------------------------------------*/
+/* Byteorder */
+
+#if !defined(__BYTE_ORDER__) || !defined(__ORDER_LITTLE_ENDIAN__) || !defined(__ORDER_BIG_ENDIAN__)
+
+/* *INDENT-OFF* */
+/* clang-format off */
+#if defined(__GLIBC__) || defined(__GNU_LIBRARY__) || defined(__ANDROID__) ||  \
+    defined(HAVE_ENDIAN_H) || __has_include(<endian.h>)
+#include <endian.h>
+#elif defined(__APPLE__) || defined(__MACH__) || defined(__OpenBSD__) ||       \
+    defined(HAVE_MACHINE_ENDIAN_H) || __has_include(<machine/endian.h>)
+#include <machine/endian.h>
+#elif defined(HAVE_SYS_ISA_DEFS_H) || __has_include(<sys/isa_defs.h>)
+#include <sys/isa_defs.h>
+#elif (defined(HAVE_SYS_TYPES_H) && defined(HAVE_SYS_ENDIAN_H)) ||             \
+    (__has_include(<sys/types.h>) && __has_include(<sys/endian.h>))
+#include <sys/endian.h>
+#include <sys/types.h>
+#elif defined(__bsdi__) || defined(__DragonFly__) || defined(__FreeBSD__) ||   \
+    defined(__NETBSD__) || defined(__NetBSD__) ||                              \
+    defined(HAVE_SYS_PARAM_H) || __has_include(<sys/param.h>)
+#include <sys/param.h>
+#endif /* OS */
+/* *INDENT-ON* */
+/* clang-format on */
+
+#if defined(__BYTE_ORDER) && defined(__LITTLE_ENDIAN) && defined(__BIG_ENDIAN)
+#define __ORDER_LITTLE_ENDIAN__ __LITTLE_ENDIAN
+#define __ORDER_BIG_ENDIAN__ __BIG_ENDIAN
+#define __BYTE_ORDER__ __BYTE_ORDER
+#elif defined(_BYTE_ORDER) && defined(_LITTLE_ENDIAN) && defined(_BIG_ENDIAN)
+#define __ORDER_LITTLE_ENDIAN__ _LITTLE_ENDIAN
+#define __ORDER_BIG_ENDIAN__ _BIG_ENDIAN
+#define __BYTE_ORDER__ _BYTE_ORDER
+#else
+#define __ORDER_LITTLE_ENDIAN__ 1234
+#define __ORDER_BIG_ENDIAN__ 4321
+
+#if defined(__LITTLE_ENDIAN__) || (defined(_LITTLE_ENDIAN) && !defined(_BIG_ENDIAN)) || defined(__ARMEL__) || \
+    defined(__THUMBEL__) || defined(__AARCH64EL__) || defined(__MIPSEL__) || defined(_MIPSEL) ||              \
+    defined(__MIPSEL) || defined(_M_ARM) || defined(_M_ARM64) || defined(__e2k__) ||                          \
+    defined(__elbrus_4c__) || defined(__elbrus_8c__) || defined(__bfin__) || defined(__BFIN__) ||             \
+    defined(__ia64__) || defined(_IA64) || defined(__IA64__) || defined(__ia64) || defined(_M_IA64) ||        \
+    defined(__itanium__) || defined(__ia32__) || defined(__CYGWIN__) || defined(_WIN64) || defined(_WIN32) || \
+    defined(__TOS_WIN__) || defined(__WINDOWS__)
+#define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__
+
+#elif defined(__BIG_ENDIAN__) || (defined(_BIG_ENDIAN) && !defined(_LITTLE_ENDIAN)) || defined(__ARMEB__) ||  \
+    defined(__THUMBEB__) || defined(__AARCH64EB__) || defined(__MIPSEB__) || defined(_MIPSEB) ||              \
+    defined(__MIPSEB) || defined(__m68k__) || defined(M68000) || defined(__hppa__) || defined(__hppa) ||      \
+    defined(__HPPA__) || defined(__sparc__) || defined(__sparc) || defined(__370__) ||                        \
+    defined(__THW_370__) || defined(__s390__) || defined(__s390x__) || defined(__SYSC_ZARCH__)
+#define __BYTE_ORDER__ __ORDER_BIG_ENDIAN__
+
+#else
+#error __BYTE_ORDER__ should be defined.
+#endif /* Arch */
+
+#endif
+#endif /* __BYTE_ORDER__ || __ORDER_LITTLE_ENDIAN__ || __ORDER_BIG_ENDIAN__ */
 
 /*----------------------------------------------------------------------------*/
 /* Memory/Compiler barriers, cache coherence */
@@ -199,11 +268,9 @@ static inline void mdbx_compiler_barrier(void) {
 #endif
 #elif defined(__SUNPRO_C) || defined(__sun) || defined(sun)
   __compiler_barrier();
-#elif (defined(_HPUX_SOURCE) || defined(__hpux) || defined(__HP_aCC)) &&       \
-    (defined(HP_IA64) || defined(__ia64))
+#elif (defined(_HPUX_SOURCE) || defined(__hpux) || defined(__HP_aCC)) && (defined(HP_IA64) || defined(__ia64))
   _Asm_sched_fence(/* LY: no-arg meaning 'all expect ALU', e.g. 0x3D3D */);
-#elif defined(_AIX) || defined(__ppc__) || defined(__powerpc__) ||             \
-    defined(__ppc64__) || defined(__powerpc64__)
+#elif defined(_AIX) || defined(__ppc__) || defined(__powerpc__) || defined(__ppc64__) || defined(__powerpc64__)
   __fence();
 #else
 #error "Could not guess the kind of compiler, please report to us."
@@ -229,11 +296,9 @@ static inline void mdbx_memory_barrier(void) {
 #endif
 #elif defined(__SUNPRO_C) || defined(__sun) || defined(sun)
   __machine_rw_barrier();
-#elif (defined(_HPUX_SOURCE) || defined(__hpux) || defined(__HP_aCC)) &&       \
-    (defined(HP_IA64) || defined(__ia64))
+#elif (defined(_HPUX_SOURCE) || defined(__hpux) || defined(__HP_aCC)) && (defined(HP_IA64) || defined(__ia64))
   _Asm_mf();
-#elif defined(_AIX) || defined(__ppc__) || defined(__powerpc__) ||             \
-    defined(__ppc64__) || defined(__powerpc64__)
+#elif defined(_AIX) || defined(__ppc__) || defined(__powerpc__) || defined(__ppc64__) || defined(__powerpc64__)
   __lwsync();
 #else
 #error "Could not guess the kind of compiler, please report to us."
@@ -243,17 +308,13 @@ static inline void mdbx_memory_barrier(void) {
 /*----------------------------------------------------------------------------*/
 /* Cache coherence and invalidation */
 
-#if defined(__i386__) || defined(__x86_64__) || defined(_M_AMD64) ||           \
-    defined(_M_IX86) || defined(__i386) || defined(__amd64) ||                 \
-    defined(i386) || defined(__x86_64) || defined(_AMD64_) || defined(_M_X64)
-#define MDBX_CACHE_IS_COHERENT 1
-#elif defined(__hppa) || defined(__hppa__)
-#define MDBX_CACHE_IS_COHERENT 1
-#endif
-
 #ifndef MDBX_CACHE_IS_COHERENT
+#if defined(__ia32__) || defined(__e2k__) || defined(__hppa) || defined(__hppa__)
+#define MDBX_CACHE_IS_COHERENT 1
+#else
 #define MDBX_CACHE_IS_COHERENT 0
 #endif
+#endif /* MDBX_CACHE_IS_COHERENT */
 
 #ifndef MDBX_CACHELINE_SIZE
 #if defined(SYSTEM_CACHE_ALIGNMENT_SIZE)
@@ -265,29 +326,29 @@ static inline void mdbx_memory_barrier(void) {
 #endif
 #endif /* MDBX_CACHELINE_SIZE */
 
-#ifndef __cache_aligned
-#define __cache_aligned __aligned(MDBX_CACHELINE_SIZE)
-#endif
-
 #if MDBX_CACHE_IS_COHERENT
 #define mdbx_coherent_barrier() mdbx_compiler_barrier()
 #else
 #define mdbx_coherent_barrier() mdbx_memory_barrier()
 #endif
 
-#if defined(__mips) && defined(__linux)
+#if defined(__mips) || defined(__mips__) || defined(__mips64) || defined(__mips64) || defined(_M_MRX000) ||   \
+    defined(_MIPS_)
 /* Only MIPS has explicit cache control */
-#include <asm/cachectl.h>
+#include <sys/cachectl.h>
 #endif
 
 static inline void mdbx_invalidate_cache(void *addr, size_t nbytes) {
   mdbx_coherent_barrier();
-#if defined(__mips) && defined(__linux)
+#if defined(__mips) || defined(__mips__) || defined(__mips64) || defined(__mips64) || defined(_M_MRX000) ||   \
+    defined(_MIPS_)
+#if defined(DCACHE)
   /* MIPS has cache coherency issues.
    * Note: for any nbytes >= on-chip cache size, entire is flushed. */
   cacheflush(addr, nbytes, DCACHE);
-#elif defined(_M_MRX000) || defined(_MIPS_)
+#else
 #error "Sorry, cacheflush() for MIPS not implemented"
+#endif /* __mips__ */
 #else
   /* LY: assume no relevant mmap/dcache issues. */
   (void)addr;
@@ -298,27 +359,23 @@ static inline void mdbx_invalidate_cache(void *addr, size_t nbytes) {
 /*----------------------------------------------------------------------------*/
 /* libc compatibility stuff */
 
-#ifndef mdbx_assert_fail
-void mdbx_assert_fail(const MDBX_milieu *bk, const char *msg, const char *func,
-                      int line);
-#endif /* mdbx_assert_fail */
-
 #if __GLIBC_PREREQ(2, 1)
 #define mdbx_asprintf asprintf
+#define mdbx_vasprintf vasprintf
 #else
 int mdbx_asprintf(char **strp, const char *fmt, ...);
+int mdbx_vasprintf(char **strp, const char *fmt, va_list ap);
 #endif
 
 #ifdef _MSC_VER
 
 #ifndef snprintf
-#define snprintf(buffer, buffer_size, format, ...)                             \
+#define snprintf(buffer, buffer_size, format, ...)                                                            \
   _snprintf_s(buffer, buffer_size, _TRUNCATE, format, __VA_ARGS__)
 #endif /* snprintf */
 
 #ifndef vsnprintf
-#define vsnprintf(buffer, buffer_size, format, args)                           \
-  _vsnprintf_s(buffer, buffer_size, _TRUNCATE, format, args)
+#define vsnprintf(buffer, buffer_size, format, args) _vsnprintf_s(buffer, buffer_size, _TRUNCATE, format, args)
 #endif /* vsnprintf */
 
 #ifdef _ASSERTE
@@ -343,13 +400,13 @@ static inline size_t mdbx_syspagesize(void) {
   GetSystemInfo(&si);
   return si.dwPageSize;
 #else
-  return sysconf(_SC_PAGE_SIZE);
+  return (size_t)sysconf(_SC_PAGE_SIZE);
 #endif
 }
 
 static inline char *mdbx_stpcpy(char *dest, const char *src) {
-#if (defined(_XOPEN_SOURCE) && _XOPEN_SOURCE >= 700) ||                        \
-    (defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200809L) ||                \
+#if (defined(_XOPEN_SOURCE) && _XOPEN_SOURCE >= 700) ||                                                       \
+    (defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200809L) ||                                               \
     (defined(_GNU_SOURCE) && __GLIBC_PREREQ(2, 10))
   return stpcpy(dest, src) + 1;
 #else
@@ -378,40 +435,35 @@ typedef struct mdbx_mmap_param {
   size_t length; /* mapping length, but NOT a size of file or databook */
 #if defined(_WIN32) || defined(_WIN64)
   size_t current; /* mapped region size, e.g. file and databook */
-#endif
-#ifdef MDBX_OSAL_SECTION
-  MDBX_OSAL_SECTION section;
+  uint64_t filesize;
+  HANDLE section;
 #endif
 } mdbx_mmap_t;
 
-/*----------------------------------------------------------------------------*/
-/* lck stuff */
-
 #if defined(_WIN32) || defined(_WIN64)
-#undef MDBX_OSAL_LOCK
-#define MDBX_OSAL_LOCK_SIGN UINT32_C(0xF10C)
-#else
-#define MDBX_OSAL_LOCK pthread_mutex_t
-#define MDBX_OSAL_LOCK_SIGN UINT32_C(0x8017)
-#endif
+typedef struct {
+  unsigned limit, count;
+  HANDLE handles[42];
+} mdbx_handle_array_t;
+static int mdbx_suspend_threads_before_remap(struct MDBX_env *env, mdbx_handle_array_t **array);
+static int mdbx_resume_threads_after_remap(mdbx_handle_array_t *array);
+#endif /* Windows */
 
 /*----------------------------------------------------------------------------*/
 /* Atomics */
 
-#if !defined(__cplusplus) && (__STDC_VERSION__ >= 201112L) &&                  \
-    !defined(__STDC_NO_ATOMICS__) &&                                           \
-    (__GNUC_PREREQ(4, 9) || __CLANG_PREREQ(3, 8) ||                            \
-     !(defined(__GNUC__) || defined(__clang__)))
+#if !defined(__cplusplus) && (__STDC_VERSION__ >= 201112L) && !defined(__STDC_NO_ATOMICS__) &&                \
+    (__GNUC_PREREQ(4, 9) || __CLANG_PREREQ(3, 8) || !(defined(__GNUC__) || defined(__clang__)))
 #include <stdatomic.h>
 #elif defined(__GNUC__) || defined(__clang__)
 /* LY: nothing required */
 #elif defined(_MSC_VER)
 #pragma warning(disable : 4163) /* 'xyz': not available as an intrinsic */
-#pragma warning(disable : 4133) /* 'function': incompatible types - from       \
+#pragma warning(disable : 4133) /* 'function': incompatible types - from                                      \
                                    'size_t' to 'LONGLONG' */
-#pragma warning(disable : 4244) /* 'return': conversion from 'LONGLONG' to     \
+#pragma warning(disable : 4244) /* 'return': conversion from 'LONGLONG' to                                    \
                                    'std::size_t', possible loss of data */
-#pragma warning(disable : 4267) /* 'function': conversion from 'size_t' to     \
+#pragma warning(disable : 4267) /* 'function': conversion from 'size_t' to                                    \
                                    'long', possible loss of data */
 #pragma intrinsic(_InterlockedExchangeAdd, _InterlockedCompareExchange)
 #pragma intrinsic(_InterlockedExchangeAdd64, _InterlockedCompareExchange64)
@@ -445,8 +497,12 @@ static inline uint64_t mdbx_atomic_add64(volatile uint64_t *p, uint64_t v) {
   return __sync_fetch_and_add(p, v);
 #else
 #ifdef _MSC_VER
+#ifdef _WIN64
   return _InterlockedExchangeAdd64((volatile int64_t *)p, v);
+#else
+  return InterlockedExchangeAdd64((volatile int64_t *)p, v);
 #endif
+#endif /* _MSC_VER */
 #ifdef __APPLE__
   return OSAtomicAdd64(v, (volatile int64_t *)p);
 #endif
@@ -456,8 +512,7 @@ static inline uint64_t mdbx_atomic_add64(volatile uint64_t *p, uint64_t v) {
 #define mdbx_atomic_sub32(p, v) mdbx_atomic_add32(p, 0 - (v))
 #define mdbx_atomic_sub64(p, v) mdbx_atomic_add64(p, 0 - (v))
 
-static inline bool mdbx_atomic_compare_and_swap32(volatile uint32_t *p,
-                                                  uint32_t c, uint32_t v) {
+static inline bool mdbx_atomic_compare_and_swap32(volatile uint32_t *p, uint32_t c, uint32_t v) {
 #if !defined(__cplusplus) && defined(ATOMIC_VAR_INIT)
   assert(atomic_is_lock_free(p));
   return atomic_compare_exchange_strong((_Atomic uint32_t *)p, &c, v);
@@ -473,8 +528,7 @@ static inline bool mdbx_atomic_compare_and_swap32(volatile uint32_t *p,
 #endif
 }
 
-static inline bool mdbx_atomic_compare_and_swap64(volatile uint64_t *p,
-                                                  uint64_t c, uint64_t v) {
+static inline bool mdbx_atomic_compare_and_swap64(volatile uint64_t *p, uint64_t c, uint64_t v) {
 #if !defined(__cplusplus) && defined(ATOMIC_VAR_INIT)
   assert(atomic_is_lock_free(p));
   return atomic_compare_exchange_strong((_Atomic uint64_t *)p, &c, v);

@@ -1,7 +1,7 @@
 /* mdbx_load.c - memory-mapped database load tool */
 
 /*
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -55,8 +55,8 @@ static int dbi_flags;
 static char *prog;
 static int Eof;
 
-static MDBX_milieu_info envinfo;
-static MDBX_iov kbuf, dbuf;
+static MDBX_db_info_t bk_info;
+static MDBX_iov_t kbuf, dbuf;
 
 #define STRLENOF(s) (sizeof(s) - 1)
 
@@ -89,20 +89,17 @@ static void readhdr(void) {
     } else if (!strncmp(dbuf.iov_base, "VERSION=", STRLENOF("VERSION="))) {
       version = atoi((char *)dbuf.iov_base + STRLENOF("VERSION="));
       if (version > 3) {
-        fprintf(stderr, "%s: line %" PRIiSIZE ": unsupported VERSION %d\n",
-                prog, lineno, version);
+        fprintf(stderr, "%s: line %" PRIiSIZE ": unsupported VERSION %d\n", prog, lineno, version);
         exit(EXIT_FAILURE);
       }
     } else if (!strncmp(dbuf.iov_base, "HEADER=END", STRLENOF("HEADER=END"))) {
       break;
     } else if (!strncmp(dbuf.iov_base, "format=", STRLENOF("format="))) {
-      if (!strncmp((char *)dbuf.iov_base + STRLENOF("FORMAT="), "print",
-                   STRLENOF("print")))
+      if (!strncmp((char *)dbuf.iov_base + STRLENOF("FORMAT="), "print", STRLENOF("print")))
         mode |= PRINT;
-      else if (strncmp((char *)dbuf.iov_base + STRLENOF("FORMAT="), "bytevalue",
-                       STRLENOF("bytevalue"))) {
-        fprintf(stderr, "%s: line %" PRIiSIZE ": unsupported FORMAT %s\n", prog,
-                lineno, (char *)dbuf.iov_base + STRLENOF("FORMAT="));
+      else if (strncmp((char *)dbuf.iov_base + STRLENOF("FORMAT="), "bytevalue", STRLENOF("bytevalue"))) {
+        fprintf(stderr, "%s: line %" PRIiSIZE ": unsupported FORMAT %s\n", prog, lineno,
+                (char *)dbuf.iov_base + STRLENOF("FORMAT="));
         exit(EXIT_FAILURE);
       }
     } else if (!strncmp(dbuf.iov_base, "database=", STRLENOF("database="))) {
@@ -113,10 +110,9 @@ static void readhdr(void) {
         free(subname);
       subname = strdup((char *)dbuf.iov_base + STRLENOF("database="));
     } else if (!strncmp(dbuf.iov_base, "type=", STRLENOF("type="))) {
-      if (strncmp((char *)dbuf.iov_base + STRLENOF("type="), "btree",
-                  STRLENOF("btree"))) {
-        fprintf(stderr, "%s: line %" PRIiSIZE ": unsupported type %s\n", prog,
-                lineno, (char *)dbuf.iov_base + STRLENOF("type="));
+      if (strncmp((char *)dbuf.iov_base + STRLENOF("type="), "btree", STRLENOF("btree"))) {
+        fprintf(stderr, "%s: line %" PRIiSIZE ": unsupported type %s\n", prog, lineno,
+                (char *)dbuf.iov_base + STRLENOF("type="));
         exit(EXIT_FAILURE);
       }
     } else if (!strncmp(dbuf.iov_base, "mapaddr=", STRLENOF("mapaddr="))) {
@@ -127,8 +123,8 @@ static void readhdr(void) {
       void *unused;
       i = sscanf((char *)dbuf.iov_base + STRLENOF("mapaddr="), "%p", &unused);
       if (i != 1) {
-        fprintf(stderr, "%s: line %" PRIiSIZE ": invalid mapaddr %s\n", prog,
-                lineno, (char *)dbuf.iov_base + STRLENOF("mapaddr="));
+        fprintf(stderr, "%s: line %" PRIiSIZE ": invalid mapaddr %s\n", prog, lineno,
+                (char *)dbuf.iov_base + STRLENOF("mapaddr="));
         exit(EXIT_FAILURE);
       }
     } else if (!strncmp(dbuf.iov_base, "mapsize=", STRLENOF("mapsize="))) {
@@ -136,24 +132,21 @@ static void readhdr(void) {
       ptr = memchr(dbuf.iov_base, '\n', dbuf.iov_len);
       if (ptr)
         *ptr = '\0';
-      i = sscanf((char *)dbuf.iov_base + STRLENOF("mapsize="), "%" PRIu64 "",
-                 &envinfo.bi_mapsize);
+      i = sscanf((char *)dbuf.iov_base + STRLENOF("mapsize="), "%" PRIu64 "", &bk_info.bi_mapsize);
       if (i != 1) {
-        fprintf(stderr, "%s: line %" PRIiSIZE ": invalid mapsize %s\n", prog,
-                lineno, (char *)dbuf.iov_base + STRLENOF("mapsize="));
+        fprintf(stderr, "%s: line %" PRIiSIZE ": invalid mapsize %s\n", prog, lineno,
+                (char *)dbuf.iov_base + STRLENOF("mapsize="));
         exit(EXIT_FAILURE);
       }
-    } else if (!strncmp(dbuf.iov_base, "maxreaders=",
-                        STRLENOF("maxreaders="))) {
+    } else if (!strncmp(dbuf.iov_base, "maxreaders=", STRLENOF("maxreaders="))) {
       int i;
       ptr = memchr(dbuf.iov_base, '\n', dbuf.iov_len);
       if (ptr)
         *ptr = '\0';
-      i = sscanf((char *)dbuf.iov_base + STRLENOF("maxreaders="), "%u",
-                 &envinfo.bi_maxreaders);
+      i = sscanf((char *)dbuf.iov_base + STRLENOF("maxreaders="), "%u", &bk_info.bi_readers_max);
       if (i != 1) {
-        fprintf(stderr, "%s: line %" PRIiSIZE ": invalid maxreaders %s\n", prog,
-                lineno, (char *)dbuf.iov_base + STRLENOF("maxreaders="));
+        fprintf(stderr, "%s: line %" PRIiSIZE ": invalid maxreaders %s\n", prog, lineno,
+                (char *)dbuf.iov_base + STRLENOF("maxreaders="));
         exit(EXIT_FAILURE);
       }
     } else {
@@ -169,14 +162,12 @@ static void readhdr(void) {
       if (!dbflags[i].bit) {
         ptr = memchr(dbuf.iov_base, '=', dbuf.iov_len);
         if (!ptr) {
-          fprintf(stderr, "%s: line %" PRIiSIZE ": unexpected format\n", prog,
-                  lineno);
+          fprintf(stderr, "%s: line %" PRIiSIZE ": unexpected format\n", prog, lineno);
           exit(EXIT_FAILURE);
         } else {
           *ptr = '\0';
-          fprintf(stderr,
-                  "%s: line %" PRIiSIZE ": unrecognized keyword ignored: %s\n",
-                  prog, lineno, (char *)dbuf.iov_base);
+          fprintf(stderr, "%s: line %" PRIiSIZE ": unrecognized keyword ignored: %s\n", prog, lineno,
+                  (char *)dbuf.iov_base);
         }
       }
     }
@@ -184,8 +175,7 @@ static void readhdr(void) {
 }
 
 static void badend(void) {
-  fprintf(stderr, "%s: line %" PRIiSIZE ": unexpected end of input\n", prog,
-          lineno);
+  fprintf(stderr, "%s: line %" PRIiSIZE ": unexpected end of input\n", prog, lineno);
 }
 
 static int unhex(unsigned char *c2) {
@@ -201,7 +191,7 @@ static int unhex(unsigned char *c2) {
   return c;
 }
 
-static int readline(MDBX_iov *out, MDBX_iov *buf) {
+static int readline(MDBX_iov_t *out, MDBX_iov_t *buf) {
   unsigned char *c1, *c2, *end;
   size_t len, l2;
   int c;
@@ -240,8 +230,7 @@ static int readline(MDBX_iov *out, MDBX_iov *buf) {
     buf->iov_base = realloc(buf->iov_base, buf->iov_len * 2);
     if (!buf->iov_base) {
       Eof = 1;
-      fprintf(stderr, "%s: line %" PRIiSIZE ": out of memory, line too long\n",
-              prog, lineno);
+      fprintf(stderr, "%s: line %" PRIiSIZE ": out of memory, line too long\n", prog, lineno);
       return EOF;
     }
     c1 = buf->iov_base;
@@ -304,17 +293,16 @@ static int readline(MDBX_iov *out, MDBX_iov *buf) {
 }
 
 static void usage(void) {
-  fprintf(stderr, "usage: %s [-V] [-f input] [-n] [-s name] [-N] [-T] dbpath\n",
-          prog);
+  fprintf(stderr, "usage: %s [-V] [-f input] [-n] [-s name] [-N] [-T] dbpath\n", prog);
   exit(EXIT_FAILURE);
 }
 
 int main(int argc, char *argv[]) {
-  int i, rc;
-  MDBX_milieu *bk = NULL;
-  MDBX_txn *txn = NULL;
-  MDBX_cursor *mc = NULL;
-  MDBX_aah aah;
+  int i;
+  MDBX_error_t err;
+  MDBX_txn_t *txn = NULL;
+  MDBX_env_t *env = NULL;
+  MDBX_cursor_t *cursor = NULL;
   char *envname = NULL;
   int envflags = 0, putflags = 0;
 
@@ -334,8 +322,7 @@ int main(int argc, char *argv[]) {
   while ((i = getopt(argc, argv, "f:ns:NTV")) != EOF) {
     switch (i) {
     case 'V':
-      printf("%s (%s, build %s)\n", mdbx_version.git.describe,
-             mdbx_version.git.datetime, mdbx_build.datetime);
+      printf("%s (%s, build %s)\n", mdbx_version.git.describe, mdbx_version.git.datetime, mdbx_build.datetime);
       exit(EXIT_SUCCESS);
       break;
     case 'f':
@@ -384,25 +371,23 @@ int main(int argc, char *argv[]) {
     readhdr();
 
   envname = argv[optind];
-  rc = mdbx_bk_init(&bk);
-  if (rc) {
-    fprintf(stderr, "mdbx_bk_init failed, error %d %s\n", rc,
-            mdbx_strerror(rc));
+  err = mdbx_init(&env);
+  if (err) {
+    fprintf(stderr, "mdbx_init failed, error %d %s\n", err, mdbx_strerror(err));
     return EXIT_FAILURE;
   }
 
-  mdbx_set_max_handles(bk, 2);
+  mdbx_set_maxhandles(env, 2);
 
-  if (envinfo.bi_maxreaders)
-    mdbx_set_maxreaders(bk, envinfo.bi_maxreaders);
+  if (bk_info.bi_readers_max)
+    mdbx_set_maxreaders(env, bk_info.bi_readers_max);
 
-  if (envinfo.bi_mapsize) {
-    if (envinfo.bi_mapsize > SIZE_MAX) {
-      fprintf(stderr, "mdbx_set_mapsize failed, error %d %s\n", rc,
-              mdbx_strerror(MDBX_TOO_LARGE));
+  if (bk_info.bi_mapsize) {
+    if (bk_info.bi_mapsize > SIZE_MAX) {
+      fprintf(stderr, "mdbx_set_mapsize failed, error %d %s\n", err, mdbx_strerror(MDBX_TOO_LARGE));
       return EXIT_FAILURE;
     }
-    mdbx_set_mapsize(bk, (size_t)envinfo.bi_mapsize);
+    mdbx_set_mapsize(env, (size_t)bk_info.bi_mapsize);
   }
 
 #ifdef MDBX_FIXEDMAP
@@ -410,104 +395,123 @@ int main(int argc, char *argv[]) {
     envflags |= MDBX_FIXEDMAP;
 #endif
 
-  rc = mdbx_bk_open(bk, envname, envflags, 0664);
-  if (rc) {
-    fprintf(stderr, "mdbx_bk_open failed, error %d %s\n", rc,
-            mdbx_strerror(rc));
+  err = mdbx_open(env, envname, envflags, 0664);
+  if (err) {
+    fprintf(stderr, "mdbx_open failed, error %d %s\n", err, mdbx_strerror(err));
     goto env_close;
   }
 
-  kbuf.iov_len = mdbx_get_maxkeysize(bk) * 2 + 2;
+  err = mdbx_info(env, &bk_info, sizeof(bk_info));
+  if (err) {
+    fprintf(stderr, "mdbx_info failed, error %d %s\n", err, mdbx_strerror(err));
+    goto env_close;
+  }
+
+  kbuf.iov_len = bk_info.bi_maxkeysize * 2 + 2;
   kbuf.iov_base = malloc(kbuf.iov_len);
 
   while (!Eof) {
     if (user_break) {
-      rc = MDBX_EINTR;
+      err = MDBX_EINTR;
       break;
     }
 
-    MDBX_iov key, data;
+    MDBX_iov_t key, data;
     int batch = 0;
 
-    rc = mdbx_tn_begin(bk, NULL, 0, &txn);
-    if (rc) {
-      fprintf(stderr, "mdbx_tn_begin failed, error %d %s\n", rc,
-              mdbx_strerror(rc));
-      goto env_close;
+    {
+      const MDBX_txn_result_t tr = mdbx_begin(env, NULL, MDBX_RDWR);
+      txn = tr.txn;
+      err = tr.err;
+      if (err) {
+        fprintf(stderr, "mdbx_begin failed, error %d %s\n", err, mdbx_strerror(err));
+        goto env_close;
+      }
     }
 
-    rc = mdbx_aa_open(txn, subname, dbi_flags | MDBX_CREATE, &aah, NULL, NULL);
-    if (rc) {
-      fprintf(stderr, "mdbx_open failed, error %d %s\n", rc, mdbx_strerror(rc));
-      goto txn_abort;
+    MDBX_aah_t aah = MDBX_MAIN_AAH;
+    if (subname) {
+      const MDBX_aah_result_t aah_result =
+          mdbx_aa_open(txn, mdbx_str2iov(subname), dbi_flags | MDBX_CREATE, NULL, NULL);
+      aah = aah_result.aah;
+      err = aah_result.err;
+      if (err) {
+        fprintf(stderr, "mdbx_aa_open failed, error %d %s\n", err, mdbx_strerror(err));
+        goto txn_abort;
+      }
     }
 
-    rc = mdbx_cursor_open(txn, aah, &mc);
-    if (rc) {
-      fprintf(stderr, "mdbx_cursor_open failed, error %d %s\n", rc,
-              mdbx_strerror(rc));
-      goto txn_abort;
+    {
+      const MDBX_cursor_result_t cr = mdbx_cursor_open(txn, aah);
+      err = cr.err;
+      cursor = cr.cursor;
+      if (err) {
+        fprintf(stderr, "mdbx_cursor_open failed, error %d %s\n", cr.err, mdbx_strerror(err));
+        goto txn_abort;
+      }
     }
 
     while (1) {
-      rc = readline(&key, &kbuf);
-      if (rc) /* rc == EOF */
+      err = readline(&key, &kbuf);
+      if (err) /* err == EOF */
         break;
 
-      rc = readline(&data, &dbuf);
-      if (rc) {
-        fprintf(stderr, "%s: line %" PRIiSIZE ": failed to read key value\n",
-                prog, lineno);
+      err = readline(&data, &dbuf);
+      if (err) {
+        fprintf(stderr, "%s: line %" PRIiSIZE ": failed to read key value\n", prog, lineno);
         goto txn_abort;
       }
 
-      rc = mdbx_cursor_put(mc, &key, &data, putflags);
-      if (rc == MDBX_KEYEXIST && putflags)
+      err = mdbx_cursor_put(cursor, &key, &data, putflags);
+      if (err == MDBX_KEYEXIST && putflags)
         continue;
-      if (rc) {
-        fprintf(stderr, "mdbx_cursor_put failed, error %d %s\n", rc,
-                mdbx_strerror(rc));
+      if (err) {
+        fprintf(stderr, "mdbx_cursor_put failed, error %d %s\n", err, mdbx_strerror(err));
         goto txn_abort;
       }
       batch++;
-      if (batch == 100) {
-        rc = mdbx_tn_commit(txn);
-        if (rc) {
-          fprintf(stderr, "%s: line %" PRIiSIZE ": txn_commit: %s\n", prog,
-                  lineno, mdbx_strerror(rc));
+      if (batch == /* FIXME */ 100) {
+        mdbx_cursor_close(cursor);
+        err = mdbx_commit(txn);
+        if (err) {
+          fprintf(stderr, "%s: line %" PRIiSIZE ": txn_commit: %s\n", prog, lineno, mdbx_strerror(err));
           goto env_close;
         }
-        rc = mdbx_tn_begin(bk, NULL, 0, &txn);
-        if (rc) {
-          fprintf(stderr, "mdbx_tn_begin failed, error %d %s\n", rc,
-                  mdbx_strerror(rc));
+
+        const MDBX_txn_result_t tr = mdbx_begin(env, NULL, MDBX_RDWR);
+        txn = tr.txn;
+        err = tr.err;
+        if (err) {
+          fprintf(stderr, "mdbx_begin failed, error %d %s\n", err, mdbx_strerror(err));
           goto env_close;
         }
-        rc = mdbx_cursor_open(txn, aah, &mc);
-        if (rc) {
-          fprintf(stderr, "mdbx_cursor_open failed, error %d %s\n", rc,
-                  mdbx_strerror(rc));
+
+        const MDBX_cursor_result_t cr = mdbx_cursor_open(txn, aah);
+        err = cr.err;
+        cursor = cr.cursor;
+        if (err) {
+          fprintf(stderr, "mdbx_cursor_open failed, error %d %s\n", err, mdbx_strerror(err));
           goto txn_abort;
         }
         batch = 0;
       }
     }
-    rc = mdbx_tn_commit(txn);
+    mdbx_cursor_close(cursor);
+    err = mdbx_commit(txn);
     txn = NULL;
-    if (rc) {
-      fprintf(stderr, "%s: line %" PRIiSIZE ": txn_commit: %s\n", prog, lineno,
-              mdbx_strerror(rc));
+    if (err) {
+      fprintf(stderr, "%s: line %" PRIiSIZE ": txn_commit: %s\n", prog, lineno, mdbx_strerror(err));
       goto env_close;
     }
-    mdbx_aa_close(bk, aah);
+    mdbx_aa_close(env, aah);
     if (!(mode & NOHDR))
       readhdr();
   }
 
 txn_abort:
-  mdbx_tn_abort(txn);
+  mdbx_abort(txn);
 env_close:
-  mdbx_bk_shutdown(bk);
+  mdbx_shutdown(env);
 
-  return rc ? EXIT_FAILURE : EXIT_SUCCESS;
+  return err ? EXIT_FAILURE : EXIT_SUCCESS;
 }

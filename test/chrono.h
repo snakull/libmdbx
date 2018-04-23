@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -20,9 +20,10 @@
 
 namespace chrono {
 
+#pragma pack(push, 1)
 typedef union time {
   uint64_t fixedpoint;
-  struct __packed {
+  struct {
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
     uint32_t fractional;
     union {
@@ -41,6 +42,7 @@ typedef union time {
   void reset() { fixedpoint = 0; }
   uint32_t seconds() const { return utc; }
 } time;
+#pragma pack(pop)
 
 uint32_t ns2fractional(uint32_t);
 uint32_t fractional2ns(uint32_t);
@@ -71,12 +73,10 @@ inline time infinite() {
   return result;
 }
 
-#if defined(HAVE_TIMESPEC_TV_NSEC) || defined(__timespec_defined) ||           \
-    defined(CLOCK_REALTIME)
+#if defined(HAVE_TIMESPEC_TV_NSEC) || defined(__timespec_defined) || defined(CLOCK_REALTIME)
 inline time from_timespec(const struct timespec &ts) {
   time result;
-  result.fixedpoint =
-      ((uint64_t)ts.tv_sec << 32) | ns2fractional((uint32_t)ts.tv_nsec);
+  result.fixedpoint = ((uint64_t)ts.tv_sec << 32) | ns2fractional((uint32_t)ts.tv_nsec);
   return result;
 }
 #endif /* HAVE_TIMESPEC_TV_NSEC */
@@ -84,8 +84,7 @@ inline time from_timespec(const struct timespec &ts) {
 #if defined(HAVE_TIMEVAL_TV_USEC) || defined(_STRUCT_TIMEVAL)
 inline time from_timeval(const struct timeval &tv) {
   time result;
-  result.fixedpoint =
-      ((uint64_t)tv.tv_sec << 32) | us2fractional((uint32_t)tv.tv_usec);
+  result.fixedpoint = ((uint64_t)tv.tv_sec << 32) | us2fractional((uint32_t)tv.tv_usec);
   return result;
 }
 #endif /* HAVE_TIMEVAL_TV_USEC */

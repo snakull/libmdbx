@@ -1,7 +1,7 @@
 /* mdbx_dump.c - memory-mapped database dump tool */
 
 /*
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -66,7 +66,7 @@ static void dumpbyte(unsigned char c) {
   putchar(hexc[c & 0xf]);
 }
 
-static void text(MDBX_iov *v) {
+static void text(MDBX_iov_t *v) {
   unsigned char *c, *end;
 
   putchar(' ');
@@ -84,7 +84,7 @@ static void text(MDBX_iov *v) {
   putchar('\n');
 }
 
-static void dumpval(MDBX_iov *v) {
+static void dumpval(MDBX_iov_t *v) {
   unsigned char *c, *end;
 
   putchar(' ');
@@ -97,48 +97,42 @@ static void dumpval(MDBX_iov *v) {
 }
 
 /* Dump in BDB-compatible format */
-static int dumpit(MDBX_txn *txn, MDBX_aah aah, char *name) {
-  MDBX_cursor *mc;
-  MDBX_aa_info ms;
-  MDBX_iov key, data;
-  MDBX_milieu_info info;
-  unsigned int flags;
-  int rc, i;
+static int dumpit(MDBX_txn_t *txn, MDBX_aah_t aah, const MDBX_iov_t name) {
+  MDBX_aa_info_t aa_info;
+  MDBX_iov_t key, data;
+  MDBX_db_info_t bk_info;
+  int err, i;
 
-  rc = mdbx_aa_flags(txn, aah, &flags);
-  if (rc)
-    return rc;
+  err = mdbx_aa_info(txn, aah, &aa_info, sizeof(aa_info));
+  if (err)
+    return err;
 
-  rc = mdbx_aa_info(txn, aah, &ms, sizeof(ms));
-  if (rc)
-    return rc;
-
-  rc = mdbx_bk_info(mdbx_tn_book(txn), &info, sizeof(info));
-  if (rc)
-    return rc;
+  err = mdbx_info(mdbx_txn_env(txn).env, &bk_info, sizeof(bk_info));
+  if (err)
+    return err;
 
   printf("VERSION=3\n");
   printf("format=%s\n", mode & PRINT ? "print" : "bytevalue");
-  if (name)
-    printf("database=%s\n", name);
+  if (name.iov_len)
+    printf("database=%*s\n", (int)name.iov_len, (const char *)name.iov_base);
   printf("type=btree\n");
-  printf("mapsize=%" PRIu64 "\n", info.bi_mapsize);
-  printf("maxreaders=%u\n", info.bi_maxreaders);
+  printf("mapsize=%" PRIu64 "\n", bk_info.bi_mapsize);
+  printf("maxreaders=%u\n", bk_info.bi_readers_max);
 
   for (i = 0; dbflags[i].bit; i++)
-    if (flags & dbflags[i].bit)
+    if (aa_info.ai_flags & dbflags[i].bit)
       printf("%s=1\n", dbflags[i].name);
 
-  printf("db_pagesize=%d\n", ms.ms_psize);
+  printf("db_pagesize=%d\n", bk_info.bi_pagesize);
   printf("HEADER=END\n");
 
-  rc = mdbx_cursor_open(txn, aah, &mc);
-  if (rc)
-    return rc;
+  MDBX_cursor_result_t xr = mdbx_cursor_open(txn, aah);
+  if (xr.err != MDBX_SUCCESS)
+    return xr.err;
 
-  while ((rc = mdbx_cursor_get(mc, &key, &data, MDBX_NEXT)) == MDBX_SUCCESS) {
+  while ((err = mdbx_cursor_get(xr.cursor, &key, &data, MDBX_NEXT)) == MDBX_SUCCESS) {
     if (user_break) {
-      rc = MDBX_EINTR;
+      err = MDBX_EINTR;
       break;
     }
     if (mode & PRINT) {
@@ -150,24 +144,21 @@ static int dumpit(MDBX_txn *txn, MDBX_aah aah, char *name) {
     }
   }
   printf("DATA=END\n");
-  if (rc == MDBX_NOTFOUND)
-    rc = MDBX_SUCCESS;
+  if (err == MDBX_NOTFOUND)
+    err = MDBX_SUCCESS;
+  mdbx_cursor_close(xr.cursor);
 
-  return rc;
+  return err;
 }
 
 static void usage(char *prog) {
-  fprintf(stderr,
-          "usage: %s [-V] [-f output] [-l] [-n] [-p] [-a|-s subdb] dbpath\n",
-          prog);
+  fprintf(stderr, "usage: %s [-V] [-f output] [-l] [-n] [-p] [-a|-s subdb] dbpath\n", prog);
   exit(EXIT_FAILURE);
 }
 
 int main(int argc, char *argv[]) {
-  int i, rc;
-  MDBX_milieu *bk;
-  MDBX_txn *txn;
-  MDBX_aah aah;
+  int i;
+  MDBX_error_t err;
   char *prog = argv[0];
   char *envname;
   char *subname = NULL;
@@ -188,13 +179,12 @@ int main(int argc, char *argv[]) {
   while ((i = getopt(argc, argv, "af:lnps:V")) != EOF) {
     switch (i) {
     case 'V':
-      printf("%s (%s, build %s)\n", mdbx_version.git.describe,
-             mdbx_version.git.datetime, mdbx_build.datetime);
+      printf("%s (%s, build %s)\n", mdbx_version.git.describe, mdbx_version.git.datetime, mdbx_build.datetime);
       exit(EXIT_SUCCESS);
       break;
     case 'l':
       list = 1;
-      /*FALLTHROUGH*/;
+    /* fallthrough */
     case 'a':
       if (subname)
         usage(prog);
@@ -239,97 +229,91 @@ int main(int argc, char *argv[]) {
 #endif /* !WINDOWS */
 
   envname = argv[optind];
-  rc = mdbx_bk_init(&bk);
-  if (rc) {
-    fprintf(stderr, "mdbx_bk_init failed, error %d %s\n", rc,
-            mdbx_strerror(rc));
+  MDBX_env_t *env;
+  err = mdbx_init(&env);
+  if (err) {
+    fprintf(stderr, "mdbx_init failed, error %d %s\n", err, mdbx_strerror(err));
     return EXIT_FAILURE;
   }
 
-  if (alldbs || subname) {
-    mdbx_set_max_handles(bk, 2);
-  }
+  if (alldbs || subname)
+    mdbx_set_maxhandles(env, 2);
 
-  rc = mdbx_bk_open(bk, envname, envflags | MDBX_RDONLY, 0664);
-  if (rc) {
-    fprintf(stderr, "mdbx_bk_open failed, error %d %s\n", rc,
-            mdbx_strerror(rc));
+  err = mdbx_open(env, envname, envflags | MDBX_RDONLY, 0664);
+  if (err) {
+    fprintf(stderr, "mdbx_open failed, error %d %s\n", err, mdbx_strerror(err));
     goto env_close;
   }
 
-  rc = mdbx_tn_begin(bk, NULL, MDBX_RDONLY, &txn);
-  if (rc) {
-    fprintf(stderr, "mdbx_tn_begin failed, error %d %s\n", rc,
-            mdbx_strerror(rc));
+  const MDBX_txn_result_t tr = mdbx_begin(env, NULL, MDBX_RDONLY);
+  MDBX_txn_t *const txn = tr.txn;
+  err = tr.err;
+  if (err) {
+    fprintf(stderr, "mdbx_begin failed, error %d %s\n", err, mdbx_strerror(err));
     goto env_close;
   }
 
-  rc = mdbx_aa_open(txn, subname, 0, &aah, NULL, NULL);
-  if (rc) {
-    fprintf(stderr, "mdbx_open failed, error %d %s\n", rc, mdbx_strerror(rc));
-    goto txn_abort;
+  MDBX_aah_t aah = MDBX_MAIN_AAH;
+  if (subname) {
+    MDBX_aah_result_t aah_result = mdbx_aa_open(txn, mdbx_str2iov(subname), 0, NULL, NULL);
+    if (aah_result.err) {
+      err = aah_result.err;
+      fprintf(stderr, "mdbx_aa_open failed, error %d %s\n", err, mdbx_strerror(err));
+      goto txn_abort;
+    }
+    aah = aah_result.aah;
   }
 
   if (alldbs) {
-    MDBX_cursor *cursor;
-    MDBX_iov key;
+    MDBX_iov_t key;
     int count = 0;
 
-    rc = mdbx_cursor_open(txn, aah, &cursor);
-    if (rc) {
-      fprintf(stderr, "mdbx_cursor_open failed, error %d %s\n", rc,
-              mdbx_strerror(rc));
+    MDBX_cursor_result_t xr = mdbx_cursor_open(txn, aah);
+    if (xr.err) {
+      fprintf(stderr, "mdbx_cursor_open failed, error %d %s\n", xr.err, mdbx_strerror(xr.err));
       goto txn_abort;
     }
-    while ((rc = mdbx_cursor_get(cursor, &key, NULL, MDBX_NEXT_NODUP)) == 0) {
+    while ((err = mdbx_cursor_get(xr.cursor, &key, NULL, MDBX_NEXT_NODUP)) == 0) {
       if (user_break) {
-        rc = MDBX_EINTR;
+        err = MDBX_EINTR;
         break;
       }
-      char *str;
-      MDBX_aah db2;
-      if (memchr(key.iov_base, '\0', key.iov_len))
+      if (key.iov_len < 1 || memchr(key.iov_base, '\0', key.iov_len))
         continue;
       count++;
-      str = malloc(key.iov_len + 1);
-      memcpy(str, key.iov_base, key.iov_len);
-      str[key.iov_len] = '\0';
-      rc = mdbx_aa_open(txn, str, 0, &db2, NULL, NULL);
-      if (rc == MDBX_SUCCESS) {
-        if (list) {
-          printf("%s\n", str);
-          list++;
-        } else {
-          rc = dumpit(txn, db2, str);
-          if (rc)
-            break;
-        }
-        mdbx_aa_close(bk, db2);
-      }
-      free(str);
-      if (rc)
+      MDBX_aah_result_t aah_result = mdbx_aa_open(txn, key, 0, NULL, NULL);
+      if (aah_result.err)
         continue;
+      if (list) {
+        printf("%*s\n", (int)key.iov_len, (const char *)key.iov_base);
+        list++;
+      } else {
+        err = dumpit(txn, aah_result.aah, key);
+        if (err)
+          break;
+      }
+      mdbx_aa_close(env, aah_result.aah);
     }
-    mdbx_cursor_close(cursor);
+    mdbx_cursor_close(xr.cursor);
+
     if (!count) {
-      fprintf(stderr, "%s: %s does not contain multiple databases\n", prog,
-              envname);
-      rc = MDBX_NOTFOUND;
-    } else if (rc == MDBX_INCOMPATIBLE) {
+      fprintf(stderr, "%s: %s does not contain multiple databases\n", prog, envname);
+      err = MDBX_NOTFOUND;
+    } else if (err == MDBX_INCOMPATIBLE) {
       /* LY: the record it not a named sub-db. */
-      rc = MDBX_SUCCESS;
+      err = MDBX_SUCCESS;
     }
   } else {
-    rc = dumpit(txn, aah, subname);
+    err = dumpit(txn, aah, mdbx_str2iov(subname));
   }
-  if (rc && rc != MDBX_NOTFOUND)
-    fprintf(stderr, "%s: %s: %s\n", prog, envname, mdbx_strerror(rc));
+  if (err && err != MDBX_NOTFOUND)
+    fprintf(stderr, "%s: %s: %s\n", prog, envname, mdbx_strerror(err));
 
-  mdbx_aa_close(bk, aah);
+  mdbx_aa_close(env, aah);
 txn_abort:
-  mdbx_tn_abort(txn);
+  mdbx_abort(txn);
 env_close:
-  mdbx_bk_shutdown(bk);
+  mdbx_shutdown(env);
 
-  return rc ? EXIT_FAILURE : EXIT_SUCCESS;
+  return err ? EXIT_FAILURE : EXIT_SUCCESS;
 }

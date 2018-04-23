@@ -1,5 +1,5 @@
-﻿/*
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>
+/*
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -36,38 +36,26 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. */
 
 #include "./bits.h"
+#include "./debug.h"
 #include "./proto.h"
 #include "./ualb.h"
 
-#if defined(__GNUC__) && !__GNUC_PREREQ(4, 2)
-/* Actualy libmdbx was not tested with compilers older than GCC from RHEL6.
- * But you could remove this #error and try to continue at your own risk.
- * In such case please don't rise up an issues related ONLY to old compilers.
- */
-#warning "libmdbx required at least GCC 4.2 compatible C/C++ compiler."
+#if defined(_WIN32) || defined(_WIN64)
+#include "lck-windows.c"
+#else
+#include "lck-posix.c"
 #endif
-
-#if defined(__GLIBC__) && !__GLIBC_PREREQ(2, 12)
-/* Actualy libmdbx was not tested with something older than glibc 2.12 (from
- * RHEL6).
- * But you could remove this #error and try to continue at your own risk.
- * In such case please don't rise up an issues related ONLY to old systems.
- */
-#warning "libmdbx required at least GLIBC 2.12."
-#endif
-
-#ifdef __SANITIZE_THREAD__
-#warning                                                                       \
-    "libmdbx don't compatible with ThreadSanitizer, you will get a LOT of false-positive issues."
-#endif /* __SANITIZE_THREAD__ */
 
 #include "aah.c"
 #include "api.c"
+#include "audit.c"
 #include "cmp.c"
 #include "cursor.c"
 #include "debug.c"
 #include "env.c"
+#include "gaco.c"
 #include "list.c"
+#include "mem.c"
 #include "meta.c"
 #include "misc.c"
 #include "osal.c"
@@ -75,11 +63,6 @@
 #include "rthc.c"
 #include "txn.c"
 #include "util.c"
+#include "version.c"
 
 #include "mess.c"
-
-#if defined(_WIN32) || defined(_WIN64)
-#include "lck-windows.c"
-#else
-#include "lck-posix.c"
-#endif

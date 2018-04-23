@@ -14,7 +14,7 @@
 
 #include "test.h"
 
-bool testcase_deadread::setup() {
+bool testcase_try::setup() {
   log_trace(">> setup");
   if (!inherited::setup())
     return false;
@@ -23,38 +23,24 @@ bool testcase_deadread::setup() {
   return true;
 }
 
-bool testcase_deadread::run() {
+bool testcase_try::run() {
   db_open();
-  txn_begin(true);
+  assert(!txn_guard);
+
+  const MDBX_txn_result_t tr1 = mdbx_begin(db_guard.get(), nullptr, MDBX_RDWR);
+  if (unlikely(tr1.err != MDBX_SUCCESS))
+    failure_perror("mdbx_txn_begin(MDBX_RDWR)", tr1.err);
+  else {
+    const MDBX_txn_result_t tr2 = mdbx_begin(db_guard.get(), nullptr, MDBX_RDWR | MDBX_NONBLOCK);
+    if (unlikely(tr2.err != MDBX_EBUSY))
+      failure_perror("mdbx_txn_begin(MDBX_RDWR|MDBX_NONBLOCK)", tr2.err);
+  }
+
+  txn_guard.reset(tr1.txn);
   return true;
 }
 
-bool testcase_deadread::teardown() {
-  log_trace(">> teardown");
-  cursor_guard.release();
-  txn_guard.release();
-  db_guard.release();
-  return inherited::teardown();
-}
-
-//-----------------------------------------------------------------------------
-
-bool testcase_deadwrite::setup() {
-  log_trace(">> setup");
-  if (!inherited::setup())
-    return false;
-
-  log_trace("<< setup");
-  return true;
-}
-
-bool testcase_deadwrite::run() {
-  db_open();
-  txn_begin(false);
-  return true;
-}
-
-bool testcase_deadwrite::teardown() {
+bool testcase_try::teardown() {
   log_trace(">> teardown");
   cursor_guard.release();
   txn_guard.release();

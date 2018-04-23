@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -38,13 +38,11 @@ void osal_wait4barrier(void) {
   DWORD rc = WaitForSingleObject(hBarrierSemaphore, 0);
   switch (rc) {
   default:
-    failure_perror("WaitForSingleObject(BarrierSemaphore)",
-                   waitstatus2errcode(rc));
+    failure_perror("WaitForSingleObject(BarrierSemaphore)", waitstatus2errcode(rc));
   case WAIT_OBJECT_0:
     rc = WaitForSingleObject(hBarrierEvent, INFINITE);
     if (rc != WAIT_OBJECT_0)
-      failure_perror("WaitForSingleObject(BarrierEvent)",
-                     waitstatus2errcode(rc));
+      failure_perror("WaitForSingleObject(BarrierEvent)", waitstatus2errcode(rc));
     break;
   case WAIT_TIMEOUT:
     if (!SetEvent(hBarrierEvent))
@@ -53,10 +51,9 @@ void osal_wait4barrier(void) {
   }
 }
 
-static HANDLE make_inharitable(HANDLE hHandle) {
+static HANDLE make_inheritable(HANDLE hHandle) {
   assert(hHandle != NULL && hHandle != INVALID_HANDLE_VALUE);
-  if (!DuplicateHandle(GetCurrentProcess(), hHandle, GetCurrentProcess(),
-                       &hHandle, 0, TRUE,
+  if (!DuplicateHandle(GetCurrentProcess(), hHandle, GetCurrentProcess(), &hHandle, 0, TRUE,
                        DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS))
     failure_perror("DuplicateHandle()", GetLastError());
   return hHandle;
@@ -71,7 +68,7 @@ void osal_setup(const std::vector<actor_config> &actors) {
     HANDLE hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
     if (!hEvent)
       failure_perror("CreateEvent()", GetLastError());
-    hEvent = make_inharitable(hEvent);
+    hEvent = make_inheritable(hEvent);
     log_trace("osal_setup: event %" PRIuPTR " -> %p", i, hEvent);
     events[i] = hEvent;
   }
@@ -79,12 +76,12 @@ void osal_setup(const std::vector<actor_config> &actors) {
   hBarrierSemaphore = CreateSemaphore(NULL, 0, (LONG)actors.size(), NULL);
   if (!hBarrierSemaphore)
     failure_perror("CreateSemaphore(BarrierSemaphore)", GetLastError());
-  hBarrierSemaphore = make_inharitable(hBarrierSemaphore);
+  hBarrierSemaphore = make_inheritable(hBarrierSemaphore);
 
   hBarrierEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
   if (!hBarrierEvent)
     failure_perror("CreateEvent(BarrierEvent)", GetLastError());
-  hBarrierEvent = make_inharitable(hBarrierEvent);
+  hBarrierEvent = make_inheritable(hBarrierEvent);
 }
 
 void osal_broadcast(unsigned id) {
@@ -108,8 +105,7 @@ int osal_delay(unsigned seconds) {
 
 //-----------------------------------------------------------------------------
 
-const std::string
-actor_config::osal_serialize(simple_checksum &checksum) const {
+const std::string actor_config::osal_serialize(simple_checksum &checksum) const {
   checksum.push(hBarrierSemaphore);
   checksum.push(hBarrierEvent);
 
@@ -125,12 +121,10 @@ actor_config::osal_serialize(simple_checksum &checksum) const {
     checksum.push(hSignal);
   }
 
-  return format("%p.%p.%p.%p", hBarrierSemaphore, hBarrierEvent, hWait,
-                hSignal);
+  return format("%p.%p.%p.%p", hBarrierSemaphore, hBarrierEvent, hWait, hSignal);
 }
 
-bool actor_config::osal_deserialize(const char *str, const char *end,
-                                    simple_checksum &checksum) {
+bool actor_config::osal_deserialize(const char *str, const char *end, simple_checksum &checksum) {
 
   std::string copy(str, end - str);
   TRACE(">> osal_deserialize(%s)\n", copy.c_str());
@@ -140,8 +134,7 @@ bool actor_config::osal_deserialize(const char *str, const char *end,
   assert(events.empty());
 
   HANDLE hWait, hSignal;
-  if (sscanf_s(copy.c_str(), "%p.%p.%p.%p", &hBarrierSemaphore, &hBarrierEvent,
-               &hWait, &hSignal) != 4) {
+  if (sscanf_s(copy.c_str(), "%p.%p.%p.%p", &hBarrierSemaphore, &hBarrierEvent, &hWait, &hSignal) != 4) {
     TRACE("<< osal_deserialize: failed\n");
     return false;
   }
@@ -170,8 +163,7 @@ static std::unordered_map<MDBX_pid_t, child> childs;
 
 int osal_actor_start(const actor_config &config, MDBX_pid_t &pid) {
   if (childs.size() == MAXIMUM_WAIT_OBJECTS)
-    failure("Could't manage more that %u actors on Windows\n",
-            MAXIMUM_WAIT_OBJECTS);
+    failure("Could't manage more that %u actors on Windows\n", MAXIMUM_WAIT_OBJECTS);
 
   _flushall();
 
@@ -180,8 +172,7 @@ int osal_actor_start(const actor_config &config, MDBX_pid_t &pid) {
 
   char exename[_MAX_PATH];
   DWORD exename_size = sizeof(exename);
-  if (!QueryFullProcessImageNameA(GetCurrentProcess(), 0, exename,
-                                  &exename_size))
+  if (!QueryFullProcessImageNameA(GetCurrentProcess(), 0, exename, &exename_size))
     failure_perror("QueryFullProcessImageName()", GetLastError());
 
   std::string cmdline = "test_mdbx.child " + thunk_param(config);
@@ -192,7 +183,7 @@ int osal_actor_start(const actor_config &config, MDBX_pid_t &pid) {
                       NULL, // Retuned thread handle is not inheritable.
                       TRUE, // Child inherits all inheritable handles.
                       NORMAL_PRIORITY_CLASS | INHERIT_PARENT_AFFINITY,
-                      NULL, // Inherit the parent's databook.
+                      NULL, // Inherit the parent's environment.
                       NULL, // Inherit the parent's current directory.
                       &StartupInfo, &ProcessInformation))
     return GetLastError();
@@ -218,15 +209,25 @@ actor_status osal_actor_info(const MDBX_pid_t pid) {
   case EXIT_SUCCESS:
     status = as_successful;
     break;
-  // case EXCEPTION_BREAKPOINT:
+  case EXCEPTION_BREAKPOINT:
   case EXCEPTION_SINGLE_STEP:
     status = as_debuging;
     break;
   case STATUS_CONTROL_C_EXIT:
-  case EXCEPTION_NONCONTINUABLE_EXCEPTION:
     status = as_killed;
     break;
+
   default:
+  case STATUS_NONCONTINUABLE_EXCEPTION:
+  case STATUS_ASSERTION_FAILURE:
+  case STATUS_HEAP_CORRUPTION:
+  case STATUS_ACCESS_VIOLATION:
+  case DBG_EXCEPTION_NOT_HANDLED:
+  case STATUS_ILLEGAL_INSTRUCTION:
+  case STATUS_ARRAY_BOUNDS_EXCEEDED:
+  case STATUS_STACK_OVERFLOW:
+  case STATUS_STACK_BUFFER_OVERRUN:
+    log_info("pid %d exit_code 0x%X / %u", ExitCode, ExitCode);
     status = as_failed;
     break;
   }
@@ -237,7 +238,8 @@ actor_status osal_actor_info(const MDBX_pid_t pid) {
 
 void osal_killall_actors(void) {
   for (auto &pair : childs)
-    TerminateProcess(pair.second.first, STATUS_CONTROL_C_EXIT);
+    if (pair.second.second == as_running)
+      TerminateProcess(pair.second.first, STATUS_CONTROL_C_EXIT);
 }
 
 int osal_actor_poll(MDBX_pid_t &pid, unsigned timeout) {
@@ -247,10 +249,9 @@ int osal_actor_poll(MDBX_pid_t &pid, unsigned timeout) {
     if (pair.second.second <= as_running)
       handles.push_back(pair.second.first);
 
-  DWORD rc =
-      MsgWaitForMultipleObjectsEx((DWORD)handles.size(), &handles[0],
-                                  (timeout > 60) ? 60 * 1000 : timeout * 1000,
-                                  QS_ALLINPUT | QS_ALLPOSTMESSAGE, 0);
+  DWORD rc = MsgWaitForMultipleObjectsEx((DWORD)handles.size(), &handles[0],
+                                         (timeout > 60) ? 60 * 1000 : timeout * 1000,
+                                         QS_ALLINPUT | QS_ALLPOSTMESSAGE, 0);
 
   if (rc >= WAIT_OBJECT_0 && rc < WAIT_OBJECT_0 + handles.size()) {
     pid = 0;
@@ -305,3 +306,9 @@ void osal_udelay(unsigned us) {
 }
 
 bool osal_istty(int fd) { return _isatty(fd) != 0; }
+
+std::string osal_tempdir(void) {
+  char buf[MAX_PATH + 1];
+  DWORD len = GetTempPathA(sizeof(buf), buf);
+  return std::string(buf, len);
+}

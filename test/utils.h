@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -15,45 +15,15 @@
 #pragma once
 #include "base.h"
 
-#if !defined(__BYTE_ORDER__) || !defined(__ORDER_LITTLE_ENDIAN__) ||           \
-    !defined(__ORDER_BIG_ENDIAN__)
-#ifndef _MSC_VER
-#include <sys/param.h> /* for endianness */
-#endif
-#if defined(__BYTE_ORDER) && defined(__LITTLE_ENDIAN) && defined(__BIG_ENDIAN)
-#define __ORDER_LITTLE_ENDIAN__ __LITTLE_ENDIAN
-#define __ORDER_BIG_ENDIAN__ __BIG_ENDIAN
-#define __BYTE_ORDER__ __BYTE_ORDER
-#else
-#define __ORDER_LITTLE_ENDIAN__ 1234
-#define __ORDER_BIG_ENDIAN__ 4321
-#if defined(__LITTLE_ENDIAN__) || defined(_LITTLE_ENDIAN) ||                   \
-    defined(__ARMEL__) || defined(__THUMBEL__) || defined(__AARCH64EL__) ||    \
-    defined(__MIPSEL__) || defined(_MIPSEL) || defined(__MIPSEL) ||            \
-    defined(__i386) || defined(__x86_64__) || defined(_M_IX86) ||              \
-    defined(_M_X64) || defined(i386) || defined(_X86_) || defined(__i386__) || \
-    defined(_X86_64_) || defined(_M_ARM) || defined(_M_ARM64) ||               \
-    defined(__e2k__)
-#define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__
-#elif defined(__BIG_ENDIAN__) || defined(_BIG_ENDIAN) || defined(__ARMEB__) || \
-    defined(__THUMBEB__) || defined(__AARCH64EB__) || defined(__MIPSEB__) ||   \
-    defined(_MIPSEB) || defined(__MIPSEB) || defined(_M_IA64)
-#define __BYTE_ORDER__ __ORDER_BIG_ENDIAN__
-#else
+#if !defined(__BYTE_ORDER__) || !defined(__ORDER_LITTLE_ENDIAN__) || !defined(__ORDER_BIG_ENDIAN__)
 #error __BYTE_ORDER__ should be defined.
 #endif
-#endif
-#endif
 
-#if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__ &&                               \
-    __BYTE_ORDER__ != __ORDER_BIG_ENDIAN__
+#if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__ && __BYTE_ORDER__ != __ORDER_BIG_ENDIAN__
 #error Unsupported byte order.
 #endif
 
 #if __GNUC_PREREQ(4, 4) || defined(__clang__)
-#if __GNUC_PREREQ(4, 5) || defined(__clang__)
-#define unreachable() __builtin_unreachable()
-#endif
 #define bswap64(v) __builtin_bswap64(v)
 #define bswap32(v) __builtin_bswap32(v)
 #if __GNUC_PREREQ(4, 8) || __has_builtin(__builtin_bswap16)
@@ -63,11 +33,9 @@
 #elif defined(_MSC_VER)
 
 #if _MSC_FULL_VER < 190024215
-#pragma message(                                                               \
-    "It is recommended to use Visual Studio 2015 (MSC 19.0) or newer.")
+#pragma message("It is recommended to use Visual Studio 2015 (MSC 19.0) or newer.")
 #endif
 
-#define unreachable() __assume(0)
 #define bswap64(v) _byteswap_uint64(v)
 #define bswap32(v) _byteswap_ulong(v)
 #define bswap16(v) _byteswap_ushort(v)
@@ -90,22 +58,14 @@
 
 #endif /* compiler */
 
-#ifndef unreachable
-#define unreachable()                                                          \
-  do {                                                                         \
-  } while (1)
-#endif
-
 #ifndef bswap64
 #ifdef __bswap_64
 #define bswap64(v) __bswap_64(v)
 #else
 static inline uint64_t bswap64(uint64_t v) {
   return v << 56 | v >> 56 | ((v << 40) & UINT64_C(0x00ff000000000000)) |
-         ((v << 24) & UINT64_C(0x0000ff0000000000)) |
-         ((v << 8) & UINT64_C(0x000000ff00000000)) |
-         ((v >> 8) & UINT64_C(0x00000000ff0000000)) |
-         ((v >> 24) & UINT64_C(0x0000000000ff0000)) |
+         ((v << 24) & UINT64_C(0x0000ff0000000000)) | ((v << 8) & UINT64_C(0x000000ff00000000)) |
+         ((v >> 8) & UINT64_C(0x00000000ff0000000)) | ((v >> 24) & UINT64_C(0x0000000000ff0000)) |
          ((v >> 40) & UINT64_C(0x000000000000ff00));
 }
 #endif
@@ -116,8 +76,7 @@ static inline uint64_t bswap64(uint64_t v) {
 #define bswap32(v) __bswap_32(v)
 #else
 static inline uint32_t bswap32(uint32_t v) {
-  return v << 24 | v >> 24 | ((v << 8) & UINT32_C(0x00ff0000)) |
-         ((v >> 8) & UINT32_C(0x0000ff00));
+  return v << 24 | v >> 24 | ((v << 8) & UINT32_C(0x00ff0000)) | ((v >> 8) & UINT32_C(0x0000ff00));
 }
 #endif
 #endif /* bswap32 */
@@ -178,8 +137,7 @@ static inline uint16_t bswap16(uint16_t v) { return v << 8 | v >> 8; }
 namespace unaligned {
 
 template <typename T> static inline T load(const void *ptr) {
-#if defined(_MSC_VER) &&                                                       \
-    (defined(_M_ARM64) || defined(_M_X64) || defined(_M_IA64))
+#if defined(_MSC_VER) && (defined(_M_ARM64) || defined(_M_X64) || defined(_M_IA64))
   return *(const T __unaligned *)ptr;
 #elif UNALIGNED_OK
   return *(const T *)ptr;
@@ -195,8 +153,7 @@ template <typename T> static inline T load(const void *ptr) {
 }
 
 template <typename T> static inline void store(void *ptr, const T &value) {
-#if defined(_MSC_VER) &&                                                       \
-    (defined(_M_ARM64) || defined(_M_X64) || defined(_M_IA64))
+#if defined(_MSC_VER) && (defined(_M_ARM64) || defined(_M_X64) || defined(_M_IA64))
   *((T __unaligned *)ptr) = value;
 #elif UNALIGNED_OK
   *(volatile T *)ptr = value;
@@ -214,15 +171,11 @@ template <typename T> static inline void store(void *ptr, const T &value) {
 //-----------------------------------------------------------------------------
 
 #ifndef rot64
-static inline uint64_t rot64(uint64_t v, unsigned s) {
-  return (v >> s) | (v << (64 - s));
-}
+static inline uint64_t rot64(uint64_t v, unsigned s) { return (v >> s) | (v << (64 - s)); }
 #endif /* rot64 */
 
 #ifndef mul_32x32_64
-static inline uint64_t mul_32x32_64(uint32_t a, uint32_t b) {
-  return a * (uint64_t)b;
-}
+static inline uint64_t mul_32x32_64(uint32_t a, uint32_t b) { return a * (uint64_t)b; }
 #endif /* mul_32x32_64 */
 
 #ifndef mul_64x64_128
@@ -233,8 +186,7 @@ static inline unsigned add_with_carry(uint64_t *sum, uint64_t addend) {
 }
 
 static inline uint64_t mul_64x64_128(uint64_t a, uint64_t b, uint64_t *h) {
-#if defined(__SIZEOF_INT128__) ||                                              \
-    (defined(_INTEGRAL_MAX_BITS) && _INTEGRAL_MAX_BITS >= 128)
+#if defined(__SIZEOF_INT128__) || (defined(_INTEGRAL_MAX_BITS) && _INTEGRAL_MAX_BITS >= 128)
   __uint128_t r = (__uint128_t)a * (__uint128_t)b;
   /* modern GCC could nicely optimize this */
   *h = r >> 64;
@@ -247,8 +199,8 @@ static inline uint64_t mul_64x64_128(uint64_t a, uint64_t b, uint64_t *h) {
   uint64_t ll = mul_32x32_64((uint32_t)a, (uint32_t)b);
   uint64_t lh = mul_32x32_64(a >> 32, (uint32_t)b);
   uint64_t hl = mul_32x32_64((uint32_t)a, b >> 32);
-  *h = mul_32x32_64(a >> 32, b >> 32) + (lh >> 32) + (hl >> 32) +
-       add_with_carry(&ll, lh << 32) + add_with_carry(&ll, hl << 32);
+  *h = mul_32x32_64(a >> 32, b >> 32) + (lh >> 32) + (hl >> 32) + add_with_carry(&ll, lh << 32) +
+       add_with_carry(&ll, hl << 32);
   return ll;
 #endif
 }
@@ -284,18 +236,16 @@ static inline void memory_barrier(void) {
 #elif defined(__INTEL_COMPILER) /* LY: Intel Compiler may mimic GCC and MSC */
 #if defined(__ia64__) || defined(__ia64) || defined(_M_IA64)
   __mf();
-#elif defined(__i386__) || defined(__x86_64__)
+#elif defined(__ia32__)
   _mm_mfence();
 #else
 #error "Unknown target for Intel Compiler, please report to us."
 #endif
 #elif defined(__SUNPRO_C) || defined(__sun) || defined(sun)
   __machine_rw_barrier();
-#elif (defined(_HPUX_SOURCE) || defined(__hpux) || defined(__HP_aCC)) &&       \
-    (defined(HP_IA64) || defined(__ia64))
+#elif (defined(_HPUX_SOURCE) || defined(__hpux) || defined(__HP_aCC)) && (defined(HP_IA64) || defined(__ia64))
   _Asm_mf();
-#elif defined(_AIX) || defined(__ppc__) || defined(__powerpc__) ||             \
-    defined(__ppc64__) || defined(__powerpc64__)
+#elif defined(_AIX) || defined(__ppc__) || defined(__powerpc__) || defined(__ppc64__) || defined(__powerpc64__)
   __lwsync();
 #else
 #error "Could not guess the kind of compiler, please report to us."
@@ -303,11 +253,9 @@ static inline void memory_barrier(void) {
 }
 
 static inline void cpu_relax() {
-#if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) ||            \
-    defined(_M_X64)
+#if defined(__ia32__)
   _mm_pause();
-#elif defined(_WIN32) || defined(_WIN64) || defined(_WINDOWS) ||               \
-    defined(YieldProcessor)
+#elif defined(_WIN32) || defined(_WIN64) || defined(_WINDOWS) || defined(YieldProcessor)
   YieldProcessor();
 #else
 /* nope */
@@ -351,8 +299,7 @@ struct simple_checksum {
 };
 
 std::string data2hex(const void *ptr, size_t bytes, simple_checksum &checksum);
-bool hex2data(const char *hex_begin, const char *hex_end, void *ptr,
-              size_t bytes, simple_checksum &checksum);
+bool hex2data(const char *hex_begin, const char *hex_end, void *ptr, size_t bytes, simple_checksum &checksum);
 
 std::string format(const char *fmt, ...);
 

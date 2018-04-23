@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -31,6 +31,7 @@ int osal_delay(unsigned seconds);
 void osal_udelay(unsigned us);
 void osal_yield(void);
 bool osal_istty(int fd);
+std::string osal_tempdir(void);
 
 #ifdef _MSC_VER
 #ifndef STDIN_FILENO

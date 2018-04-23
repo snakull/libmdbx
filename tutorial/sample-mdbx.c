@@ -1,11 +1,11 @@
-﻿/* sample-mdb.txt - MDB toy/sample
+/* sample-mdb.txt - MDB toy/sample
  *
  * Do a line-by-line comparison of this and sample-bdb.txt
  */
 
 /*
+ * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>.
  * Copyright 2017 Ilya Shipitsin <chipitsine@gmail.com>.
- * Copyright 2015-2017 Leonid Yuriev <leo@yuriev.ru>.
  * Copyright 2012-2015 Howard Chu, Symas Corp.
  * All rights reserved.
  *
@@ -27,33 +27,42 @@ int main(int argc, char *argv[]) {
   (void)argv;
 
   int rc;
-  MDBX_milieu *bk = NULL;
-  MDBX_aah aah = 0;
-  MDBX_iov key, data;
-  MDBX_txn *txn = NULL;
-  MDBX_cursor *cursor = NULL;
+  MDBX_env_t *env = NULL;
+  MDBX_iov_t key, data;
+  MDBX_txn_t *txn = NULL;
+  MDBX_aah_t aah = MDBX_INVALID_AAH;
+  MDBX_cursor_t *cursor = NULL;
   char sval[32];
 
-  rc = mdbx_bk_init(&bk);
+  rc = mdbx_init(&env);
   if (rc != MDBX_SUCCESS) {
-    fprintf(stderr, "mdbx_bk_init: (%d) %s\n", rc, mdbx_strerror(rc));
+    fprintf(stderr, "mdbx_init: (%d) %s\n", rc, mdbx_strerror(rc));
     goto bailout;
   }
-  rc = mdbx_bk_open(bk, "./example-db", MDBX_COALESCE | MDBX_LIFORECLAIM, 0664);
+  rc = mdbx_open(env, "./example-db", MDBX_COALESCE | MDBX_LIFORECLAIM, 0664);
   if (rc != MDBX_SUCCESS) {
-    fprintf(stderr, "mdbx_bk_open: (%d) %s\n", rc, mdbx_strerror(rc));
+    fprintf(stderr, "mdbx_open: (%d) %s\n", rc, mdbx_strerror(rc));
     goto bailout;
   }
 
-  rc = mdbx_tn_begin(bk, NULL, 0, &txn);
-  if (rc != MDBX_SUCCESS) {
-    fprintf(stderr, "mdbx_tn_begin: (%d) %s\n", rc, mdbx_strerror(rc));
-    goto bailout;
+  {
+    MDBX_txn_result_t tr = mdbx_begin(env, NULL, MDBX_RDWR);
+    txn = tr.txn;
+    rc = tr.err;
+    if (rc != MDBX_SUCCESS) {
+      fprintf(stderr, "mdbx_begin: (%d) %s\n", rc, mdbx_strerror(rc));
+      goto bailout;
+    }
   }
-  rc = mdbx_aa_open(txn, NULL, 0, &aah, NULL, NULL);
-  if (rc != MDBX_SUCCESS) {
-    fprintf(stderr, "mdbx_aa_open: (%d) %s\n", rc, mdbx_strerror(rc));
-    goto bailout;
+
+  {
+    const MDBX_aah_result_t ar = mdbx_aa_open(txn, mdbx_str2iov(NULL), 0, NULL, NULL);
+    aah = ar.aah;
+    rc = ar.err;
+    if (rc != MDBX_SUCCESS) {
+      fprintf(stderr, "mdbx_aa_open: (%d) %s\n", rc, mdbx_strerror(rc));
+      goto bailout;
+    }
   }
 
   key.iov_len = sizeof(int);
@@ -67,29 +76,37 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "mdbx_put: (%d) %s\n", rc, mdbx_strerror(rc));
     goto bailout;
   }
-  rc = mdbx_tn_commit(txn);
+  rc = mdbx_commit(txn);
   if (rc) {
-    fprintf(stderr, "mdbx_tn_commit: (%d) %s\n", rc, mdbx_strerror(rc));
+    fprintf(stderr, "mdbx_commit: (%d) %s\n", rc, mdbx_strerror(rc));
     goto bailout;
   }
   txn = NULL;
 
-  rc = mdbx_tn_begin(bk, NULL, MDBX_RDONLY, &txn);
-  if (rc != MDBX_SUCCESS) {
-    fprintf(stderr, "mdbx_tn_begin: (%d) %s\n", rc, mdbx_strerror(rc));
-    goto bailout;
+  {
+    MDBX_txn_result_t tr = mdbx_begin(env, NULL, MDBX_RDONLY);
+    txn = tr.txn;
+    rc = tr.err;
+    if (rc != MDBX_SUCCESS) {
+      fprintf(stderr, "mdbx_begin: (%d) %s\n", rc, mdbx_strerror(rc));
+      goto bailout;
+    }
   }
-  rc = mdbx_cursor_open(txn, aah, &cursor);
-  if (rc != MDBX_SUCCESS) {
-    fprintf(stderr, "mdbx_cursor_open: (%d) %s\n", rc, mdbx_strerror(rc));
-    goto bailout;
+
+  {
+    MDBX_cursor_result_t cr = mdbx_cursor_open(txn, aah);
+    cursor = cr.cursor;
+    rc = cr.err;
+    if (rc != MDBX_SUCCESS) {
+      fprintf(stderr, "mdbx_cursor_open: (%d) %s\n", rc, mdbx_strerror(rc));
+      goto bailout;
+    }
   }
 
   int found = 0;
   while ((rc = mdbx_cursor_get(cursor, &key, &data, MDBX_NEXT)) == 0) {
-    printf("key: %p %.*s, data: %p %.*s\n", key.iov_base, (int)key.iov_len,
-           (char *)key.iov_base, data.iov_base, (int)data.iov_len,
-           (char *)data.iov_base);
+    printf("key: %p %.*s, data: %p %.*s\n", key.iov_base, (int)key.iov_len, (char *)key.iov_base,
+           data.iov_base, (int)data.iov_len, (char *)data.iov_base);
     found += 1;
   }
   if (rc != MDBX_NOTFOUND || found == 0) {
@@ -102,10 +119,10 @@ bailout:
   if (cursor)
     mdbx_cursor_close(cursor);
   if (txn)
-    mdbx_tn_abort(txn);
+    mdbx_abort(txn);
   if (aah)
-    mdbx_aa_close(bk, aah);
-  if (bk)
-    mdbx_bk_shutdown(bk);
+    mdbx_aa_close(env, aah);
+  if (env)
+    mdbx_shutdown(env);
   return (rc != MDBX_SUCCESS) ? EXIT_FAILURE : EXIT_SUCCESS;
 }

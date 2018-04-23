@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Leonid Yuriev <leo@yuriev.ru>
+ * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
  *
@@ -26,12 +26,12 @@ void failure(const char *fmt, ...) {
   exit(EXIT_FAILURE);
 }
 
-const char *test_strerror(int errnum) {
+const char *test_strerror(MDBX_error_t errnum) {
   static __thread char buf[1024];
   return mdbx_strerror_r(errnum, buf, sizeof(buf));
 }
 
-void __noreturn failure_perror(const char *what, int errnum) {
+void __noreturn failure_perror(const char *what, MDBX_error_t errnum) {
   failure("%s failed: %s (%d)\n", what, test_strerror(errnum), errnum);
 }
 
@@ -98,20 +98,18 @@ bool output(const logging::loglevel priority, const char *format, va_list ap) {
   chrono::time now = chrono::now_realtime();
   struct tm tm;
 #ifdef _MSC_VER
-  int rc = _localtime32_s(&tm, (const __time32_t *)&now.utc);
+  MDBX_error_t rc = (MDBX_error_t)_localtime32_s(&tm, (const __time32_t *)&now.utc);
 #else
   time_t time = now.utc;
-  int rc = localtime_r(&time, &tm) ? MDBX_SUCCESS : errno;
+  MDBX_error_t rc = localtime_r(&time, &tm) ? MDBX_SUCCESS : (MDBX_error_t)errno;
 #endif
   if (rc != MDBX_SUCCESS)
     failure_perror("localtime_r()", rc);
 
   last = stdout;
-  fprintf(last,
-          "[ %02d%02d%02d-%02d:%02d:%02d.%06d_%05u %-10s %.4s ] %s" /* TODO */,
-          tm.tm_year - 100, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min,
-          tm.tm_sec, chrono::fractional2us(now.fractional), osal_getpid(),
-          prefix.c_str(), level2str(priority), suffix.c_str());
+  fprintf(last, "[ %02d%02d%02d-%02d:%02d:%02d.%06d_%05u %-10s %.4s ] %s" /* TODO */, tm.tm_year - 100,
+          tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, chrono::fractional2us(now.fractional),
+          osal_getpid(), prefix.c_str(), level2str(priority), suffix.c_str());
 
   va_list ones;
   memset(&ones, 0, sizeof(ones)) /* zap MSVC and other stupid compilers */;
@@ -144,8 +142,8 @@ bool output(const logging::loglevel priority, const char *format, va_list ap) {
 
   if (priority >= error) {
     if (last != stderr) {
-      fprintf(stderr, "[ %05u %-10s %.4s ] %s", osal_getpid(), prefix.c_str(),
-              level2str(priority), suffix.c_str());
+      fprintf(stderr, "[ %05u %-10s %.4s ] %s", osal_getpid(), prefix.c_str(), level2str(priority),
+              suffix.c_str());
       vfprintf(stderr, format, ones);
       if (end != '\n')
         putc('\n', stderr);
@@ -181,15 +179,9 @@ bool feed(const char *format, ...) {
   return true;
 }
 
-local_suffix::local_suffix(const char *c_str)
-    : trim_pos(suffix.size()), indent(0) {
-  suffix.append(c_str);
-}
+local_suffix::local_suffix(const char *c_str) : trim_pos(suffix.size()), indent(0) { suffix.append(c_str); }
 
-local_suffix::local_suffix(const std::string &str)
-    : trim_pos(suffix.size()), indent(0) {
-  suffix.append(str);
-}
+local_suffix::local_suffix(const std::string &str) : trim_pos(suffix.size()), indent(0) { suffix.append(str); }
 
 void local_suffix::push() {
   indent += 1;
@@ -282,6 +274,6 @@ void log_trouble(const char *where, const char *what, int errnum) {
   log_error("%s: %s %s", where, what, test_strerror(errnum));
 }
 
-bool log_enabled(const logging::loglevel priority) {
-  return (priority >= logging::level);
-}
+bool log_enabled(const logging::loglevel priority) { return (priority >= logging::level); }
+
+void log_flush(void) { fflushall(); }

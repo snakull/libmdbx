@@ -11,12 +11,12 @@
 
 #ifdef _MSC_VER
 #pragma warning(push, 1)
-#pragma warning(disable : 4548) /* expression before comma has no effect;      \
+#pragma warning(disable : 4548) /* expression before comma has no effect;                                     \
                                    expected expression with side - effect */
-#pragma warning(disable : 4530) /* C++ exception handler used, but unwind      \
+#pragma warning(disable : 4530) /* C++ exception handler used, but unwind                                     \
                                  * semantics are not enabled. Specify /EHsc */
-#pragma warning(disable : 4577) /* 'noexcept' used with no exception handling  \
-                                 * mode specified; termination on exception is \
+#pragma warning(disable : 4577) /* 'noexcept' used with no exception handling                                 \
+                                 * mode specified; termination on exception is                                \
                                  * not guaranteed. Specify /EHsc */
 #if !defined(_CRT_SECURE_NO_WARNINGS)
 #define _CRT_SECURE_NO_WARNINGS
@@ -40,11 +40,11 @@
 #define EOF (-1)
 #endif
 
-#define ERR(s, c)                                                              \
-  if (opterr) {                                                                \
-    fputs(argv[0], stderr);                                                    \
-    fputs(s, stderr);                                                          \
-    fputc(c, stderr);                                                          \
+#define ERR(s, c)                                                                                             \
+  if (opterr) {                                                                                               \
+    fputs(argv[0], stderr);                                                                                   \
+    fputs(s, stderr);                                                                                         \
+    fputc(c, stderr);                                                                                         \
   }
 
 int opterr = 1;
