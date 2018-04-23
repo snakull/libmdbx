@@ -20,10 +20,7 @@ mandir	?= $(prefix)/man
 
 # lib/bin suffix for multiarch/biarch, e.g. '.x86_64'
 suffix	?=
-
-CC	:= gcc
-CXX	:= g++
-CFLAGS	?= -O0 -g3 -Wall -Werror -Wextra -ffunction-sections -fPIC -fvisibility=hidden
+CFLAGS	?= -O2 -g3 -Wall -Werror -Wextra -ffunction-sections -fPIC -fvisibility=hidden
 
 XCFLAGS	?= -D_DEBUG=1 -DMDBX_DEBUG=1 -DLIBMDBX_EXPORTS=1
 CFLAGS	+= -D_GNU_SOURCE=1 -std=gnu11 -pthread $(XCFLAGS)

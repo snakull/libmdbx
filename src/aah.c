@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -427,7 +427,7 @@ static int __cold aa_drop(MDBX_txn_t *txn, mdbx_drop_flags_t flags, aht_t *aht) 
       txn->mt_flags |= MDBX_TXN_DIRTY;
     } else if (flags & MDBX_DELETE_AA) {
       /* remove the AA record */
-      rc = mdbx_del_ex(txn, MDBX_MAIN_AAH, &aht->ahe->ax_ident, nullptr, NODE_SUBTREE);
+      rc = mdbx_del_ex(txn, MDBX_MAIN_AAH, &aht->ahe->ax_ident, nullptr, (mdbx_iud_flags_t)NODE_SUBTREE);
       if (likely(rc == MDBX_SUCCESS)) {
         aht->ah.state8 =
             (aht->ah.state8 & MDBX_AAH_CREATED) ? MDBX_AAH_ABSENT : MDBX_AAH_DROPPED | MDBX_AAH_ABSENT;

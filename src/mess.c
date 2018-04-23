@@ -3910,7 +3910,7 @@ static int __cold bk_copy_compact(MDBX_env_t *env, MDBX_filehandle_t fd) {
     return rc;
 
   my.mc_wbuf[0] = env->ops.memory.ops_aligned_alloc(env->me_os_psize, MDBX_WBUF * 2, env);
-  if (unlikely(!my.mc_wbuf)) {
+  if (unlikely(my.mc_wbuf == nullptr)) {
     rc = MDBX_ENOMEM;
     goto done;
   }
