@@ -636,7 +636,8 @@ MDBX_numeric_result_t mdbx_txn_lag(MDBX_txn_t *txn, unsigned *alloc_ratio) {
       limit = meta->mm_geo.upper;
       allocated = meta->mm_geo.next;
       if (likely(meta == meta_head(env) && recent == meta_txnid_fluid(env, meta))) {
-        result.value = recent - txn->mt_txnid;
+        txnid_t gap = recent - txn->mt_txnid;
+        result.value = unlikely(gap > UINTPTR_MAX) ? UINTPTR_MAX : (uintptr_t)gap;
         break;
       }
     }

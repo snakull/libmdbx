@@ -38,10 +38,7 @@
 #endif
 #endif /* MDBX_USE_ROBUST */
 
-#ifndef OFF_T_MAX
-#define OFF_T_MAX (sizeof(off_t) > 4 ? INT64_MAX : INT32_MAX)
-#endif
-#define LCK_DXB_WHOLE OFF_T_MAX
+#define LCK_DXB_WHOLE MAX_MAPSIZE
 
 static int fcntl_op(const MDBX_filehandle_t fd, const int op, const int lck, const size_t offset,
                     const size_t len) {

@@ -225,7 +225,7 @@ MDBX_error_t mdbx_sync(MDBX_env_t *env) {
     }
 
     if (!META_IS_STEADY(head) || env->me_lck->li_dirty_volume) {
-      mdbx_trace("meta-head %" PRIaPGNO ", %s, sync_pending %" PRIuPTR,
+      mdbx_trace("meta-head %" PRIaPGNO ", %s, sync_pending %" PRIu64,
                  container_of(head, page_t, mp_data)->mp_pgno, durable_str(head),
                  env->me_lck->li_dirty_volume);
       meta_t meta = *head;
@@ -308,7 +308,7 @@ MDBX_error_t mdbx_abort(MDBX_txn_t *txn) {
 
 /* Read the databook header before mapping it into memory. */
 static int __cold mdbx_read_header(MDBX_env_t *env, meta_t *meta) {
-  assert(offsetof(page_t, mp_meta) == mdbx_roundup_ptrsize(PAGEHDRSZ));
+  assert(offsetof(page_t, mp_meta) == mdbx_roundup2(PAGEHDRSZ, 8));
   memset(meta, 0, sizeof(meta_t));
   meta->mm_datasync_sign = MDBX_DATASIGN_WEAK;
   int rc = MDBX_CORRUPTED;

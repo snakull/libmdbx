@@ -180,6 +180,34 @@ typedef uint64_t checksum_t;
 
 #define MEGABYTE ((size_t)1 << 20)
 
+/* The maximum size of a associative array page.
+*
+* It is 64K, but value - PAGEHDRSZ must fit in page_t.mp_upper.
+*
+* MDBX will use associative array pages < OS pages if needed.
+* That causes more I/O in write transactions: The OS must
+* know (read) the whole page before writing a partial page.
+*
+* Note that we don't currently support Huge pages. On Linux,
+* regular data files cannot use Huge pages, and in general
+* Huge pages aren't actually pageable. We rely on the OS
+* demand-pager to read our data and page it out when memory
+* pressure from other processes is high. So until OSs have
+* actual paging support for Huge pages, they're not viable. */
+#define MAX_PAGESIZE 0x10000u
+#define MIN_PAGESIZE 512u
+
+#define MIN_MAPSIZE (MIN_PAGESIZE * MIN_PAGENO)
+#if defined(_WIN32) || defined(_WIN64)
+#define MAX_MAPSIZE32 UINT32_C(0x38000000)
+#else
+#define MAX_MAPSIZE32 UINT32_C(0x7ff80000)
+#endif
+#define MAX_MAPSIZE64                                                                                         \
+  ((sizeof(pgno_t) > 4) ? UINT64_C(0x7fffFFFFfff80000) : MAX_PAGENO * (uint64_t)MAX_PAGESIZE)
+
+#define MAX_MAPSIZE ((sizeof(size_t) < 8) ? MAX_MAPSIZE32 : MAX_MAPSIZE64)
+
 /*----------------------------------------------------------------------------*/
 /* Core structures for databook and shared memory (i.e. format definition) */
 #pragma pack(push, 1)
@@ -388,34 +416,6 @@ typedef struct page {
 
 /* Size of the page header, excluding dynamic data at the end */
 #define PAGEHDRSZ ((unsigned)offsetof(page_t, mp_data))
-
-/* The maximum size of a associative array page.
-*
-* It is 64K, but value-PAGEHDRSZ must fit in page_t.mp_upper.
-*
-* MDBX will use associative array pages < OS pages if needed.
-* That causes more I/O in write transactions: The OS must
-* know (read) the whole page before writing a partial page.
-*
-* Note that we don't currently support Huge pages. On Linux,
-* regular data files cannot use Huge pages, and in general
-* Huge pages aren't actually pageable. We rely on the OS
-* demand-pager to read our data and page it out when memory
-* pressure from other processes is high. So until OSs have
-* actual paging support for Huge pages, they're not viable. */
-#define MAX_PAGESIZE 0x10000u
-#define MIN_PAGESIZE 512u
-
-#define MIN_MAPSIZE (MIN_PAGESIZE * MIN_PAGENO)
-#if defined(_WIN32) || defined(_WIN64)
-#define MAX_MAPSIZE32 UINT32_C(0x38000000)
-#else
-#define MAX_MAPSIZE32 UINT32_C(0x7ff80000)
-#endif
-#define MAX_MAPSIZE64                                                                                         \
-  ((sizeof(pgno_t) > 4) ? UINT64_C(0x7fffFFFFfff80000) : MAX_PAGENO * (uint64_t)MAX_PAGESIZE)
-
-#define MAX_MAPSIZE ((sizeof(size_t) < 8) ? MAX_MAPSIZE32 : MAX_MAPSIZE64)
 
 /* The header for the reader table (a memory-mapped lock file). */
 typedef struct MDBX_lockinfo {
