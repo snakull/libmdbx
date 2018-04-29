@@ -752,7 +752,8 @@ static void __cold setup_pagesize(MDBX_env_t *env, const size_t pagesize) {
 
   STATIC_ASSERT(mdbx_maxfree1pg(MIN_PAGESIZE) > 42);
   STATIC_ASSERT(mdbx_maxfree1pg(MAX_PAGESIZE) < MDBX_PNL_DB_MAX);
-  const intptr_t maxfree_1pg = (pagesize - PAGEHDRSZ) / sizeof(pgno_t) - 1;
+  const intptr_t maxfree_1pg =
+      (pagesize - PAGEHDRSZ - NODESIZE - sizeof(txnid_t) - sizeof(indx_t)) / sizeof(pgno_t) - 1;
   mdbx_ensure(env, maxfree_1pg > 42 && maxfree_1pg < MDBX_PNL_DB_MAX);
   env->me_maxfree_1pg = (unsigned)maxfree_1pg;
 
