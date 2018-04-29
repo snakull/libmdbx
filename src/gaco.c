@@ -53,11 +53,16 @@ static int page_alloc(cursor_t *mc, unsigned num, page_t **mp, int flags) {
   page_t *np;
 
   if (likely(flags & MDBX_ALLOC_GC)) {
+    STATIC_ASSERT((MDBX_ALLOC_ALL & (MDBX_COALESCE | MDBX_LIFORECLAIM)) == 0);
     flags |= env->me_flags32 & (MDBX_COALESCE | MDBX_LIFORECLAIM);
     if (unlikely(mc->mc_state8 & C_RECLAIMING)) {
       /* If mc is updating the GACO, then the freelist cannot play
        * catch-up with itself by growing while trying to save it. */
       flags &= ~(MDBX_ALLOC_GC | MDBX_ALLOC_KICK | MDBX_COALESCE | MDBX_LIFORECLAIM);
+    } else if (unlikely(aht_gaco(txn)->aa.entries == 0)) {
+      /* avoid (recursive) search inside empty tree and while tree is updating,
+       * https://github.com/leo-yuriev/libmdbx/issues/31 */
+      flags &= ~MDBX_ALLOC_GC;
     }
   }
 
