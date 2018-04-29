@@ -32,6 +32,7 @@ TESTLOG ?= $(shell [ -d /dev/shm ] && echo /dev/shm || echo /tmp)/mdbx-test.log
 DLSO_LDFLAGS	?= -Wl,--gc-sections,-z,relro,-O,--no-as-needed,-lrt
 TEST_LDFLAGS ?= -pthread -lstdc++fs -lrt
 
+
 # LY: just for benchmarking
 IOARENA ?= $(shell \
   (test -x ../ioarena/@BUILD/src/ioarena && echo ../ioarena/@BUILD/src/ioarena) || \
