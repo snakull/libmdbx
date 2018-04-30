@@ -21,7 +21,7 @@ platform:
 
 build_script:
 - ps: >
-    msbuild "C:\projects\libmdbx\mdbx.sln" /verbosity:minimal
+    msbuild "$env:APPVEYOR_BUILD_FOLDER\mdbx.sln" /verbosity:minimal
     /logger:"C:\Program Files\AppVeyor\BuildAgent\Appveyor.MSBuildLogger.dll"
     /property:PlatformToolset=$env:TOOLSET
     /property:Configuration=$env:CONFIGURATION
@@ -29,12 +29,12 @@ build_script:
 
 test_script:
 - ps: |
-    if (($env:PLATFORM -eq "x86") -and (Test-Path "C:\projects\libmdbx\Win32\$env:CONFIGURATION\mdbx_test.exe" -PathType Leaf)) {
-      $test = "C:\projects\libmdbx\Win32\$env:CONFIGURATION\mdbx_test.exe"
-      $mdbx_chk = "C:\projects\libmdbx\Win32\$env:CONFIGURATION\mdbx_chk.exe"
+    if (($env:PLATFORM -eq "x86") -and (Test-Path "$env:APPVEYOR_BUILD_FOLDER\Win32\$env:CONFIGURATION\mdbx_test.exe" -PathType Leaf)) {
+      $test = "$env:APPVEYOR_BUILD_FOLDER\Win32\$env:CONFIGURATION\mdbx_test.exe"
+      $mdbx_chk = "$env:APPVEYOR_BUILD_FOLDER\Win32\$env:CONFIGURATION\mdbx_chk.exe"
     } elseif (($env:PLATFORM -ne "ARM") -and ($env:PLATFORM -ne "ARM64")) {
-      $test = "C:\projects\libmdbx\$env:PLATFORM\$env:CONFIGURATION\mdbx_test.exe"
-      $mdbx_chk = "C:\projects\libmdbx\$env:PLATFORM\$env:CONFIGURATION\mdbx_chk.exe"
+      $test = "$env:APPVEYOR_BUILD_FOLDER\$env:PLATFORM\$env:CONFIGURATION\mdbx_test.exe"
+      $mdbx_chk = "$env:APPVEYOR_BUILD_FOLDER\$env:PLATFORM\$env:CONFIGURATION\mdbx_chk.exe"
     } else {
       $test = ""
       $mdbx_chk = ""
