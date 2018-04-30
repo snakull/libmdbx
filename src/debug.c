@@ -99,14 +99,14 @@ MDBX_INTERNAL void mdbx_dbglog(const debug_event_t event, const char *function, 
         (__GLIBC_PREREQ(1, 0) && !__GLIBC_PREREQ(2, 10) && defined(_GNU_SOURCE))
     vdprintf(STDERR_FILENO, fmt, ap);
     #endif */
-
+    FILE *output = (level < MDBX_LOGLEVEL_ERROR) ? stdout : stderr;
     if (function && line > 0)
-      fprintf(stderr, "%s:%d ", function, line);
+      fprintf(output, "%s:%d ", function, line);
     else if (function)
-      fprintf(stderr, "%s: ", function);
+      fprintf(output, "%s: ", function);
     else if (line > 0)
-      fprintf(stderr, "%d: ", line);
-    vfprintf(stderr, fmt, args);
+      fprintf(output, "%d: ", line);
+    vfprintf(output, fmt, args);
   }
   va_end(args);
 }
