@@ -111,7 +111,9 @@ static inline bool is_aligned_uint16(const void *ptr) { return (1 & (uintptr_t)p
 
 static inline bool is_aligned_uint32(const void *ptr) { return (3 & (uintptr_t)ptr) == 0; }
 
-static inline bool is_aligned_uint64(const void *ptr) { return (7 & (uintptr_t)ptr) == 0; }
+static inline bool is_aligned_uint64(const void *ptr) {
+  return (((sizeof(void *) > 4 || sizeof(size_t) > 4) ? 7 : 3) & (uintptr_t)ptr) == 0;
+}
 
 /*----------------------------------------------------------------------------*/
 
