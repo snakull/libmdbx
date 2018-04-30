@@ -1369,7 +1369,7 @@ LIBMDBX_API MDBX_error_t mdbx_set_rbr(MDBX_env_t *env, MDBX_rbr_callback_t *cb);
 
 /* FIXME: Describe */
 typedef MDBX_error_t MDBX_walk_func_t(uint_fast64_t pgno, unsigned pgnumber, void *ctx, const MDBX_iov_t ident,
-                                      const char *type, size_t nentries, size_t payload_bytes,
+                                      /* FIXME */ const char *type, size_t nentries, size_t payload_bytes,
                                       size_t header_bytes, size_t unused_bytes);
 /* FIXME: Describe */
 LIBMDBX_API MDBX_error_t mdbx_walk(MDBX_txn_t *txn, MDBX_walk_func_t *visitor, void *ctx);
