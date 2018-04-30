@@ -811,7 +811,7 @@ int main(int argc, char *argv[]) {
       print("Please run %s in the read-write mode (with '-w' option).\n", prog);
     goto bailout;
   }
-  if ((open_flags & MDBX_RDONLY) == 0) {
+  if ((open_flags & MDBX_RDONLY) == 0 && (regime & MDBX_EXCLUSIVE) == 0) {
     err = mdbx_lck_writer_lock(env, 0);
     if (err != MDBX_SUCCESS) {
       error("mdbx_lck_writer_lock failed, error %d %s\n", err, mdbx_strerror(err));

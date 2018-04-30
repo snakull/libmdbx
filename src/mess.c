@@ -194,7 +194,8 @@ MDBX_error_t mdbx_sync(MDBX_env_t *env) {
   if (unlikely(!env->me_lck))
     return MDBX_PANIC;
 
-  const bool outside_txn = (!env->me_wpa_txn || env->me_wpa_txn->mt_owner != mdbx_thread_self());
+  const bool outside_txn = ((env->me_flags32 & MDBX_EXCLUSIVE) == 0 &&
+                            (!env->me_wpa_txn || env->me_wpa_txn->mt_owner != mdbx_thread_self()));
   if (outside_txn) {
     int rc = env->ops.locking.ops_writer_lock(env, 0 & MDBX_NONBLOCK /* FIXME: TODO */);
     if (unlikely(rc != MDBX_SUCCESS))
@@ -841,7 +842,8 @@ LIBMDBX_API MDBX_error_t mdbx_set_geometry(MDBX_env_t *env, intptr_t size_lower,
   if (unlikely(env->me_flags32 & MDBX_ENV_TAINTED))
     return MDBX_PANIC;
 
-  const bool outside_txn = (!env->me_wpa_txn || env->me_wpa_txn->mt_owner != mdbx_thread_self());
+  const bool outside_txn = ((env->me_flags32 & MDBX_EXCLUSIVE) == 0 &&
+                            (!env->me_wpa_txn || env->me_wpa_txn->mt_owner != mdbx_thread_self()));
   bool need_unlock = false;
   int rc = MDBX_PROBLEM;
 
@@ -4007,21 +4009,24 @@ static int __cold bk_copy_asis(MDBX_env_t *env, MDBX_filehandle_t fd) {
   if (unlikely(tr.err != MDBX_SUCCESS))
     goto bailout; /* FIXME: or just return? */
 
-  /* Temporarily block writers until we snapshot the meta pages */
-  tr.err = env->ops.locking.ops_writer_lock(env, 0);
-  if (unlikely(tr.err != MDBX_SUCCESS))
-    goto bailout;
+  if ((env->me_flags32 & MDBX_EXCLUSIVE) == 0) {
+    /* Temporarily block writers until we snapshot the meta pages */
+    tr.err = env->ops.locking.ops_writer_lock(env, 0);
+    if (unlikely(tr.err != MDBX_SUCCESS))
+      goto bailout;
 
-  tr.err = txn_renew(tr.txn, MDBX_RDONLY);
-  if (unlikely(tr.err != MDBX_SUCCESS)) {
-    env->ops.locking.ops_writer_unlock(env);
-    goto bailout;
+    tr.err = txn_renew(tr.txn, MDBX_RDONLY);
+    if (unlikely(tr.err != MDBX_SUCCESS)) {
+      env->ops.locking.ops_writer_unlock(env);
+      goto bailout;
+    }
   }
 
   tr.err = mdbx_write(fd, env->me_map, pgno2bytes(env, NUM_METAS));
   meta_t *const head = meta_head(env);
   const uint64_t size = mdbx_roundup2(pgno2bytes(env, head->mm_geo.now), env->me_os_psize);
-  env->ops.locking.ops_writer_unlock(env);
+  if ((env->me_flags32 & MDBX_EXCLUSIVE) == 0)
+    env->ops.locking.ops_writer_unlock(env);
 
   if (likely(tr.err == MDBX_SUCCESS))
     tr.err = mdbx_write(fd, env->me_map + pgno2bytes(env, NUM_METAS),
@@ -4039,9 +4044,11 @@ int __cold mdbx_bk_set_flags(MDBX_env_t *env, unsigned flags, int onoff) {
   if (unlikely(flags & ~MDBX_REGIME_CHANGEABLE))
     return MDBX_EINVAL;
 
-  int rc = env->ops.locking.ops_writer_lock(env, 0);
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
+  if (likely((env->me_flags32 & MDBX_EXCLUSIVE) == 0)) {
+    int rc = env->ops.locking.ops_writer_lock(env, 0);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+  }
 
   /* FIXME: TODO */
   if (onoff)
@@ -4049,7 +4056,8 @@ int __cold mdbx_bk_set_flags(MDBX_env_t *env, unsigned flags, int onoff) {
   else
     env->me_flags32 &= ~flags;
 
-  env->ops.locking.ops_writer_unlock(env);
+  if (likely((env->me_flags32 & MDBX_EXCLUSIVE) == 0))
+    env->ops.locking.ops_writer_unlock(env);
   return MDBX_SUCCESS;
 }
 
