@@ -330,14 +330,15 @@ static int __cold mdbx_read_header(MDBX_env_t *env, meta_t *meta) {
     unsigned retryleft = 42;
     while (1) {
       int err = mdbx_pread(env->me_dxb_fd, &page, sizeof(page), offset);
-      if (err != MDBX_SUCCESS) {
-        meta_error("read meta[%u,%u]: %i, %s", offset, (unsigned)sizeof(page), err, mdbx_strerror(err));
+      if (unlikely(err != MDBX_SUCCESS)) {
+        mdbx_log(MDBX_LOG_META, (err != MDBX_ENODATA) ? MDBX_LOGLEVEL_ERROR : MDBX_LOGLEVEL_NOTICE,
+                 "read meta[%u,%u]: %i, %s", offset, (unsigned)sizeof(page), err, mdbx_strerror(err));
         return err;
       }
 
       page_t again;
       err = mdbx_pread(env->me_dxb_fd, &again, sizeof(again), offset);
-      if (err != MDBX_SUCCESS) {
+      if (unlikely(err != MDBX_SUCCESS)) {
         mdbx_error("read meta[%u,%u]: %i, %s", offset, (unsigned)sizeof(again), err, mdbx_strerror(err));
         return err;
       }
