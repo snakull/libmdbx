@@ -499,7 +499,7 @@ MDBX_error_t mdbx_lck_upgrade(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLO
     if (!lck_is_collision(err))
       goto recede;
     lck_trace("<< %s", "busy");
-    return err;
+    return MDBX_EBUSY;
   }
 
   lck_locked2middle(env);
