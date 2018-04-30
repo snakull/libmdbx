@@ -88,7 +88,7 @@ MDBX_aah_result_t __cold mdbx_aa_preopen(MDBX_env_t *env, const MDBX_iov_t aa_id
   MDBX_aah_result_t result;
   result.aah = MDBX_INVALID_AAH;
 
-  if (unlikely(flags & ~MDBX_AA_FLAGS)) {
+  if (unlikely(flags & ~(MDBX_AA_FLAGS | MDBX_NONBLOCK))) {
     result.err = MDBX_EINVAL;
     return result;
   }
