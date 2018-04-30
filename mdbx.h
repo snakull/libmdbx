@@ -1611,7 +1611,7 @@ LIBMDBX_API MDBX_error_t mdbx_txn_renew(MDBX_txn_t *txn);
  * [in] txn          A transaction handle returned by mdbx_begin()
  * [out] alloc_ratio Optional pointer to store ratio of space allocation
  *                   in the databook multipled with 65536,
- *                   i.e. 32768 means 50% of space is allocated.
+ *                   i.e. 32768 means 50% of current DB-file size is allocated.
  *
  * Returns Number of transactions committed after the given was started for
  * read, or -1 on failure. */
