@@ -65,9 +65,9 @@
 /* Systems includes */
 
 #if defined(_WIN32) || defined(_WIN64)
-#include <tlhelp32.h>
 #include <windows.h>
 #include <winnt.h>
+#include <winternl.h>
 #define HAVE_SYS_STAT_H
 #define HAVE_SYS_TYPES_H
 typedef HANDLE mdbx_thread_t;

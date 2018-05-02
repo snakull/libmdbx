@@ -36,8 +36,6 @@ static MDBX_tid_t mdbx_thread_self(void) {
 }
 
 #if defined(_WIN32) || defined(_WIN64)
-#include <winternl.h>
-
 static int waitstatus2errcode(DWORD result) {
   switch (result) {
   case WAIT_OBJECT_0:
@@ -56,7 +54,7 @@ static int waitstatus2errcode(DWORD result) {
 }
 
 /* Map a result from an NTAPI call to WIN32 error code. */
-static int ntstatus2errcode(NTSTATUS status) {
+MDBX_INTERNAL int ntstatus2errcode(NTSTATUS status) {
   DWORD dummy;
   OVERLAPPED ov;
   memset(&ov, 0, sizeof(ov));

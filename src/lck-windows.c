@@ -127,33 +127,54 @@ void mdbx_lck_writer_unlock(MDBX_env_t *env) {
 /*----------------------------------------------------------------------------*/
 /* thread suspend/resume for remapping */
 
-static MDBX_error_t suspend_and_append(mdbx_handle_array_t **array, const DWORD ThreadId) {
+static MDBX_error_t suspend_and_append_handle(mdbx_handle_array_t **array, const HANDLE hThread) {
+  MDBX_error_t err = MDBX_ENOMEM;
   const unsigned limit = (*array)->limit;
   if ((*array)->count == limit) {
     void *ptr = realloc(
         (limit > ARRAY_LENGTH((*array)->handles)) ? *array : /* don't free initial array on the stack */ NULL,
         sizeof(mdbx_handle_array_t) + sizeof(HANDLE) * (limit * 2 - ARRAY_LENGTH((*array)->handles)));
     if (!ptr)
-      return MDBX_ENOMEM;
+      goto bailout;
     (*array) = (mdbx_handle_array_t *)ptr;
     (*array)->limit = limit * 2;
   }
 
-  HANDLE hThread = OpenThread(THREAD_SUSPEND_RESUME, FALSE, ThreadId);
-  if (hThread == NULL)
-    return GetLastError();
-  if (SuspendThread(hThread) == -1) {
-    CloseHandle(hThread);
-    return GetLastError();
+  if (SuspendThread(hThread) != (DWORD)-1) {
+    (*array)->handles[(*array)->count++] = hThread;
+    return MDBX_SUCCESS;
+  }
+  err = GetLastError();
+
+bailout:
+  CloseHandle(hThread);
+  (void)mdbx_resume_threads_after_remap(*array);
+  return err;
+}
+
+static MDBX_error_t suspend_and_append_tid(mdbx_handle_array_t **array, const DWORD ThreadId) {
+  HANDLE hThread = OpenThread(ThreadId, FALSE, THREAD_SUSPEND_RESUME);
+  if (hThread == NULL) {
+    MDBX_error_t err = GetLastError();
+    (void)mdbx_resume_threads_after_remap(*array);
+    return err;
   }
 
-  (*array)->handles[(*array)->count++] = hThread;
-  return MDBX_SUCCESS;
+  return suspend_and_append_handle(array, hThread);
 }
+
+MDBX_INTERNAL int ntstatus2errcode(NTSTATUS status);
+
+#ifndef STATUS_NO_MORE_ENTRIES
+#define STATUS_NO_MORE_ENTRIES 0x8000001A
+#endif
+
+extern NTSTATUS NTAPI NtGetNextThread(_In_ HANDLE ProcessHandle, _In_ HANDLE ThreadHandle,
+                                      _In_ ACCESS_MASK DesiredAccess, _In_ ULONG HandleAttributes,
+                                      _In_ ULONG Flags, _Out_ PHANDLE NewThreadHandle);
 
 static MDBX_error_t mdbx_suspend_threads_before_remap(MDBX_env_t *env, mdbx_handle_array_t **array) {
   const MDBX_pid_t CurrentTid = GetCurrentThreadId();
-  MDBX_error_t err;
   if (env->me_lck) {
     /* Scan LCK for threads of the current process */
     const MDBX_reader_t *const begin = env->me_lck->li_readers;
@@ -173,51 +194,42 @@ static MDBX_error_t mdbx_suspend_threads_before_remap(MDBX_env_t *env, mdbx_hand
             goto skip_lck;
       }
 
-      err = suspend_and_append(array, reader->mr_tid);
-      if (err != MDBX_SUCCESS) {
-      bailout_lck:
-        (void)mdbx_resume_threads_after_remap(*array);
-        return err;
-      }
-    }
-    if (WriteTxnOwner && WriteTxnOwner != CurrentTid) {
-      err = suspend_and_append(array, WriteTxnOwner);
+      MDBX_error_t err = suspend_and_append_tid(array, reader->mr_tid);
       if (err != MDBX_SUCCESS)
-        goto bailout_lck;
+        return err;
+    }
+
+    if (WriteTxnOwner && WriteTxnOwner != CurrentTid) {
+      MDBX_error_t err = suspend_and_append_tid(array, WriteTxnOwner);
+      if (err != MDBX_SUCCESS)
+        return err;
     }
   } else {
     /* Without LCK (i.e. read-only mode).
      * Walk thougth a snapshot of all running threads */
     mdbx_assert(env, env->me_wpa_txn == nullptr);
-    const HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (hSnapshot == INVALID_HANDLE_VALUE)
-      return GetLastError();
+    HANDLE PrevThreadHandle = NULL;
+    while (1) {
+      HANDLE NextThreadHandle = INVALID_HANDLE_VALUE;
+      NTSTATUS status =
+          NtGetNextThread(INVALID_HANDLE_VALUE /* NtGetCurrentProcess() */, PrevThreadHandle,
+                          THREAD_SUSPEND_RESUME | THREAD_QUERY_INFORMATION, 0, 0, &NextThreadHandle);
+      if (status == STATUS_NO_MORE_ENTRIES)
+        break;
 
-    THREADENTRY32 entry;
-    entry.dwSize = sizeof(THREADENTRY32);
+      if (!NT_SUCCESS(status)) {
+        (void)mdbx_resume_threads_after_remap(*array);
+        MDBX_error_t err = ntstatus2errcode(status);
+        return err;
+      }
 
-    if (!Thread32First(hSnapshot, &entry)) {
-      err = GetLastError();
-    bailout_toolhelp:
-      CloseHandle(hSnapshot);
-      (void)mdbx_resume_threads_after_remap(*array);
-      return err;
+      if (GetThreadId(NextThreadHandle) != CurrentTid) {
+        MDBX_error_t err = suspend_and_append_handle(array, NextThreadHandle);
+        if (err != MDBX_SUCCESS)
+          return err;
+      }
+      PrevThreadHandle = NextThreadHandle;
     }
-
-    do {
-      if (entry.th32OwnerProcessID != env->me_pid || entry.th32ThreadID == CurrentTid)
-        continue;
-
-      err = suspend_and_append(array, entry.th32ThreadID);
-      if (err != MDBX_SUCCESS)
-        goto bailout_toolhelp;
-
-    } while (Thread32Next(hSnapshot, &entry));
-
-    err = GetLastError();
-    if (err != ERROR_NO_MORE_FILES)
-      goto bailout_toolhelp;
-    CloseHandle(hSnapshot);
   }
 
   return MDBX_SUCCESS;
