@@ -195,18 +195,18 @@ static inline void set_le64_aligned4(void *ptr, uint64_t v) {
 
 #else /* UNALIGNED_OK */
 
-static uint16_t get_le16_unaligned(const void *ptr) {
+static inline uint16_t get_le16_unaligned(const void *ptr) {
   const uint8_t *bytes = (const uint8_t *)ptr;
   return bytes[0] | (uint16_t)bytes[1] << 8;
 }
 
-static void set_le16_unaligned(void *ptr, uint16_t v) {
+static inline void set_le16_unaligned(void *ptr, uint16_t v) {
   uint8_t *bytes = (uint8_t *)ptr;
   bytes[0] = (uint8_t)v;
   bytes[1] = (uint8_t)(v >> 8);
 }
 
-static uint32_t get_le32_unaligned(const void *ptr) {
+static inline uint32_t get_le32_unaligned(const void *ptr) {
   const uint8_t *bytes = (const uint8_t *)ptr;
   uint32_t r = bytes[0];
   r |= (uint32_t)bytes[1] << 8;
@@ -215,7 +215,7 @@ static uint32_t get_le32_unaligned(const void *ptr) {
   return r;
 }
 
-static void set_le32_unaligned(void *ptr, uint32_t v) {
+static inline void set_le32_unaligned(void *ptr, uint32_t v) {
   uint8_t *bytes = (uint8_t *)ptr;
   bytes[0] = (uint8_t)v;
   bytes[1] = (uint8_t)(v >> 8);
@@ -223,20 +223,20 @@ static void set_le32_unaligned(void *ptr, uint32_t v) {
   bytes[3] = (uint8_t)(v >> 24);
 }
 
-static uint32_t get_le32_aligned2(const void *ptr) {
+static inline uint32_t get_le32_aligned2(const void *ptr) {
   assert(is_aligned_uint16(ptr));
   const uint16_t *words = (const uint16_t *)ptr;
   return get_le16_aligned(words + 0) | (uint32_t)get_le16_aligned(words + 1) << 16;
 }
 
-static void set_le32_aligned2(void *ptr, uint32_t v) {
+static inline void set_le32_aligned2(void *ptr, uint32_t v) {
   assert(is_aligned_uint16(ptr));
   uint16_t *words = (uint16_t *)ptr;
   set_le16_aligned(words + 0, (uint16_t)v);
   set_le16_aligned(words + 1, (uint16_t)(v >> 16));
 }
 
-static uint64_t get_le64_unaligned(const void *ptr) {
+static inline uint64_t get_le64_unaligned(const void *ptr) {
   const uint8_t *bytes = (const uint8_t *)ptr;
   uint64_t r = bytes[0];
   r |= (uint64_t)bytes[1] << 8;
@@ -249,7 +249,7 @@ static uint64_t get_le64_unaligned(const void *ptr) {
   return r;
 }
 
-static void set_le64_unaligned(void *ptr, uint64_t v) {
+static inline void set_le64_unaligned(void *ptr, uint64_t v) {
   uint8_t *bytes = (uint8_t *)ptr;
   bytes[0] = (uint8_t)v;
   bytes[1] = (uint8_t)(v >> 8);
@@ -261,7 +261,7 @@ static void set_le64_unaligned(void *ptr, uint64_t v) {
   bytes[7] = (uint8_t)(v >> 56);
 }
 
-static uint64_t get_le64_aligned2(const void *ptr) {
+static inline uint64_t get_le64_aligned2(const void *ptr) {
   assert(is_aligned_uint16(ptr));
   const uint16_t *words = (const uint16_t *)ptr;
   uint64_t r = get_le16_aligned(words + 0);
@@ -271,7 +271,7 @@ static uint64_t get_le64_aligned2(const void *ptr) {
   return r;
 }
 
-static void set_le64_aligned2(void *ptr, uint64_t v) {
+static inline void set_le64_aligned2(void *ptr, uint64_t v) {
   assert(is_aligned_uint16(ptr));
   uint16_t *words = (uint16_t *)ptr;
   set_le16_aligned(words + 0, (uint16_t)v);
@@ -280,13 +280,13 @@ static void set_le64_aligned2(void *ptr, uint64_t v) {
   set_le16_aligned(words + 3, (uint16_t)(v >> 48));
 }
 
-static uint64_t get_le64_aligned4(const void *ptr) {
+static inline uint64_t get_le64_aligned4(const void *ptr) {
   assert(is_aligned_uint32(ptr));
   const uint32_t *dwords = (const uint32_t *)ptr;
   return get_le32_aligned(dwords + 0) | (uint64_t)get_le32_aligned(dwords + 1) << 32;
 }
 
-static void set_le64_aligned4(void *ptr, uint64_t v) {
+static inline void set_le64_aligned4(void *ptr, uint64_t v) {
   assert(is_aligned_uint32(ptr));
   uint32_t *dwords = (uint32_t *)ptr;
   set_le32_aligned(dwords + 0, (uint32_t)v);
