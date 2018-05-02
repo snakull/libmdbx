@@ -116,6 +116,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdbool.h>
 
 /* *INDENT-OFF* */
 /* clang-format off */
@@ -208,15 +209,6 @@
   }
 #else /* __cplusplus */
 # define MDBX_ENUM_FLAG_OPERATORS(ENUMTYPE) /* nope, C allows these operators */
-# ifndef bool
-#   define bool _Bool
-# endif
-# ifndef true
-#   define true (1)
-# endif
-# ifndef false
-#   define false (0)
-# endif
 #endif /* !__cplusplus */
 
 /*------------------------------------------------------------------------------

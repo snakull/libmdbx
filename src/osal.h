@@ -160,7 +160,7 @@ typedef pthread_mutex_t mdbx_fastmutex_t;
 #if defined(__ia32__) || defined(__e2k__)
 #include <x86intrin.h>
 #endif /* __ia32__ */
-#if defined(__ia32__)
+#if defined(__ia32__) && !defined(__cpuid_count)
 #include <cpuid.h>
 #endif /* __ia32__ */
 #elif defined(__SUNPRO_C) || defined(__sun) || defined(sun)
