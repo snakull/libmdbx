@@ -1,4 +1,6 @@
 .
 src
+src/t1ha
+src/t1ha/src
 src/tools
 test

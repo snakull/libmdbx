@@ -48,8 +48,8 @@ TOOLS		:= mdbx_stat mdbx_copy mdbx_dump mdbx_load mdbx_chk
 MANPAGES	:= mdbx_stat.1 mdbx_copy.1 mdbx_dump.1 mdbx_load.1
 SHELL		:= /bin/bash
 
-CORE_SRC	:= $(filter-out src/lck-windows.c, $(wildcard src/*.c))
-CORE_INC	:= $(wildcard src/*.h)
+CORE_SRC	:= $(filter-out src/lck-windows.c, $(wildcard src/*.c) src/t1ha/src/t1ha2.c)
+CORE_INC	:= $(wildcard src/*.h src/t1ha/t1ha.h src/t1ha/src/t1ha_bits.h)
 CORE_OBJ	:= $(patsubst %.c,%.o,$(CORE_SRC))
 TEST_SRC	:= $(filter-out test/osal-windows.cc, $(wildcard test/*.cc))
 TEST_INC	:= $(wildcard test/*.h)

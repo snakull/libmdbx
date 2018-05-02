@@ -192,6 +192,9 @@
     <ClInclude Include="src\page.c" />
     <ClInclude Include="src\proto.h" />
     <ClInclude Include="src\rthc.c" />
+    <ClInclude Include="src\t1ha\t1ha.h" />
+    <ClInclude Include="src\t1ha\src\t1ha_bits.h" />
+    <ClInclude Include="src\t1ha\src\t1ha2.c" />
     <ClInclude Include="src\txn.c" />
     <ClInclude Include="src\ualb.h" />
     <ClInclude Include="src\util.c" />

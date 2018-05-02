@@ -71,3 +71,6 @@ src/txn.c
 src/list.c
 src/debug.c
 src/misc.c
+src/t1ha/t1ha.h
+src/t1ha/src/t1ha2.c
+src/t1ha/src/t1ha_bits.h

@@ -40,6 +40,14 @@
 #include "./proto.h"
 #include "./ualb.h"
 
+#define T1HA0_DISABLED
+#define T1HA1_DISABLED
+#define T1HA_API __maybe_unused MDBX_INTERNAL
+#include "./t1ha/t1ha.h"
+
+#include "./t1ha/src/t1ha_bits.h"
+#include "t1ha/src/t1ha2.c"
+
 #if defined(_WIN32) || defined(_WIN64)
 #include "lck-windows.c"
 #else
