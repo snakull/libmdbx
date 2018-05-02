@@ -180,6 +180,7 @@
     <ClInclude Include="src\defs.h" />
     <ClInclude Include="src\env.c" />
     <ClInclude Include="src\gaco.c" />
+    <ClInclude Include="src\lck.c" />
     <ClInclude Include="src\lck-posix.c" />
     <ClInclude Include="src\lck-windows.c" />
     <ClInclude Include="src\list.c" />

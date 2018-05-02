@@ -197,7 +197,7 @@ MDBX_error_t mdbx_sync(MDBX_env_t *env) {
   const bool outside_txn = ((env->me_flags32 & MDBX_EXCLUSIVE) == 0 &&
                             (!env->me_wpa_txn || env->me_wpa_txn->mt_owner != mdbx_thread_self()));
   if (outside_txn) {
-    int rc = env->ops.locking.ops_writer_lock(env, 0 & MDBX_NONBLOCK /* FIXME: TODO */);
+    int rc = lck_writer_acquire(env, 0 & MDBX_NONBLOCK /* FIXME: TODO */);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
   }
@@ -209,7 +209,7 @@ MDBX_error_t mdbx_sync(MDBX_env_t *env) {
     if (outside_txn && env->me_lck->li_dirty_volume > pgno2bytes(env, 16 /* FIXME: define threshold */)) {
       const size_t usedbytes = pgno_align2os_bytes(env, head->mm_geo.next);
 
-      env->ops.locking.ops_writer_unlock(env);
+      lck_writer_release(env);
 
       /* LY: pre-sync without holding lock to reduce latency for writer(s) */
       int rc = (flags & MDBX_WRITEMAP) ? mdbx_msync(&env->me_dxb_mmap, 0, usedbytes, false)
@@ -217,7 +217,7 @@ MDBX_error_t mdbx_sync(MDBX_env_t *env) {
       if (unlikely(rc != MDBX_SUCCESS))
         return rc;
 
-      rc = env->ops.locking.ops_writer_lock(env, 0 & MDBX_NONBLOCK /* FIXME: TODO */);
+      rc = lck_writer_acquire(env, 0 & MDBX_NONBLOCK /* FIXME: TODO */);
       if (unlikely(rc != MDBX_SUCCESS))
         return rc;
 
@@ -233,14 +233,14 @@ MDBX_error_t mdbx_sync(MDBX_env_t *env) {
       int rc = mdbx_sync_locked(env, flags | MDBX_SHRINK_ALLOWED, &meta);
       if (unlikely(rc != MDBX_SUCCESS)) {
         if (outside_txn)
-          env->ops.locking.ops_writer_unlock(env);
+          lck_writer_release(env);
         return rc;
       }
     }
   }
 
   if (outside_txn)
-    env->ops.locking.ops_writer_unlock(env);
+    lck_writer_release(env);
   return MDBX_SUCCESS;
 }
 
@@ -853,7 +853,7 @@ LIBMDBX_API MDBX_error_t mdbx_set_geometry(MDBX_env_t *env, intptr_t size_lower,
       return MDBX_EACCESS;
 
     if (outside_txn) {
-      int err = env->ops.locking.ops_writer_lock(env, 0);
+      int err = lck_writer_acquire(env, 0);
       if (unlikely(err != MDBX_SUCCESS))
         return err;
       need_unlock = true;
@@ -1048,7 +1048,7 @@ LIBMDBX_API MDBX_error_t mdbx_set_geometry(MDBX_env_t *env, intptr_t size_lower,
 
 bailout:
   if (need_unlock)
-    env->ops.locking.ops_writer_unlock(env);
+    lck_writer_release(env);
   return rc;
 }
 
@@ -1505,6 +1505,9 @@ static MDBX_seize_result_t __cold setup_lck(MDBX_env_t *env, const char *lck_pat
     }
   }
 
+  if (rc.seize >= MDBX_SEIZE_EXCLUSIVE_CONTINUE)
+    lck_seized_exclusive(env);
+
   env->me_oldest = &env->me_lck->li_oldest;
   return rc;
 }
@@ -1660,8 +1663,7 @@ MDBX_error_t __cold mdbx_open_ex(MDBX_env_t *env, void *required_base_address, c
     /* setup regime */
     env->me_lck->li_regime = env->me_flags32 & (MDBX_REGIME_PRINCIPAL_FLAGS | MDBX_RDONLY);
     if ((regime_flags & MDBX_EXCLUSIVE) == 0) {
-      rc = env->ops.locking.ops_downgrade(env);
-      mdbx_debug("lck-downgrade: rc %i ", rc);
+      rc = lck_downgrade(env);
       if (rc != MDBX_SUCCESS)
         goto bailout;
     }
@@ -4011,13 +4013,13 @@ static int __cold bk_copy_asis(MDBX_env_t *env, MDBX_filehandle_t fd) {
 
   if ((env->me_flags32 & MDBX_EXCLUSIVE) == 0) {
     /* Temporarily block writers until we snapshot the meta pages */
-    tr.err = env->ops.locking.ops_writer_lock(env, 0);
+    tr.err = lck_writer_acquire(env, 0);
     if (unlikely(tr.err != MDBX_SUCCESS))
       goto bailout;
 
     tr.err = txn_renew(tr.txn, MDBX_RDONLY);
     if (unlikely(tr.err != MDBX_SUCCESS)) {
-      env->ops.locking.ops_writer_unlock(env);
+      lck_writer_release(env);
       goto bailout;
     }
   }
@@ -4026,7 +4028,7 @@ static int __cold bk_copy_asis(MDBX_env_t *env, MDBX_filehandle_t fd) {
   meta_t *const head = meta_head(env);
   const uint64_t size = mdbx_roundup2(pgno2bytes(env, head->mm_geo.now), env->me_os_psize);
   if ((env->me_flags32 & MDBX_EXCLUSIVE) == 0)
-    env->ops.locking.ops_writer_unlock(env);
+    lck_writer_release(env);
 
   if (likely(tr.err == MDBX_SUCCESS))
     tr.err = mdbx_write(fd, env->me_map + pgno2bytes(env, NUM_METAS),
@@ -4045,7 +4047,7 @@ int __cold mdbx_bk_set_flags(MDBX_env_t *env, unsigned flags, int onoff) {
     return MDBX_EINVAL;
 
   if (likely((env->me_flags32 & MDBX_EXCLUSIVE) == 0)) {
-    int rc = env->ops.locking.ops_writer_lock(env, 0);
+    int rc = lck_writer_acquire(env, 0);
     if (unlikely(rc != MDBX_SUCCESS))
       return rc;
   }
@@ -4057,7 +4059,7 @@ int __cold mdbx_bk_set_flags(MDBX_env_t *env, unsigned flags, int onoff) {
     env->me_flags32 &= ~flags;
 
   if (likely((env->me_flags32 & MDBX_EXCLUSIVE) == 0))
-    env->ops.locking.ops_writer_unlock(env);
+    lck_writer_release(env);
   return MDBX_SUCCESS;
 }
 

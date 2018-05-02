@@ -212,72 +212,8 @@ typedef uint64_t checksum_t;
 /* Core structures for databook and shared memory (i.e. format definition) */
 #pragma pack(push, 1)
 
-/* Reader Lock Table
- *
- * Readers don't acquire any locks for their data access. Instead, they
- * simply record their transaction ID in the reader table. The reader
- * mutex is needed just to find an empty slot in the reader table. The
- * slot's address is saved in thread-specific data so that subsequent
- * read transactions started by the same thread need no further locking to
- * proceed.
- *
- * If MDBX_NOTLS is set, the slot address is not saved in thread-specific data.
- * No reader table is used if the databook is on a read-only filesystem.
- *
- * Since the databook uses multi-version concurrency control, readers don't
- * actually need any locking. This table is used to keep track of which
- * readers are using data from which old transactions, so that we'll know
- * when a particular old transaction is no longer in use. Old transactions
- * that have discarded any data pages can then have those pages reclaimed
- * for use by a later write transaction.
- *
- * The lock table is constructed such that reader slots are aligned with the
- * processor's cache line size. Any slot is only ever used by one thread.
- * This alignment guarantees that there will be no contention or cache
- * thrashing as threads update their own slot info, and also eliminates
- * any need for locking when accessing a slot.
- *
- * A writer thread will scan every slot in the table to determine the oldest
- * outstanding reader transaction. Any freed pages older than this will be
- * reclaimed by the writer. The writer doesn't use any locks when scanning
- * this table. This means that there's no guarantee that the writer will
- * see the most up-to-date reader info, but that's not required for correct
- * operation - all we need is to know the upper bound on the oldest reader,
- * we don't care at all about the newest reader. So the only consequence of
- * reading stale information here is that old pages might hang around a
- * while longer before being reclaimed. That's actually good anyway, because
- * the longer we delay reclaiming old pages, the more likely it is that a
- * string of contiguous pages can be found after coalescing old pages from
- * many old transactions together. */
-
-/* The actual reader record, with cacheline padding. */
-typedef struct MDBX_reader {
-  /* Current Transaction ID when this transaction began, or (txnid_t)-1.
-   * Multiple readers that start at the same time will probably have the
-   * same ID here. Again, it's not important to exclude them from
-   * anything; all we need to know is which version of the databook they
-   * started from so we can avoid overwriting any data used in that
-   * particular version. */
-  volatile txnid_t mr_txnid;
-
-  /* The information we store in a single slot of the reader table.
-   * In addition to a transaction ID, we also record the process and
-   * thread ID that owns a slot, so that we can detect stale information,
-   * e.g. threads or processes that went away without cleaning up.
-   *
-   * NOTE: We currently don't check for stale records.
-   * We simply re-init the table when we know that we're the only process
-   * opening the lock file. */
-
-  /* The process ID of the process owning this reader txn. */
-  volatile MDBX_pid_t mr_pid;
-  /* The thread ID of the thread owning this txn. */
-  volatile MDBX_tid_t mr_tid;
-
-  /* cache line alignment */
-  uint8_t alignment_pad[MDBX_CACHELINE_SIZE -
-                        (sizeof(txnid_t) + sizeof(MDBX_pid_t) + sizeof(MDBX_tid_t)) % MDBX_CACHELINE_SIZE];
-} MDBX_reader_t;
+#define MDBX_CACHELINE_ALIGN_PAD(name, bytes_since)                                                           \
+  uint8_t name[MDBX_CACHELINE_SIZE - (bytes_since) % MDBX_CACHELINE_SIZE]
 
 /* Information about a single associative array in the databook. */
 typedef struct aatree {
@@ -417,6 +353,73 @@ typedef struct page {
 /* Size of the page header, excluding dynamic data at the end */
 #define PAGEHDRSZ ((unsigned)offsetof(page_t, mp_data))
 
+/* Reader Lock Table
+ *
+ * Readers don't acquire any locks for their data access. Instead, they
+ * simply record their transaction ID in the reader table. The reader
+ * mutex is needed just to find an empty slot in the reader table. The
+ * slot's address is saved in thread-specific data so that subsequent
+ * read transactions started by the same thread need no further locking to
+ * proceed.
+ *
+ * If MDBX_NOTLS is set, the slot address is not saved in thread-specific data.
+ * No reader table is used if the databook is on a read-only filesystem.
+ *
+ * Since the databook uses multi-version concurrency control, readers don't
+ * actually need any locking. This table is used to keep track of which
+ * readers are using data from which old transactions, so that we'll know
+ * when a particular old transaction is no longer in use. Old transactions
+ * that have discarded any data pages can then have those pages reclaimed
+ * for use by a later write transaction.
+ *
+ * The lock table is constructed such that reader slots are aligned with the
+ * processor's cache line size. Any slot is only ever used by one thread.
+ * This alignment guarantees that there will be no contention or cache
+ * thrashing as threads update their own slot info, and also eliminates
+ * any need for locking when accessing a slot.
+ *
+ * A writer thread will scan every slot in the table to determine the oldest
+ * outstanding reader transaction. Any freed pages older than this will be
+ * reclaimed by the writer. The writer doesn't use any locks when scanning
+ * this table. This means that there's no guarantee that the writer will
+ * see the most up-to-date reader info, but that's not required for correct
+ * operation - all we need is to know the upper bound on the oldest reader,
+ * we don't care at all about the newest reader. So the only consequence of
+ * reading stale information here is that old pages might hang around a
+ * while longer before being reclaimed. That's actually good anyway, because
+ * the longer we delay reclaiming old pages, the more likely it is that a
+ * string of contiguous pages can be found after coalescing old pages from
+ * many old transactions together. */
+
+/* The actual reader record, with cacheline padding. */
+typedef struct MDBX_reader {
+  /* Current Transaction ID when this transaction began, or (txnid_t)-1.
+   * Multiple readers that start at the same time will probably have the
+   * same ID here. Again, it's not important to exclude them from
+   * anything; all we need to know is which version of the databook they
+   * started from so we can avoid overwriting any data used in that
+   * particular version. */
+  volatile txnid_t mr_txnid;
+  /* TODO: MDBX_time_t mr_timestamp; */
+
+  /* The information we store in a single slot of the reader table.
+   * In addition to a transaction ID, we also record the process and
+   * thread ID that owns a slot, so that we can detect stale information,
+   * e.g. threads or processes that went away without cleaning up.
+   *
+   * NOTE: We currently don't check for stale records.
+   * We simply re-init the table when we know that we're the only process
+   * opening the lock file. */
+
+  /* The process ID of the process owning this reader txn. */
+  volatile MDBX_pid_t mr_pid;
+  /* The thread ID of the thread owning this txn. */
+  volatile MDBX_tid_t mr_tid;
+
+  /* padding for cache line alignment */
+  MDBX_CACHELINE_ALIGN_PAD(alignment_pad, sizeof(txnid_t) + sizeof(MDBX_pid_t) + sizeof(MDBX_tid_t));
+} MDBX_reader_t;
+
 /* The header for the reader table (a memory-mapped lock file). */
 typedef struct MDBX_lockinfo {
   /*------------------------------------------------------------- cacheline */
@@ -429,40 +432,55 @@ typedef struct MDBX_lockinfo {
   /* Flags which databook was opened. */
   volatile uint32_t li_regime;
   /* uint64_t boundary -----------------------------------------------------*/
-  volatile uint32_t li_autosync_threshold; /* Treshold to force synchronous flush */
-  volatile uint32_t li_reserved32;         /* reserved */
+  /* Treshold to force synchronous flush */
+  volatile uint32_t li_autosync_threshold;
+  volatile uint32_t li_reserved32 /* reserved */;
   /* uint64_t boundary -----------------------------------------------------*/
-  uint8_t li_alignment_pad1[MDBX_CACHELINE_SIZE - sizeof(uint64_t /* li_magic_and_version */) -
-                            sizeof(uint32_t /* li_os_and_format */) - sizeof(uint32_t /* li_regime */) -
-                            sizeof(uint64_t /* li_autosync_threshold */)];
+
+  /* TODO: use CMake for calculation on pre-build stage */
+  MDBX_CACHELINE_ALIGN_PAD(li_alignment_pad1, sizeof(uint64_t /* li_magic_and_version */) +
+                                                  sizeof(uint32_t /* li_os_and_format */) +
+                                                  sizeof(uint32_t /* li_regime */) +
+                                                  sizeof(uint64_t /* li_autosync_threshold */));
+
+/*------------------------------------------------------------- cacheline */
+
 #ifdef MDBX_OSAL_LOCK
-  /*------------------------------------------------------------- cacheline */
   union {
     /* Mutex protecting write access to the database. */
     MDBX_OSAL_LOCK li_wmutex;
-    uint64_t li_wmutex_pad[(sizeof(MDBX_OSAL_LOCK) + 7) / 8];
+    uint64_t li_wmutex_pad[(sizeof(MDBX_OSAL_LOCK) + 7) / 8] /* 24 .. 40 bytes for pthread */;
   };
-#endif
+#define MDBX_OSAL_LOCK_ALIGNEDSIZE ((sizeof(MDBX_OSAL_LOCK) + 7) & ~7u)
+#else
+#define MDBX_OSAL_LOCK_ALIGNEDSIZE 0
+#endif /* MDBX_OSAL_LOCK */
+
   /* uint64_t boundary -----------------------------------------------------*/
   volatile txnid_t li_oldest;
   volatile uint64_t li_dirty_volume; /* Total dirty/non-sync'ed bytes since the last
                                         mdbx_sync() */
   /* uint64_t boundary -----------------------------------------------------*/
+  volatile MDBX_tid_t li_wowner_tid;
+  volatile MDBX_pid_t li_wowner_pid;
 
-  uint8_t li_alignment_pad2[MDBX_CACHELINE_SIZE
-#ifdef MDBX_OSAL_LOCK
-                            - ((sizeof(MDBX_OSAL_LOCK) + 7) & ~7 /* li_wmutex */)
-#endif
-                            - sizeof(txnid_t /* li_oldest */) - sizeof(uint64_t /* li_dirty_volume */)];
+  /* TODO: use CMake for calculation on pre-build stage */
+  MDBX_CACHELINE_ALIGN_PAD(li_alignment_pad2, MDBX_OSAL_LOCK_ALIGNEDSIZE /* li_wmutex */
+                                                  + sizeof(txnid_t /* li_oldest */) +
+                                                  sizeof(uint64_t /* li_dirty_volume */) +
+                                                  sizeof(MDBX_tid_t /* li_wowner_tid */) +
+                                                  sizeof(MDBX_pid_t /* li_wowner_pid */));
 
+/*------------------------------------------------------------- cacheline */
 #ifdef MDBX_OSAL_LOCK
-  /*------------------------------------------------------------- cacheline */
   union {
     /* Mutex protecting readers registration access to this table. */
     MDBX_OSAL_LOCK li_rmutex;
     uint64_t li_rmutex_pad[(sizeof(MDBX_OSAL_LOCK) + 7) / 8];
   };
-#endif
+#endif /* MDBX_OSAL_LOCK */
+  volatile MDBX_tid_t li_rowner_tid;
+  volatile MDBX_pid_t li_rowner_pid;
 
   /* The number of slots that have been used in the reader table.
    * This always records the maximum count, it is not decremented
@@ -470,12 +488,13 @@ typedef struct MDBX_lockinfo {
   volatile uint32_t li_numreaders;
   volatile uint32_t li_readers_refresh_flag;
 
-  uint8_t li_alignment_pad3[MDBX_CACHELINE_SIZE
-#ifdef MDBX_OSAL_LOCK
-                            - ((sizeof(MDBX_OSAL_LOCK) + 7) & ~7 /* li_rmutex */)
-#endif
-                            - sizeof(uint32_t /* li_numreaders */) -
-                            sizeof(uint32_t /* li_readers_refresh_flag */)];
+  /* TODO: use CMake for calculation on pre-build stage */
+  /* TODO: use CMake for calculation on pre-build stage */
+  MDBX_CACHELINE_ALIGN_PAD(li_alignment_pad3, MDBX_OSAL_LOCK_ALIGNEDSIZE /* li_rmutex */
+                                                  + sizeof(uint32_t /* li_numreaders */) +
+                                                  sizeof(uint32_t /* li_readers_refresh_flag */) +
+                                                  sizeof(MDBX_tid_t /* li_rowner_tid */) +
+                                                  sizeof(MDBX_pid_t /* li_rowner_pid */));
 
   /*------------------------------------------------------------- cacheline */
   MDBX_reader_t li_readers[1];

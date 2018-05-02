@@ -16,6 +16,22 @@
 
 #include "./bits.h"
 
+MDBX_INTERNAL MDBX_error_t lck_writer_acquire(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */);
+MDBX_INTERNAL void lck_writer_set_owned(MDBX_env_t *env);
+MDBX_INTERNAL void lck_writer_release(MDBX_env_t *env);
+
+MDBX_INTERNAL MDBX_error_t lck_reader_registration_acquire(MDBX_env_t *env,
+                                                           MDBX_flags_t flags /* MDBX_NONBLOCK */);
+MDBX_INTERNAL void lck_reader_registration_set_owned(MDBX_env_t *env);
+MDBX_INTERNAL void lck_reader_registration_release(MDBX_env_t *env);
+
+MDBX_INTERNAL MDBX_error_t lck_reader_alive_set(MDBX_env_t *env, MDBX_pid_t pid);
+MDBX_INTERNAL void lck_reader_alive_clear(MDBX_env_t *env, MDBX_pid_t pid);
+
+MDBX_INTERNAL MDBX_error_t lck_downgrade(MDBX_env_t *env);
+MDBX_INTERNAL MDBX_error_t lck_upgrade(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */);
+MDBX_INTERNAL void lck_seized_exclusive(MDBX_env_t *env);
+
 /*----------------------------------------------------------------------------*/
 /* Internal prototypes */
 
@@ -360,7 +376,7 @@ static inline MDBX_numeric_result_t numeric_result(MDBX_error_t err, uintptr_t v
 
 static inline void mdbx_jitter4testing(bool tiny) {
 #ifndef NDEBUG
-  if (MDBX_DBG_JITTER & mdbx_debug_bits)
+  if (unlikely(MDBX_DBG_JITTER & mdbx_debug_bits))
     mdbx_jitter(tiny);
 #else
   (void)tiny;

@@ -48,12 +48,6 @@
 #include "./t1ha/src/t1ha_bits.h"
 #include "t1ha/src/t1ha2.c"
 
-#if defined(_WIN32) || defined(_WIN64)
-#include "lck-windows.c"
-#else
-#include "lck-posix.c"
-#endif
-
 #include "aah.c"
 #include "api.c"
 #include "audit.c"
@@ -62,6 +56,7 @@
 #include "debug.c"
 #include "env.c"
 #include "gaco.c"
+#include "lck.c"
 #include "list.c"
 #include "mem.c"
 #include "meta.c"

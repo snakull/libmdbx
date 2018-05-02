@@ -6,6 +6,7 @@ src/config.h
 src/debug.h
 src/env.c
 src/gaco.c
+src/lck.c
 src/mem.c
 src/mess.c
 src/meta.c

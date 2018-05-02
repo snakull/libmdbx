@@ -123,7 +123,7 @@ static int txn_renew(MDBX_txn_t *txn, unsigned flags) {
       mdbx_assert(env, env->me_lck->li_os_and_format == MDBX_LOCK_FORMAT);
 
       if (likely((env->me_flags32 & MDBX_EXCLUSIVE) == 0)) {
-        rc = env->ops.locking.ops_reader_registration_lock(env, (env->me_flags32 | flags) & MDBX_NONBLOCK);
+        rc = lck_reader_registration_acquire(env, flags & MDBX_NONBLOCK);
         if (unlikely(MDBX_IS_ERROR(rc))) {
           txn_trace("<< (txn = %p, flags = 0x%x): rc = %d", txn, flags, rc);
           return rc;
@@ -132,10 +132,10 @@ static int txn_renew(MDBX_txn_t *txn, unsigned flags) {
       rc = MDBX_SUCCESS;
 
       if (unlikely(env->me_live_reader != env->me_pid)) {
-        rc = env->ops.locking.ops_reader_alive_set(env, env->me_pid);
+        rc = lck_reader_alive_set(env, env->me_pid);
         if (unlikely(rc != MDBX_SUCCESS)) {
           if (likely((env->me_flags32 & MDBX_EXCLUSIVE) == 0))
-            env->ops.locking.ops_reader_registration_unlock(env);
+            lck_reader_registration_release(env);
           txn_trace("<< (txn = %p, flags = 0x%x): rc = %d", txn, flags, rc);
           return rc;
         }
@@ -154,7 +154,7 @@ static int txn_renew(MDBX_txn_t *txn, unsigned flags) {
         rc = check_registered_readers(env, true).err;
         if (rc != MDBX_SIGN) {
           if (likely((env->me_flags32 & MDBX_EXCLUSIVE) == 0))
-            env->ops.locking.ops_reader_registration_unlock(env);
+            lck_reader_registration_release(env);
           rc = (rc == MDBX_SUCCESS) ? MDBX_READERS_FULL : rc;
           txn_trace("<< (txn = %p, flags = 0x%x): rc = %d", txn, flags, rc);
           return rc;
@@ -170,7 +170,7 @@ static int txn_renew(MDBX_txn_t *txn, unsigned flags) {
 #ifdef MDBX_OSAL_LOCK
       STATIC_ASSERT(offsetof(MDBX_lockinfo_t, li_rmutex) % MDBX_CACHELINE_SIZE == 0);
 #else
-      STATIC_ASSERT(offsetof(MDBX_lockinfo_t, li_numreaders) % MDBX_CACHELINE_SIZE == 0);
+      STATIC_ASSERT(offsetof(MDBX_lockinfo_t, li_rowner_tid) % MDBX_CACHELINE_SIZE == 0);
 #endif
       STATIC_ASSERT(offsetof(MDBX_lockinfo_t, li_readers) % MDBX_CACHELINE_SIZE == 0);
       r = &env->me_lck->li_readers[slot];
@@ -189,7 +189,7 @@ static int txn_renew(MDBX_txn_t *txn, unsigned flags) {
         env->me_close_readers = nreaders;
       r->mr_pid = env->me_pid;
       if (likely((env->me_flags32 & MDBX_EXCLUSIVE) == 0))
-        env->ops.locking.ops_reader_registration_unlock(env);
+        lck_reader_registration_release(env);
 
       if (likely(env->me_flags32 & MDBX_ENV_TXKEY))
         tls_set(env->me_txkey, r);
@@ -239,11 +239,9 @@ static int txn_renew(MDBX_txn_t *txn, unsigned flags) {
     /* Not yet touching txn == env->me_txn0, it may be active */
     if (likely((env->me_flags32 & MDBX_EXCLUSIVE) == 0)) {
       jitter4testing(false);
-      rc = env->ops.locking.ops_writer_lock(env, (env->me_flags32 | flags) & MDBX_NONBLOCK);
+      rc = lck_writer_acquire(env, (env->me_flags32 | flags) & MDBX_NONBLOCK);
       if (unlikely(rc != MDBX_SUCCESS)) {
-        txn_trace("<< (txn = %p, flags = 0x%x): "
-                  "env->ops.locking.ops_writer_lock(), rc = %d",
-                  txn, flags, rc);
+        txn_trace("<< (txn = %p, flags = 0x%x): lck_writer_acquire(), rc = %d", txn, flags, rc);
         return rc;
       }
     }
@@ -550,7 +548,7 @@ static int txn_end(MDBX_txn_t *txn, const unsigned mode) {
       env->me_current_txn = nullptr;
       if (likely((env->me_flags32 & MDBX_EXCLUSIVE) == 0)) {
         /* The writer mutex was locked in mdbx_begin. */
-        env->ops.locking.ops_writer_unlock(env);
+        lck_writer_release(env);
       }
     } else {
       txn->mt_parent->mt_child = nullptr;

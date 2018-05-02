@@ -17,15 +17,6 @@
 #include "./proto.h"
 #include "./ualb.h"
 
-#define lck_extra(fmt, ...) log_extra(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
-#define lck_trace(fmt, ...) log_trace(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
-#define lck_verbose(fmt, ...) log_verbose(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
-#define lck_info(fmt, ...) log_info(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
-#define lck_notice(fmt, ...) log_notice(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
-#define lck_warning(fmt, ...) log_warning(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
-#define lck_error(fmt, ...) log_error(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
-#define lck_panic(env, msg, err) mdbx_panic(env, MDBX_LOG_LCK, __func__, __LINE__, "%s, error %d", msg, err)
-
 /* Some platforms define the EOWNERDEAD error code
  * even though they don't support Robust Mutexes.
  * Compile with -DMDBX_USE_ROBUST=0. */
@@ -44,7 +35,7 @@ static int fcntl_op(const MDBX_filehandle_t fd, const int op, const int lck, con
                     const size_t len) {
   STATIC_ASSERT(sizeof(off_t) >= sizeof(size_t));
   for (;;) {
-    mdbx_jitter4testing(false);
+    mdbx_jitter4testing(true);
     struct flock lock_op;
     memset(&lock_op, 0, sizeof(lock_op));
     lock_op.l_type = lck;
@@ -52,7 +43,7 @@ static int fcntl_op(const MDBX_filehandle_t fd, const int op, const int lck, con
     lock_op.l_start = offset;
     lock_op.l_len = len;
     int rc = fcntl(fd, op, &lock_op);
-    mdbx_jitter4testing(false);
+    mdbx_jitter4testing(true);
     if (rc == -1) {
       rc = errno;
       if (rc != EINTR) {
@@ -72,7 +63,7 @@ static int fcntl_op(const MDBX_filehandle_t fd, const int op, const int lck, con
 
 static inline int lck_exclusive(int fd, const MDBX_flags_t flags) {
   assert(fd != MDBX_INVALID_FD);
-  mdbx_jitter4testing(false);
+  mdbx_jitter4testing(true);
   while (flock(fd, (flags & MDBX_NONBLOCK) ? LOCK_EX | LOCK_NB : LOCK_EX)) {
     int rc = errno;
     if (rc != EINTR) {
@@ -80,7 +71,7 @@ static inline int lck_exclusive(int fd, const MDBX_flags_t flags) {
         lck_error("flock(fd %d, LOCK_EX%s), error %d", fd, (flags & MDBX_NONBLOCK) ? "|LOCK_NB" : "", rc);
       return rc /* EWOULDBLOCK */;
     }
-    mdbx_jitter4testing(false);
+    mdbx_jitter4testing(true);
   }
 
   /* exlusive lock first byte */
@@ -89,7 +80,7 @@ static inline int lck_exclusive(int fd, const MDBX_flags_t flags) {
 
 static inline int lck_shared(int fd, const MDBX_flags_t flags) {
   assert(fd != MDBX_INVALID_FD);
-  mdbx_jitter4testing(false);
+  mdbx_jitter4testing(true);
   while (flock(fd, (flags & MDBX_NONBLOCK) ? LOCK_SH | LOCK_NB : LOCK_SH)) {
     int rc = errno;
     if (rc != EINTR) {
@@ -97,7 +88,7 @@ static inline int lck_shared(int fd, const MDBX_flags_t flags) {
         lck_error("flock(fd %d, LOCK_SH%s), error %d", fd, (flags & MDBX_NONBLOCK) ? "|LOCK_NB" : "", rc);
       return rc /* EWOULDBLOCK */;
     }
-    mdbx_jitter4testing(false);
+    mdbx_jitter4testing(true);
   }
 
   /* shared lock first byte */
@@ -145,7 +136,7 @@ MDBX_error_t mdbx_lck_upgrade(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLO
   }
 
   err = lck_exclusive(env->me_lck_fd, flags);
-  mdbx_jitter4testing(false);
+  mdbx_jitter4testing(true);
   if (err != MDBX_SUCCESS) {
     mdbx_lck_writer_unlock(env);
     if (lck_is_collision(err)) {
@@ -380,7 +371,7 @@ static int __cold mdbx_robust_mutex_failed(MDBX_env_t *env, pthread_mutex_t *mut
   assert(err != EBUSY);
 #if MDBX_USE_ROBUST
   if (err == EOWNERDEAD /* We own the mutex. Clean up after dead previous owner */) {
-    int rlocked = (mutex == &env->me_lck->li_rmutex);
+    const bool rlocked = (mutex == &env->me_lck->li_rmutex);
     err = MDBX_SUCCESS;
     if (!rlocked) {
       if (unlikely(env->me_current_txn)) {
@@ -396,19 +387,25 @@ static int __cold mdbx_robust_mutex_failed(MDBX_env_t *env, pthread_mutex_t *mut
     int check_rc = check_registered_readers(env, rlocked).err;
     check_rc = (check_rc == MDBX_SUCCESS) ? MDBX_SIGN : check_rc;
 
-    mdbx_jitter4testing(false);
+    mdbx_jitter4testing(true);
     int mreco_rc = pthread_mutex_consistent(mutex);
     check_rc = (mreco_rc == 0) ? check_rc : mreco_rc;
 
-    mdbx_jitter4testing(false);
+    mdbx_jitter4testing(true);
     if (unlikely(mreco_rc))
       lck_error("mutex recovery failed, %s", mdbx_strerror(mreco_rc));
 
     err = (err == MDBX_SUCCESS) ? check_rc : err;
-    if (MDBX_IS_ERROR(err))
+    if (MDBX_IS_ERROR(err)) {
       pthread_mutex_unlock(mutex);
+    } else {
+      if (rlocked)
+        lck_reader_registration_set_owned(env);
+      else
+        lck_writer_set_owned(env);
+    }
 
-    mdbx_jitter4testing(false);
+    mdbx_jitter4testing(true);
     return err;
   }
 #else

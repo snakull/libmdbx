@@ -92,7 +92,7 @@ static void __cold env_destroy(MDBX_env_t *env) {
 
     if (env->me_lck) {
       if (env->me_live_reader && env->me_live_reader == mdbx_getpid())
-        env->ops.locking.ops_reader_alive_clear(env, env->me_live_reader);
+        lck_reader_alive_clear(env, env->me_live_reader);
       mdbx_munmap(&env->me_lck_mmap);
     }
     env->me_oldest = nullptr;
@@ -151,7 +151,7 @@ static __cold int env_shutdown(MDBX_env_t *env, MDBX_shutdown_mode_t mode) {
     if (env->me_flags32 & MDBX_EXCLUSIVE) {
       env_trace("exclusive mode, fallback to shutdown-mode=sync");
     } else {
-      rc = env->ops.locking.ops_upgrade(env, MDBX_NONBLOCK);
+      rc = lck_upgrade(env, MDBX_NONBLOCK);
       if (rc == MDBX_SIGN) {
         env_trace("<< at lease one other writer present, skip db-sync");
         return MDBX_SUCCESS;
@@ -173,8 +173,11 @@ static __cold int env_shutdown(MDBX_env_t *env, MDBX_shutdown_mode_t mode) {
   case MDBX_shutdown_sync:
     env_trace("shutdown-mode=sync, perform db-sync");
     rc = mdbx_sync(env);
-    if (should_downgrade)
-      env->ops.locking.ops_downgrade(env);
+    if (should_downgrade) {
+      int err = lck_downgrade(env);
+      if (unlikely(err != MDBX_SUCCESS))
+        env_warning("unexpected lck_downgrade() error %d", err);
+    }
     env_trace("<< rc %d", rc);
     return rc;
   case MDBX_shutdown_dirty:
@@ -261,7 +264,7 @@ MDBX_numeric_result_t __cold check_registered_readers(MDBX_env_t *env, int rdt_l
 
     /* stale reader found */
     if (!rdt_locked) {
-      err = env->ops.locking.ops_reader_registration_lock(env, env->me_flags32 & MDBX_NONBLOCK);
+      err = lck_reader_registration_acquire(env, env->me_flags32 & MDBX_NONBLOCK);
       if (MDBX_IS_ERROR(err)) {
         result.err = err;
         break;
@@ -302,7 +305,7 @@ MDBX_numeric_result_t __cold check_registered_readers(MDBX_env_t *env, int rdt_l
   }
 
   if (rdt_locked < 0)
-    env->ops.locking.ops_reader_registration_unlock(env);
+    lck_reader_registration_release(env);
 
   return result;
 }

@@ -27,15 +27,6 @@
  * LY
  */
 
-#define lck_extra(fmt, ...) log_extra(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
-#define lck_trace(fmt, ...) log_trace(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
-#define lck_verbose(fmt, ...) log_verbose(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
-#define lck_info(fmt, ...) log_info(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
-#define lck_notice(fmt, ...) log_notice(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
-#define lck_warning(fmt, ...) log_warning(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
-#define lck_error(fmt, ...) log_error(MDBX_LOG_LCK, fmt, ##__VA_ARGS__)
-#define lck_panic(env, msg, err) mdbx_panic(env, MDBX_LOG_LCK, __func__, __LINE__, "%s, error %d", msg, err)
-
 #define lck_transition_begin(from, to) lck_trace("now %s, going-down %s", from, to)
 #define lck_transition_end(from, to, err)                                                                     \
   do {                                                                                                        \
@@ -48,20 +39,20 @@
   } while (0)
 
 static inline BOOL lck_lock(MDBX_filehandle_t fd, DWORD flags, uint64_t offset, size_t bytes) {
-  mdbx_jitter4testing(false);
+  mdbx_jitter4testing(true);
   OVERLAPPED ov;
   ov.hEvent = 0;
   ov.Offset = (DWORD)offset;
   ov.OffsetHigh = HIGH_DWORD(offset);
   const BOOL rc = LockFileEx(fd, flags, 0, (DWORD)bytes, HIGH_DWORD(bytes), &ov);
-  mdbx_jitter4testing(false);
+  mdbx_jitter4testing(true);
   return rc;
 }
 
 static inline BOOL lck_unlock(MDBX_filehandle_t fd, uint64_t offset, size_t bytes) {
-  mdbx_jitter4testing(false);
+  mdbx_jitter4testing(true);
   const BOOL rc = UnlockFile(fd, (DWORD)offset, HIGH_DWORD(offset), (DWORD)bytes, HIGH_DWORD(bytes));
-  mdbx_jitter4testing(false);
+  mdbx_jitter4testing(true);
   return rc;
 }
 
