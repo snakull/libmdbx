@@ -94,7 +94,7 @@ static inline int aa_db2txn(const MDBX_env_t *env, const aatree_t *src, aht_t *a
   aht->aa.depth16 = get_le16_unaligned(&src->aa_depth16);
   switch (format) {
   case af_gaco:
-    aht->aa.flags16 = MDBX_INTEGERKEY /* ignore mm_extra_flags16 from [MDBX_GACO_AAH].aa_flags16 */;
+    aht->aa.flags16 = MDBX_INTEGERKEY /* ignore mm_features16 from [MDBX_GACO_AAH].aa_flags16 */;
     aht->aa.xsize32 = 0 /* ignore mm_psize32 from [MDBX_GACO_AAH].aa_xsize32 */;
     aht->ahe = &env->env_ahe_array[MDBX_GACO_AAH];
     aht->ahe->ax_since = 0;
@@ -138,10 +138,10 @@ static inline void aa_txn2db(const MDBX_env_t *env, const aht_t *aht, aatree_t *
                              const enum aat_format format) {
 #if !UNALIGNED_OK || !defined(NDEBUG) || defined(_DEBUG)
   aatree_t aligned, *const target = dst;
-  if ((uintptr_t)dst & 7)
+  if (!is_aligned_uint64(dst))
     dst = &aligned;
 #endif
-  set_le16_unaligned(&dst->aa_depth16, aht->aa.depth16);
+  set_le16_aligned(&dst->aa_depth16, aht->aa.depth16);
   if (likely(format != af_gaco)) {
     set_le16_aligned(&dst->aa_flags16, aht->aa.flags16);
     set_le32_aligned(&dst->aa_xsize32, aht->aa.xsize32);
@@ -150,23 +150,27 @@ static inline void aa_txn2db(const MDBX_env_t *env, const aht_t *aht, aatree_t *
     set_le64_aligned(&dst->aa_modification_txnid, aht->aa.modification_txnid);
     set_le64_aligned(&dst->aa_modification_time.fixedpoint, aht->aa.modification_time.fixedpoint);
   } else {
-    set_le16_unaligned(&dst->aa_flags16, 0); /* set mm_extra_flags16 at [MDBX_GACO_AAH].aa_flags16 */
-    set_le32_unaligned(&dst->aa_xsize32, env->me_psize) /* set mm_psize32 at [MDBX_GACO_AAH].aa_xsize32 */;
+    set_le16_aligned(
+        &dst->aa_flags16,
+        0 /* FIXME: copy current features from env */); /* set mm_features16 at [MDBX_GACO_AAH].aa_flags16 */
+    set_le32_aligned(&dst->aa_xsize32, env->me_psize) /* set mm_psize32 at [MDBX_GACO_AAH].aa_xsize32 */;
+    set_le64_aligned(&dst->aa_modification_txnid, aht->aa.modification_txnid);
+    set_le64_aligned(&dst->aa_modification_time.fixedpoint, aht->aa.modification_time.fixedpoint);
   }
 
-  if (sizeof(pgno_t) == 4) {
-    set_le32_unaligned(&dst->aa_root, aht->aa.root);
-    set_le32_unaligned(&dst->aa_branch_pages, aht->aa.branch_pages);
-    set_le32_unaligned(&dst->aa_leaf_pages, aht->aa.leaf_pages);
-    set_le32_unaligned(&dst->aa_overflow_pages, aht->aa.overflow_pages);
-  } else {
-    set_le64_unaligned(&dst->aa_root, aht->aa.root);
-    set_le64_unaligned(&dst->aa_branch_pages, aht->aa.branch_pages);
-    set_le64_unaligned(&dst->aa_leaf_pages, aht->aa.leaf_pages);
-    set_le64_unaligned(&dst->aa_overflow_pages, aht->aa.overflow_pages);
-  }
-  set_le64_unaligned(&dst->aa_entries, aht->aa.entries);
-  set_le64_unaligned(&dst->aa_genseq, aht->aa.genseq);
+  STATIC_ASSERT(sizeof(pgno_t) == 4);
+  set_le32_aligned(&dst->aa_root, aht->aa.root);
+  set_le32_aligned(&dst->aa_branch_pages, aht->aa.branch_pages);
+  set_le32_aligned(&dst->aa_leaf_pages, aht->aa.leaf_pages);
+  set_le32_aligned(&dst->aa_overflow_pages, aht->aa.overflow_pages);
+  /* } else {
+    set_le64_aligned(&dst->aa_root, aht->aa.root);
+    set_le64_aligned(&dst->aa_branch_pages, aht->aa.branch_pages);
+    set_le64_aligned(&dst->aa_leaf_pages, aht->aa.leaf_pages);
+    set_le64_aligned(&dst->aa_overflow_pages, aht->aa.overflow_pages);
+  } */
+  set_le64_aligned(&dst->aa_entries, aht->aa.entries);
+  set_le64_aligned(&dst->aa_genseq, aht->aa.genseq);
 
   set_le64_aligned(&dst->aa_merkle, aa_checksum(env, dst));
 #if !UNALIGNED_OK || !defined(NDEBUG) || defined(_DEBUG)

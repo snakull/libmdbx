@@ -279,9 +279,9 @@ typedef struct meta {
   aatree_t mm_aas[CORE_AAH]; /* first is GACO space, 2nd is main AA */
                              /* The size of pages used in this AA */
 #define mm_psize32 mm_aas[MDBX_GACO_AAH].aa_xsize32
-/* Extra databook flags, zero for now */
-#define mm_extra_flags16 mm_aas[MDBX_GACO_AAH].aa_flags16
-/* Any persistent databook flags, see mdbx_book */
+/* Databook features, see MDBX_db_features_t (zero for now) */
+#define mm_features16 mm_aas[MDBX_GACO_AAH].aa_flags16
+/* Any persistent databook flags, see MDBX_aa_flags_t */
 #define mm_db_flags16 mm_aas[MDBX_MAIN_AAH].aa_flags16
   MDBX_canary_t mm_canary;
 /* uint64_t boundary -------------------------------------------------------*/

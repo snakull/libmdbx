@@ -502,6 +502,13 @@ static int __cold mdbx_read_header(MDBX_env_t *env, meta_t *meta) {
       continue;
     }
 
+    if (page.mp_meta.mm_features16 != 0) {
+      mdbx_notice("meta[%u] has unsupported mm_features16 0x%x, skip it", meta_number,
+                  page.mp_meta.mm_features16);
+      rc = MDBX_INCOMPATIBLE;
+      continue;
+    }
+
     if (page.mp_meta.mm_sld_geo.lower != 0 || page.mp_meta.mm_sld_geo.now != 0 ||
         page.mp_meta.mm_sld_geo.upper != 0) {
       meta_notice("meta[%u] has unsupported (non-zeroed) SLD-geometry, skip it", meta_number);
