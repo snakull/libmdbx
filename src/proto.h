@@ -382,3 +382,5 @@ static inline void mdbx_jitter4testing(bool tiny) {
   (void)tiny;
 #endif
 }
+
+MDBX_INTERNAL MDBX_id128_t osal_bootid_value;

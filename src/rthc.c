@@ -349,14 +349,20 @@ __cold void rthc_release(const mdbx_thread_key_t key) {
 /*----------------------------------------------------------------------------*/
 
 #if defined(_WIN32) || defined(_WIN64)
+
+MDBX_INTERNAL void osal_ctor(void);
+
 static void NTAPI tls_callback(PVOID module, DWORD reason, PVOID reserved) {
   (void)reserved;
   switch (reason) {
   case DLL_PROCESS_ATTACH:
-    rthc_global_ctor();
+    /* mdbx_global_ctor */ {
+      osal_ctor();
+      rthc_global_ctor();
+    }
     break;
   case DLL_PROCESS_DETACH:
-    rthc_global_dtor();
+    /* mdbx_global_dtor */ { rthc_global_dtor(); }
     break;
 
   case DLL_THREAD_ATTACH:
@@ -408,7 +414,11 @@ static void NTAPI tls_callback(PVOID module, DWORD reason, PVOID reserved) {
 
 #else
 
-static __cold __attribute__((constructor)) void mdbx_global_ctor(void) { rthc_global_ctor(); }
+static __cold __attribute__((constructor)) void mdbx_global_ctor(void) {
+  osal_ctor();
+  rthc_global_ctor();
+}
+
 static __cold __attribute__((destructor)) void mdbx_global_dtor(void) { rthc_global_dtor(); }
 
 #endif

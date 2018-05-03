@@ -28,6 +28,10 @@
 
 //-----------------------------------------------------------------------------
 
+__cold MDBX_id128_t mdbx_bootid(void) { return osal_bootid_value; }
+
+//-----------------------------------------------------------------------------
+
 MDBX_error_t mdbx_cmp(MDBX_txn_t *txn, MDBX_aah_t aah, const MDBX_iov_t *a, const MDBX_iov_t *b) {
   int rc = validate_txn_ro(txn);
   if (unlikely(rc != MDBX_SUCCESS))

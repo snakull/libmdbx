@@ -129,11 +129,17 @@ typedef struct _FILE_PROVIDER_EXTERNAL_INFO_V1 {
 #define STATUS_INVALID_DEVICE_REQUEST ((NTSTATUS)0xC0000010L)
 #endif
 
-extern NTSTATUS NtFsControlFile(IN HANDLE FileHandle, IN OUT HANDLE Event,
-                                IN OUT PVOID /* PIO_APC_ROUTINE */ ApcRoutine, IN OUT PVOID ApcContext,
-                                OUT PIO_STATUS_BLOCK IoStatusBlock, IN ULONG FsControlCode,
-                                IN OUT PVOID InputBuffer, IN ULONG InputBufferLength,
-                                OUT OPTIONAL PVOID OutputBuffer, IN ULONG OutputBufferLength);
+extern NTSTATUS NTAPI NtFsControlFile(IN HANDLE FileHandle, IN OUT HANDLE Event,
+                                      IN OUT PVOID /* PIO_APC_ROUTINE */ ApcRoutine, IN OUT PVOID ApcContext,
+                                      OUT PIO_STATUS_BLOCK IoStatusBlock, IN ULONG FsControlCode,
+                                      IN OUT PVOID InputBuffer, IN ULONG InputBufferLength,
+                                      OUT OPTIONAL PVOID OutputBuffer, IN ULONG OutputBufferLength);
+
+typedef struct _SYSTEM_BOOT_ENVIRONMENT_INFORMATION {
+  GUID BootIdentifier;
+  FIRMWARE_TYPE FirmwareType;
+  ULONGLONG BootFlags;
+} SYSTEM_BOOT_ENVIRONMENT_INFORMATION;
 
 #endif /* _WIN32 || _WIN64 */
 
@@ -637,6 +643,98 @@ MDBX_error_t mdbx_is_directory(const char *pathname) {
     return S_ISDIR(info.st_mode) ? MDBX_SUCCESS : MDBX_SIGN;
 #endif
   return mdbx_get_errno();
+}
+
+MDBX_INTERNAL void osal_ctor(void) {
+// osal_bootid_value
+#if defined(_WIN32) || defined(_WIN64)
+  t1ha_context_t hash;
+  t1ha2_init(&hash, 20180502, 75941);
+
+  union Buffer {
+    DWORD BootId;
+    DWORD BaseTime;
+    SYSTEM_BOOT_ENVIRONMENT_INFORMATION SysBootEnvInfo;
+    SYSTEM_TIMEOFDAY_INFORMATION SysTimeOfDayInfo;
+    struct {
+      LARGE_INTEGER BootTime;
+      LARGE_INTEGER CurrentTime;
+      LARGE_INTEGER TimeZoneBias;
+      ULONG TimeZoneId;
+      ULONG Reserved;
+      ULONGLONG BootTimeBias;
+      ULONGLONG SleepTimeBias;
+    } SysTimeOfDayInfoHacked;
+  } buffer;
+  bool got_bootid = false, got_timesalt = false;
+
+  static const wchar_t HKLM_PrefetcherParams[] =
+      L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters";
+  DWORD len = sizeof(buffer);
+  if (RegGetValueW(HKEY_LOCAL_MACHINE, HKLM_PrefetcherParams, L"BootId", RRF_RT_DWORD, NULL, &buffer.BootId,
+                   &len) == ERROR_SUCCESS &&
+      len > 0) {
+    t1ha2_update(&hash, &buffer.BootId, len);
+    got_bootid = true;
+  }
+
+  len = sizeof(buffer);
+  if (RegGetValueW(HKEY_LOCAL_MACHINE, HKLM_PrefetcherParams, L"BaseTime", RRF_RT_DWORD, NULL,
+                   &buffer.BaseTime, &len) == ERROR_SUCCESS &&
+      len > 0) {
+    t1ha2_update(&hash, &buffer.BaseTime, len);
+    got_timesalt = true;
+  }
+
+  // BootIdentifier from SYSTEM_BOOT_ENVIRONMENT_INFORMATION
+  NTSTATUS status = NtQuerySystemInformation(0x5A /* SystemBootEnvironmentInformation */,
+                                             &buffer.SysBootEnvInfo, sizeof(buffer.SysBootEnvInfo), &len);
+  if (NT_SUCCESS(status) &&
+      len >= offsetof(union Buffer, SysBootEnvInfo.BootIdentifier) +
+                 sizeof(buffer.SysBootEnvInfo.BootIdentifier)) {
+    t1ha2_update(&hash, &buffer.SysBootEnvInfo.BootIdentifier, sizeof(buffer.SysBootEnvInfo.BootIdentifier));
+    got_bootid = true;
+  }
+
+  // BootTime from SYSTEM_TIMEOFDAY_INFORMATION
+  status = NtQuerySystemInformation(0x03 /* SystemTmeOfDayInformation */, &buffer.SysTimeOfDayInfo,
+                                    sizeof(buffer.SysTimeOfDayInfo), &len);
+  if (NT_SUCCESS(status) &&
+      len >= offsetof(union Buffer, SysTimeOfDayInfoHacked.BootTime) +
+                 sizeof(buffer.SysTimeOfDayInfoHacked.BootTime)) {
+    t1ha2_update(&hash, &buffer.SysTimeOfDayInfoHacked.BootTime,
+                 sizeof(buffer.SysTimeOfDayInfoHacked.BootTime));
+    got_timesalt = true;
+  }
+
+  if (hash.total > 7 && got_bootid && got_timesalt)
+    osal_bootid_value.qwords[0] = t1ha2_final(&hash, &osal_bootid_value.qwords[1]);
+
+#elif defined(__linux__)
+
+  // use low-level API here for simplicity
+  int fd = open("/proc/sys/kernel/random/boot_id", O_RDONLY);
+  if (fd != -1) {
+    char uuid_string[64];
+    ssize_t len = read(fd, uuid_string, sizeof(uuid_string));
+    close(fd);
+    if (len > 7)
+      osal_bootid_value.qwords[0] =
+          t1ha2_atonce128(&osal_bootid_value.qwords[1], uuid_string, len, 201805020557);
+  }
+
+#elif defined(__APPLE__) || defined(__MACH__)
+
+  // "kern.bootsessionuuid" is only available by name
+  char uuid_string[64];
+  size_t len = sizeof(uuid_string);
+  if (sysctlbyname("kern.bootsessionuuid", uuid_string, &len, nullptr, 0) == 0 && len > 7)
+    osal_bootid_value.qwords[0] =
+        t1ha2_atonce128(&osal_bootid_value.qwords[1], uuid_string, len, 201805020557);
+
+#else
+#warning FIXME
+#endif
 }
 
 /*----------------------------------------------------------------------------*/

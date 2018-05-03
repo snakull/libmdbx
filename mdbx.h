@@ -670,6 +670,11 @@ typedef enum MDBX_flags {
 } MDBX_flags_t;
 MDBX_ENUM_FLAG_OPERATORS(MDBX_flags)
 
+typedef union MDBX_id128 {
+  uint8_t bytes[16];
+  uint64_t qwords[2];
+} MDBX_id128_t;
+
 /* Information about of associative array in the databook */
 typedef struct MDBX_aa_info {
   uint64_t ai_branch_pages;   /* Number of internal (non-leaf) pages */
@@ -2403,6 +2408,9 @@ LIBMDBX_API_INLINE bool mdbx_iov_eq_str(const MDBX_iov_t *a, const char *b) {
 
 /* FIXME: Describe */
 LIBMDBX_API MDBX_error_t mdbx_iov_dup(MDBX_iov_t *iov);
+
+/* FIXME: Describe */
+LIBMDBX_API MDBX_id128_t mdbx_bootid(void);
 
 /*----------------------------------------------------------------------------*/
 /* Version & Build info */
