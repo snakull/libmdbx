@@ -673,6 +673,19 @@ typedef enum MDBX_flags {
 } MDBX_flags_t;
 MDBX_ENUM_FLAG_OPERATORS(MDBX_flags)
 
+typedef union /*MDBX_API*/ MDBX_time {
+  uint64_t fixedpoint;
+  struct {
+#if defined(_WIN32) || __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    uint32_t fractional;
+    uint32_t utc /* Modulo 2^32 of UTC seconds since 1970-01-01 */;
+#else
+    uint32_t utc;
+    uint32_t fractional;
+#endif
+  };
+} MDBX_time_t;
+
 typedef union MDBX_id128 {
   uint8_t bytes[16];
   uint64_t qwords[2];
@@ -688,6 +701,10 @@ typedef struct MDBX_aa_info {
   uint32_t ai_tree_depth;     /* Depth (height) of the B-tree */
   uint32_t ai_flags;
   MDBX_iov_t ai_ident;
+  uint64_t ai_creation_txnid;
+  MDBX_time_t ai_creation_time; /* TODO */
+  uint64_t ai_modification_txnid;
+  MDBX_time_t ai_modification_time; /* TODO */
 } MDBX_aa_info_t;
 
 /* Information about the databook */
@@ -708,6 +725,7 @@ typedef struct MDBX_db_info {
   uint64_t bi_dirty_volume;
   struct {
     uint64_t txnid, sign_checksum;
+    MDBX_time_t timestamp;
   } bi_meta[MDBX_NUM_METAS];
   uint32_t bi_maxkeysize;   /* maximum size of keys and MDBX_DUPSORT data */
   uint32_t bi_pagesize;     /* databook pagesize */

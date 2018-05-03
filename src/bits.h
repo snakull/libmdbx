@@ -225,8 +225,17 @@ typedef struct aatree {
   pgno_t aa_overflow_pages; /* stat: number of overflow pages */
   /* uint64_t boundary -----------------------------------------------------*/
   uint64_t aa_entries; /* stat: number of data items */
-  uint64_t aa_genseq;  /* AA sequence counter */
-  txnid_t aa_created;
+  /* uint64_t boundary -----------------------------------------------------*/
+  uint64_t aa_genseq; /* AA sequence counter */
+  /* uint64_t boundary -----------------------------------------------------*/
+  txnid_t aa_modification_txnid;
+  /* uint64_t boundary -----------------------------------------------------*/
+  MDBX_time_t aa_modification_time;
+  /* uint64_t boundary -----------------------------------------------------*/
+  txnid_t aa_creation_txnid;
+  /* uint64_t boundary -------------------------------------------------*/
+  MDBX_time_t aa_creation_time;
+  /* uint64_t boundary -----------------------------------------------------*/
   checksum_t aa_merkle; /* Merkle tree checksum */
 } aatree_t;
 
@@ -603,9 +612,16 @@ typedef struct txn_aah {
     pgno_t overflow_pages; /* stat: number of overflow pages */
     /* uint64_t boundary ---------------------------------------------------*/
     uint64_t entries; /* stat: number of data items */
-    uint64_t genseq;  /* AA sequence counter */
     /* uint64_t boundary ---------------------------------------------------*/
-    txnid_t created;
+    uint64_t genseq; /* AA sequence counter */
+    /* uint64_t boundary ---------------------------------------------------*/
+    uint64_t modification_txnid;
+    /* uint64_t boundary ---------------------------------------------------*/
+    MDBX_time_t modification_time;
+    /* uint64_t boundary ---------------------------------------------------*/
+    uint64_t creation_txnid;
+    /* uint64_t boundary ---------------------------------------------------*/
+    MDBX_time_t creation_time;
   } aa;
 
   /* uint64_t boundary -----------------------------------------------------*/

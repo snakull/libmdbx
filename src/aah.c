@@ -91,8 +91,6 @@ static inline int aa_db2txn(const MDBX_env_t *env, const aatree_t *src, aht_t *a
   }
   aht->aa.entries = get_le64_unaligned(&src->aa_entries);
   aht->aa.genseq = get_le64_unaligned(&src->aa_genseq);
-  aht->aa.created = get_le64_unaligned(&src->aa_created);
-
   aht->aa.depth16 = get_le16_unaligned(&src->aa_depth16);
   switch (format) {
   case af_gaco:
@@ -100,21 +98,33 @@ static inline int aa_db2txn(const MDBX_env_t *env, const aatree_t *src, aht_t *a
     aht->aa.xsize32 = 0 /* ignore mm_psize32 from [MDBX_GACO_AAH].aa_xsize32 */;
     aht->ahe = &env->env_ahe_array[MDBX_GACO_AAH];
     aht->ahe->ax_since = 0;
+    aht->aa.creation_txnid = 0;
+    aht->aa.creation_time.fixedpoint = 0;
+    aht->aa.modification_txnid = get_le64_unaligned(&src->aa_modification_txnid);
+    aht->aa.modification_time.fixedpoint = get_le64_unaligned(&src->aa_modification_time.fixedpoint);
     aht->ah.seq16 = env->env_ahe_array[MDBX_GACO_AAH].ax_seqaah16;
     break;
   case af_main:
     aht->aa.flags16 = get_le16_unaligned(&src->aa_flags16);
     aht->aa.xsize32 = get_le32_unaligned(&src->aa_xsize32);
+    aht->aa.creation_txnid = get_le64_unaligned(&src->aa_creation_txnid);
+    aht->aa.creation_time.fixedpoint = get_le64_unaligned(&src->aa_creation_time.fixedpoint);
+    aht->aa.modification_txnid = get_le64_unaligned(&src->aa_modification_txnid);
+    aht->aa.modification_time.fixedpoint = get_le64_unaligned(&src->aa_modification_time.fixedpoint);
     aht->ahe = &env->env_ahe_array[MDBX_MAIN_AAH];
-    aht->ahe->ax_since = aht->aa.created;
+    aht->ahe->ax_since = aht->aa.creation_txnid;
     aht->ah.seq16 = env->env_ahe_array[MDBX_MAIN_AAH].ax_seqaah16;
     break;
   default:
     aht->aa.flags16 = get_le16_unaligned(&src->aa_flags16);
     aht->aa.xsize32 = get_le32_unaligned(&src->aa_xsize32);
+    aht->aa.creation_txnid = get_le64_unaligned(&src->aa_creation_txnid);
+    aht->aa.creation_time.fixedpoint = get_le64_unaligned(&src->aa_creation_time.fixedpoint);
+    aht->aa.modification_txnid = get_le64_unaligned(&src->aa_modification_txnid);
+    aht->aa.modification_time.fixedpoint = get_le64_unaligned(&src->aa_modification_time.fixedpoint);
     assert(aht->ahe);
     if (likely(aht->ahe)) {
-      aht->ahe->ax_since = aht->aa.created;
+      aht->ahe->ax_since = aht->aa.creation_txnid;
       aht->ah.seq16 = aht->ahe->ax_seqaah16;
     } else {
       aht->ah.seq16 = UINT16_MAX;
@@ -133,8 +143,12 @@ static inline void aa_txn2db(const MDBX_env_t *env, const aht_t *aht, aatree_t *
 #endif
   set_le16_unaligned(&dst->aa_depth16, aht->aa.depth16);
   if (likely(format != af_gaco)) {
-    set_le16_unaligned(&dst->aa_flags16, aht->aa.flags16);
-    set_le32_unaligned(&dst->aa_xsize32, aht->aa.xsize32);
+    set_le16_aligned(&dst->aa_flags16, aht->aa.flags16);
+    set_le32_aligned(&dst->aa_xsize32, aht->aa.xsize32);
+    set_le64_aligned(&dst->aa_creation_txnid, aht->aa.creation_txnid);
+    set_le64_aligned(&dst->aa_creation_time.fixedpoint, aht->aa.creation_time.fixedpoint);
+    set_le64_aligned(&dst->aa_modification_txnid, aht->aa.modification_txnid);
+    set_le64_aligned(&dst->aa_modification_time.fixedpoint, aht->aa.modification_time.fixedpoint);
   } else {
     set_le16_unaligned(&dst->aa_flags16, 0); /* set mm_extra_flags16 at [MDBX_GACO_AAH].aa_flags16 */
     set_le32_unaligned(&dst->aa_xsize32, env->me_psize) /* set mm_psize32 at [MDBX_GACO_AAH].aa_xsize32 */;
@@ -153,7 +167,6 @@ static inline void aa_txn2db(const MDBX_env_t *env, const aht_t *aht, aatree_t *
   }
   set_le64_unaligned(&dst->aa_entries, aht->aa.entries);
   set_le64_unaligned(&dst->aa_genseq, aht->aa.genseq);
-  set_le64_unaligned(&dst->aa_created, aht->aa.created);
 
   set_le64_aligned(&dst->aa_merkle, aa_checksum(env, dst));
 #if !UNALIGNED_OK || !defined(NDEBUG) || defined(_DEBUG)
@@ -296,9 +309,9 @@ static int aa_fetch(MDBX_txn_t *txn, aht_t *aht) {
   if (unlikely(aht->aa.flags16 != env_aah->ax_flags16))
     return MDBX_INCOMPATIBLE /* incompatible flags */;
 
-  assert(env_aah->ax_until > aht->aa.created);
-  if (env_aah->ax_since < aht->aa.created)
-    env_aah->ax_since = aht->aa.created;
+  assert(env_aah->ax_until > aht->aa.creation_txnid);
+  if (env_aah->ax_since < aht->aa.creation_txnid)
+    env_aah->ax_since = aht->aa.creation_txnid;
   aht->ah.state8 = MDBX_AAH_VALID;
   return MDBX_SUCCESS;
 }
@@ -333,7 +346,7 @@ static int __cold aa_create(MDBX_txn_t *txn, aht_t *aht) {
 
   aatree_t record;
   aht_bare4create(aht);
-  aht->aa.created = txn->mt_txnid;
+  aht->aa.creation_txnid = txn->mt_txnid;
   aa_txn2db(txn->mt_env, aht, &record, af_user);
 
   MDBX_iov_t data = {&record, sizeof(aatree_t)};
@@ -394,9 +407,9 @@ static aht_rc_t aa_take(MDBX_txn_t *txn, MDBX_aah_t aah) {
   }
 
   if (likely(rc == MDBX_SUCCESS)) {
-    assert(ahe->ax_until > aht->aa.created);
-    if (ahe->ax_since < aht->aa.created)
-      ahe->ax_since = aht->aa.created;
+    assert(ahe->ax_until > aht->aa.creation_txnid);
+    if (ahe->ax_since < aht->aa.creation_txnid)
+      ahe->ax_since = aht->aa.creation_txnid;
     assert(aht->ah.state8 == MDBX_AAH_VALID);
     return txn_rh(MDBX_SUCCESS, aht);
   }
