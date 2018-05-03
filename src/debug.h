@@ -137,9 +137,10 @@ static inline bool mdbx_dbglog_enabled(MDBX_debuglog_subsystem_t subsys, MDBX_de
 #define log_error(subsys, fmt, ...) mdbx_log(subsys, MDBX_LOGLEVEL_ERROR, fmt, ##__VA_ARGS__)
 #define log_fatal(subsys, fmt, ...) mdbx_log(subsys, MDBX_LOGLEVEL_FATAL, fmt, ##__VA_ARGS__)
 
-#define mdbx_trace(fmt, ...) mdbx_log(MDBX_LOG_MISC, MDBX_LOGLEVEL_TRACE, fmt, ##__VA_ARGS__)
-#define mdbx_debug(fmt, ...) mdbx_log(MDBX_LOG_MISC, MDBX_LOGLEVEL_VERBOSE, fmt, ##__VA_ARGS__)
-#define mdbx_debug_extra(fmt, ...) mdbx_log(MDBX_LOG_MISC, MDBX_LOGLEVEL_EXTRA, fmt, ##__VA_ARGS__)
+#define mdbx_debug_extra(fmt, ...) log_extra(MDBX_LOG_MISC, fmt, ##__VA_ARGS__)
+#define mdbx_trace(fmt, ...) log_trace(MDBX_LOG_MISC, fmt, ##__VA_ARGS__)
+#define mdbx_debug(fmt, ...) log_verbose(MDBX_LOG_MISC, fmt, ##__VA_ARGS__)
+#define mdbx_verbose(fmt, ...) log_verbose(MDBX_LOG_MISC, fmt, ##__VA_ARGS__)
 //#define mdbx_info(fmt, ...) log_info(MDBX_LOG_MISC, fmt, ##__VA_ARGS__)
 #define mdbx_notice(fmt, ...) log_notice(MDBX_LOG_MISC, fmt, ##__VA_ARGS__)
 #define mdbx_warning(fmt, ...) log_warning(MDBX_LOG_MISC, fmt, ##__VA_ARGS__)
