@@ -586,18 +586,20 @@ MDBX_error_t mdbx_lck_reader_alive_clear(MDBX_env_t *env, MDBX_pid_t pid) {
 }
 
 /* Checks reader by pid.
-*
-* Returns:
-*   MDBX_SUCCESS, if pid is live (unable to acquire lock)
-*   MDBX_SIGN, if pid is dead (lock acquired)
-*   or otherwise the errcode. */
+ *
+ * Returns:
+ *   MDBX_SUCCESS, if pid is live;
+ *   MDBX_SIGN, if pid is dead;
+ *   or otherwise the errcode. */
 MDBX_error_t mdbx_lck_reader_alive_check(MDBX_env_t *env, MDBX_pid_t pid) {
   (void)env;
   lck_trace(">> pid %ld", (long)pid);
-  HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  HANDLE hProcess = OpenProcess(SYNCHRONIZE, FALSE, pid);
   MDBX_error_t rc;
   if (likely(hProcess)) {
     rc = WaitForSingleObject(hProcess, 0);
+    if (unlikely(rc == WAIT_FAILED))
+      rc = GetLastError();
     CloseHandle(hProcess);
   } else {
     rc = GetLastError();
