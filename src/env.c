@@ -62,7 +62,7 @@ static void __cold env_destroy(MDBX_env_t *env) {
       free(dp);
     }
 
-    /* Doing this here since me_dbxs may not exist during mdbx_bk_close */
+    /* Doing this here since me_dbxs may not exist during mdbx_shutdown */
     if (env->env_ahe_array) {
       for (unsigned i = env->env_ah_max; --i >= CORE_AAH;)
         aa_release(env, &env->env_ahe_array[i]);

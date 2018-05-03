@@ -235,7 +235,7 @@ typedef struct aatree {
 
 /* Meta page content.
  * A meta page is the start point for accessing a databook snapshot.
- * Pages 0-1 are meta pages. Transaction N writes meta page (N % 2). */
+ * Pages 0,1,2 are meta pages. */
 typedef struct meta {
   /* Stamp identifying this as an MDBX file.
    * It must be set to MDBX_MAGIC with MDBX_DATA_VERSION. */
@@ -805,7 +805,7 @@ struct MDBX_env {
   unsigned me_psize2log;   /* log2 of databook page size */
   unsigned me_os_psize;    /* OS page size, from mdbx_syspagesize() */
   unsigned me_maxreaders;  /* size of the reader table */
-  /* Max MDBX_lockinfo.li_numreaders of interest to mdbx_bk_close() */
+  /* Max MDBX_lockinfo.li_numreaders of interest to mdbx_shutdown() */
   unsigned me_close_readers;
   mdbx_fastmutex_t me_aah_lock;
   unsigned env_ah_num;         /* number of AAs opened */

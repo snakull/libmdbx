@@ -231,9 +231,9 @@
 extern "C" {
 #endif
 
-/* The name of the lock file in the databook */
+/* The name of the lock file of the databook */
 #define MDBX_LOCKNAME "mdbx.lck"
-/* The name of the data file in the databook */
+/* The name of the data file of the databook */
 #define MDBX_DATANAME "mdbx.dat"
 /* The suffix of the lock file when no subdir is used */
 #define MDBX_LOCK_SUFFIX "-lck"
@@ -930,7 +930,7 @@ typedef struct MDBX_ops {
 /* Create an initialize an MDBX databook handle.
  *
  * This function allocates memory for a MDBX_env_t structure. To release
- * the allocated memory and discard the handle, call mdbx_bk_close().
+ * the allocated memory and discard the handle, call mdbx_shutdown().
  *
  * Before the handle may be used, it must be opened using mdbx_open().
  * Various other options may also need to be set before opening the handle,
@@ -947,7 +947,7 @@ LIBMDBX_API MDBX_error_t mdbx_init_ex(MDBX_env_t **pbk, void *user_ctx, MDBX_ops
 
 /* Open an databook.
  *
- * If this function fails, mdbx_bk_close() or mdbx_bk_close_ex() must be
+ * If this function fails, mdbx_shutdown() or mdbx_bk_close_ex() must be
  * called to discard the MDBX_env_t handle.
  *
  * This function creates its databook in a directory whose pathname is

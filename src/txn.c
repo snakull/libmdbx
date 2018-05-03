@@ -177,7 +177,7 @@ static int txn_renew(MDBX_txn_t *txn, unsigned flags) {
       /* Claim the reader slot, carefully since other code
        * uses the reader table un-mutexed: First reset the
        * slot, next publish it in mtb.li_numreaders.  After
-       * that, it is safe for mdbx_bk_close() to touch it.
+       * that, it is safe for mdbx_shutdown() to touch it.
        * When it will be closed, we can finally claim it. */
       r->mr_pid = 0;
       r->mr_txnid = ~(txnid_t)0;
