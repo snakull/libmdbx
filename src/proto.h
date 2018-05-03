@@ -384,3 +384,4 @@ static inline void mdbx_jitter4testing(bool tiny) {
 }
 
 MDBX_INTERNAL MDBX_id128_t osal_bootid_value;
+MDBX_INTERNAL unsigned osal_syspagesize;

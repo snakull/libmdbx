@@ -30,6 +30,8 @@
 
 __cold MDBX_id128_t mdbx_bootid(void) { return osal_bootid_value; }
 
+__cold size_t mdbx_syspage_size(void) { return osal_syspagesize; }
+
 //-----------------------------------------------------------------------------
 
 MDBX_error_t mdbx_cmp(MDBX_txn_t *txn, MDBX_aah_t aah, const MDBX_iov_t *a, const MDBX_iov_t *b) {
@@ -471,7 +473,7 @@ MDBX_error_t mdbx_bk_copy(MDBX_env_t *env, const char *pathname, MDBX_copy_flags
    * already in the OS cache. */
   rc = mdbx_openfile(pathname, O_WRONLY | O_CREAT | O_EXCL, 0666, &newfd);
   if (rc == MDBX_SUCCESS) {
-    if (env->me_psize >= env->me_os_psize) {
+    if (env->me_psize >= osal_syspagesize) {
 #ifdef F_NOCACHE /* __APPLE__ */
       (void)fcntl(newfd, F_NOCACHE, 1);
 #elif defined(O_DIRECT) && defined(F_GETFL)
@@ -499,7 +501,7 @@ bailout:
 
 MDBX_numeric_result_t __cold mdbx_pagesize2maxkeylen(size_t pagesize) {
   if (pagesize == 0)
-    pagesize = mdbx_syspagesize();
+    pagesize = osal_syspagesize;
 
   MDBX_numeric_result_t result;
   result.value = 0;
@@ -560,7 +562,7 @@ MDBX_error_t mdbx_info_ex(MDBX_env_t *env, MDBX_db_info_t *info, size_t info_siz
                       info->bi_recent_txnid != meta_txnid_fluid(env, meta)));
 
     info->bi_pagesize = env->me_psize;
-    info->bi_sys_pagesize = env->me_os_psize;
+    info->bi_sys_pagesize = osal_syspagesize;
     info->bi_dxb_geo.ioblk = 0 /* FIXME: TODO */;
     info->bi_dxb_geo.granularity = 0 /* FIXME: TODO */;
     info->bi_sld_geo.ioblk = 0 /* FIXME: TODO */;
@@ -1426,9 +1428,8 @@ MDBX_error_t __cold mdbx_init_ex(MDBX_env_t **pbk, void *user_ctx, MDBX_ops_t *o
     return MDBX_EINVAL;
   *pbk = nullptr;
 
-  const size_t os_psize = mdbx_syspagesize();
-  if (unlikely(!is_power_of_2(os_psize) || os_psize < MIN_PAGESIZE)) {
-    mdbx_error("unsuitable system pagesize %" PRIuPTR, os_psize);
+  if (unlikely(!is_power_of_2(osal_syspagesize) || osal_syspagesize < MIN_PAGESIZE)) {
+    mdbx_error("unsuitable system pagesize %u", osal_syspagesize);
     return MDBX_INCOMPATIBLE;
   }
 
@@ -1504,8 +1505,7 @@ MDBX_error_t __cold mdbx_init_ex(MDBX_env_t **pbk, void *user_ctx, MDBX_ops_t *o
   env->env_ah_max = env->env_ah_num = CORE_AAH;
   env->me_dxb_fd = MDBX_INVALID_FD;
   env->me_lck_fd = MDBX_INVALID_FD;
-  env->me_os_psize = (unsigned)os_psize;
-  setup_pagesize(env, env->me_os_psize);
+  setup_pagesize(env, osal_syspagesize);
 
   MDBX_error_t err = mdbx_fastmutex_init(&env->me_aah_lock);
   if (unlikely(err != MDBX_SUCCESS))

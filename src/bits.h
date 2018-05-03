@@ -825,7 +825,6 @@ struct MDBX_env {
   MDBX_flags_t me_flags32; /* see mdbx_book */
   unsigned me_psize;       /* databook page size, inited from me_os_psize */
   unsigned me_psize2log;   /* log2 of databook page size */
-  unsigned me_os_psize;    /* OS page size, from mdbx_syspagesize() */
   unsigned me_maxreaders;  /* size of the reader table */
   /* Max MDBX_lockinfo.li_numreaders of interest to mdbx_shutdown() */
   unsigned me_close_readers;

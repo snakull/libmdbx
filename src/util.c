@@ -57,7 +57,7 @@ static inline size_t mdbx_roundup2(size_t value, size_t granularity) {
 static size_t mdbx_roundup_ptrsize(size_t value) { return mdbx_roundup2(value, sizeof(void *)); }
 
 static size_t bytes_align2os_bytes(const MDBX_env_t *env, size_t bytes) {
-  return mdbx_roundup2(mdbx_roundup2(bytes, env->me_psize), env->me_os_psize);
+  return mdbx_roundup2(mdbx_roundup2(bytes, env->me_psize), osal_syspagesize);
 }
 
 static unsigned uint_log2_ceil(size_t value) {
@@ -95,7 +95,7 @@ static inline pgno_t bytes2pgno(const MDBX_env_t *env, size_t bytes) {
 }
 
 static inline size_t pgno_align2os_bytes(const MDBX_env_t *env, pgno_t pgno) {
-  return mdbx_roundup2(pgno2bytes(env, pgno), env->me_os_psize);
+  return mdbx_roundup2(pgno2bytes(env, pgno), osal_syspagesize);
 }
 
 static inline pgno_t pgno_align2os_pgno(const MDBX_env_t *env, pgno_t pgno) {

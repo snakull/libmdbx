@@ -646,6 +646,19 @@ MDBX_error_t mdbx_is_directory(const char *pathname) {
 }
 
 MDBX_INTERNAL void osal_ctor(void) {
+
+// osal_syspagesize
+/* Get the size of a memory page for the system.
+ * This is the basic size that the platform's memory manager uses, and is
+ * fundamental to the use of memory-mapped files. */
+#if defined(_WIN32) || defined(_WIN64)
+  SYSTEM_INFO si;
+  GetSystemInfo(&si);
+  osal_syspagesize = si.dwPageSize;
+#else
+  osal_syspagesize = (size_t)sysconf(_SC_PAGE_SIZE);
+#endif
+
 // osal_bootid_value
 #if defined(_WIN32) || defined(_WIN64)
   t1ha_context_t hash;
@@ -687,8 +700,8 @@ MDBX_INTERNAL void osal_ctor(void) {
   }
 
   // BootIdentifier from SYSTEM_BOOT_ENVIRONMENT_INFORMATION
-  NTSTATUS status = NtQuerySystemInformation(0x5A /* SystemBootEnvironmentInformation */,
-                                             &buffer.SysBootEnvInfo, sizeof(buffer.SysBootEnvInfo), &len);
+  status = NtQuerySystemInformation(0x5A /* SystemBootEnvironmentInformation */, &buffer.SysBootEnvInfo,
+                                    sizeof(buffer.SysBootEnvInfo), &len);
   if (NT_SUCCESS(status) &&
       len >= offsetof(union Buffer, SysBootEnvInfo.BootIdentifier) +
                  sizeof(buffer.SysBootEnvInfo.BootIdentifier)) {

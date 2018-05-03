@@ -323,7 +323,7 @@ static int __cold mdbx_read_header(MDBX_env_t *env, meta_t *meta) {
      * So, just guess it. */
     unsigned guess_pagesize = meta->mm_psize32;
     if (guess_pagesize == 0)
-      guess_pagesize = (loop_count > MDBX_NUM_METAS) ? env->me_psize : env->me_os_psize;
+      guess_pagesize = (loop_count > MDBX_NUM_METAS) ? env->me_psize : osal_syspagesize;
 
     const unsigned meta_number = loop_count % MDBX_NUM_METAS;
     const unsigned offset = guess_pagesize * meta_number;
@@ -444,7 +444,7 @@ static int __cold mdbx_read_header(MDBX_env_t *env, meta_t *meta) {
     STATIC_ASSERT(MIN_MAPSIZE < MAX_MAPSIZE);
     const uint64_t mapsize_max = page.mp_meta.mm_dxb_geo.upper * (uint64_t)page.mp_meta.mm_psize32;
     if (mapsize_max > MAX_MAPSIZE ||
-        MAX_PAGENO < mdbx_roundup2((size_t)mapsize_max, env->me_os_psize) / (size_t)page.mp_meta.mm_psize32) {
+        MAX_PAGENO < mdbx_roundup2((size_t)mapsize_max, osal_syspagesize) / (size_t)page.mp_meta.mm_psize32) {
       const uint64_t used_bytes = page.mp_meta.mm_dxb_geo.next * (uint64_t)page.mp_meta.mm_psize32;
       if (page.mp_meta.mm_dxb_geo.next - 1 > MAX_PAGENO || used_bytes > MAX_MAPSIZE) {
         meta_notice("meta[%u] has too large max-mapsize (%" PRIu64 "), skip it", meta_number, mapsize_max);
@@ -703,8 +703,8 @@ static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pendi
     mdbx_assert(env, ((flags ^ env->me_flags32) & MDBX_WRITEMAP) == 0);
     if (flags & MDBX_WRITEMAP) {
       const size_t offset = ((uint8_t *)container_of(head, page_t, mp_meta)) - env->me_dxb_mmap.dxb;
-      const size_t paged_offset = offset & ~(env->me_os_psize - 1);
-      const size_t paged_length = mdbx_roundup2(env->me_psize + offset - paged_offset, env->me_os_psize);
+      const size_t paged_offset = offset & ~(osal_syspagesize - 1);
+      const size_t paged_length = mdbx_roundup2(env->me_psize + offset - paged_offset, osal_syspagesize);
       rc = mdbx_msync(&env->me_dxb_mmap, paged_offset, paged_length, flags & MDBX_MAPASYNC);
       if (unlikely(rc != MDBX_SUCCESS))
         goto fail;
@@ -883,7 +883,7 @@ LIBMDBX_API MDBX_error_t mdbx_set_geometry(MDBX_env_t *env, intptr_t size_lower,
       return MDBX_PANIC;
 
     if (pagesize < 0) {
-      pagesize = env->me_os_psize;
+      pagesize = osal_syspagesize;
       if ((uintptr_t)pagesize > MAX_PAGESIZE)
         pagesize = MAX_PAGESIZE;
       mdbx_assert(env, (uintptr_t)pagesize >= MIN_PAGESIZE);
@@ -937,25 +937,25 @@ LIBMDBX_API MDBX_error_t mdbx_set_geometry(MDBX_env_t *env, intptr_t size_lower,
     goto bailout;
   }
 
-  size_lower = mdbx_roundup2(size_lower, env->me_os_psize);
-  size_upper = mdbx_roundup2(size_upper, env->me_os_psize);
-  size_now = mdbx_roundup2(size_now, env->me_os_psize);
+  size_lower = mdbx_roundup2(size_lower, osal_syspagesize);
+  size_upper = mdbx_roundup2(size_upper, osal_syspagesize);
+  size_now = mdbx_roundup2(size_now, osal_syspagesize);
 
   /* LY: подбираем значение size_upper:
    *  - кратное размеру системной страницы
    *  - без нарушения MAX_MAPSIZE или MAX_PAGENO */
   while (unlikely((size_t)size_upper > MAX_MAPSIZE || (uint64_t)size_upper / pagesize > MAX_PAGENO)) {
-    if ((size_t)size_upper < env->me_os_psize + MIN_MAPSIZE ||
-        (size_t)size_upper < env->me_os_psize * (MIN_PAGENO + 1)) {
+    if ((size_t)size_upper < osal_syspagesize + MIN_MAPSIZE ||
+        (size_t)size_upper < osal_syspagesize * (MIN_PAGENO + 1)) {
       /* паранойа на случай переполнения при невероятных значениях */
       rc = MDBX_EINVAL;
       goto bailout;
     }
-    size_upper -= env->me_os_psize;
+    size_upper -= osal_syspagesize;
     if ((size_t)size_upper < (size_t)size_lower)
       size_lower = size_upper;
   }
-  mdbx_assert(env, (size_upper - size_lower) % env->me_os_psize == 0);
+  mdbx_assert(env, (size_upper - size_lower) % osal_syspagesize == 0);
 
   if (size_now < size_lower)
     size_now = size_lower;
@@ -971,7 +971,7 @@ LIBMDBX_API MDBX_error_t mdbx_set_geometry(MDBX_env_t *env, intptr_t size_lower,
     if ((size_t)growth_step > MEGABYTE * 16)
       growth_step = MEGABYTE * 16;
   }
-  growth_step = mdbx_roundup2(growth_step, env->me_os_psize);
+  growth_step = mdbx_roundup2(growth_step, osal_syspagesize);
   if (bytes2pgno(env, growth_step) > UINT16_MAX)
     growth_step = pgno2bytes(env, UINT16_MAX);
 
@@ -980,7 +980,7 @@ LIBMDBX_API MDBX_error_t mdbx_set_geometry(MDBX_env_t *env, intptr_t size_lower,
     if (shrink_threshold < growth_step)
       shrink_threshold = growth_step;
   }
-  shrink_threshold = mdbx_roundup2(shrink_threshold, env->me_os_psize);
+  shrink_threshold = mdbx_roundup2(shrink_threshold, osal_syspagesize);
   if (bytes2pgno(env, shrink_threshold) > UINT16_MAX)
     shrink_threshold = pgno2bytes(env, UINT16_MAX);
 
@@ -1202,7 +1202,7 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  const size_t expected_bytes = mdbx_roundup2(pgno2bytes(env, meta.mm_dxb_geo.now), env->me_os_psize);
+  const size_t expected_bytes = mdbx_roundup2(pgno2bytes(env, meta.mm_dxb_geo.now), osal_syspagesize);
   mdbx_ensure(env, expected_bytes >= used_bytes);
   if (filesize_before_mmap != expected_bytes) {
     if (!IS_SEIZE_EXCLUSIVE(seize)) {
@@ -1287,8 +1287,8 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
         head->mm_sign_checksum = MDBX_DATASIGN_WEAK;
         head->mm_txnid_b = undo_txnid;
         const size_t offset = ((uint8_t *)container_of(head, page_t, mp_meta)) - env->me_dxb_mmap.dxb;
-        const size_t paged_offset = offset & ~(env->me_os_psize - 1);
-        const size_t paged_length = mdbx_roundup2(env->me_psize + offset - paged_offset, env->me_os_psize);
+        const size_t paged_offset = offset & ~(osal_syspagesize - 1);
+        const size_t paged_length = mdbx_roundup2(env->me_psize + offset - paged_offset, osal_syspagesize);
         err = mdbx_msync(&env->me_dxb_mmap, paged_offset, paged_length, false);
       } else {
         meta_t rollback = *head;
@@ -1328,7 +1328,7 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
     if (filesize_after_mmap != expected_bytes) {
       if (filesize_after_mmap != filesize_before_mmap)
         env_info("datafile resized by system to %" PRIu64 " bytes", filesize_after_mmap);
-      if (filesize_after_mmap % env->me_os_psize || filesize_after_mmap > env->me_dxb_geo.upper ||
+      if (filesize_after_mmap % osal_syspagesize || filesize_after_mmap > env->me_dxb_geo.upper ||
           filesize_after_mmap < used_bytes) {
         env_info("unacceptable/unexpected  datafile size %" PRIu64, filesize_after_mmap);
         return MDBX_PROBLEM;
@@ -1421,7 +1421,7 @@ static MDBX_seize_result_t __cold setup_lck(MDBX_env_t *env, const char *lck_pat
 
   if (rc.seize == MDBX_SEIZE_EXCLUSIVE_FIRST) {
     uint64_t wanna = mdbx_roundup2((env->me_maxreaders - 1) * sizeof(MDBX_reader_t) + sizeof(MDBX_lockinfo_t),
-                                   env->me_os_psize);
+                                   osal_syspagesize);
 #ifndef NDEBUG
     err = mdbx_ftruncate(env->me_lck_fd, size = 0);
     if (unlikely(err != MDBX_SUCCESS))
@@ -1435,7 +1435,7 @@ static MDBX_seize_result_t __cold setup_lck(MDBX_env_t *env, const char *lck_pat
         return seize_failed(err);
       size = wanna;
     }
-  } else if (size > SSIZE_MAX || (size & (env->me_os_psize - 1)) || size < env->me_os_psize) {
+  } else if (size > SSIZE_MAX || (size & (osal_syspagesize - 1)) || size < osal_syspagesize) {
     mdbx_notice("lck-file has invalid size %" PRIu64 " bytes", size);
     return seize_failed(MDBX_PROBLEM);
   }
@@ -3902,7 +3902,7 @@ static int __cold bk_copy_compact(MDBX_env_t *env, MDBX_filehandle_t fd) {
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-  my.mc_wbuf[0] = env->ops.memory.ops_aligned_alloc(env->me_os_psize, MDBX_WBUF * 2, env);
+  my.mc_wbuf[0] = env->ops.memory.ops_aligned_alloc(osal_syspagesize, MDBX_WBUF * 2, env);
   if (unlikely(my.mc_wbuf == nullptr)) {
     rc = MDBX_ENOMEM;
     goto done;
@@ -4013,7 +4013,7 @@ static int __cold bk_copy_asis(MDBX_env_t *env, MDBX_filehandle_t fd) {
 
   tr.err = mdbx_write(fd, env->me_map, pgno2bytes(env, MDBX_NUM_METAS));
   meta_t *const head = meta_head(env);
-  const uint64_t size = mdbx_roundup2(pgno2bytes(env, head->mm_dxb_geo.now), env->me_os_psize);
+  const uint64_t size = mdbx_roundup2(pgno2bytes(env, head->mm_dxb_geo.now), osal_syspagesize);
   if ((env->me_flags32 & MDBX_EXCLUSIVE) == 0)
     lck_writer_release(env);
 

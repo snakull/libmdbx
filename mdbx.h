@@ -2433,6 +2433,9 @@ LIBMDBX_API MDBX_error_t mdbx_iov_dup(MDBX_iov_t *iov);
 /* FIXME: Describe */
 LIBMDBX_API MDBX_id128_t mdbx_bootid(void);
 
+/* FIXME: Describe */
+LIBMDBX_API size_t mdbx_syspage_size(void);
+
 /*----------------------------------------------------------------------------*/
 /* Version & Build info */
 
