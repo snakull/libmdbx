@@ -581,9 +581,6 @@ static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pendi
     }
   }
 
-#if defined(_WIN32) || defined(_WIN64)
-/* Windows is unable shrinking a mapped file */
-#else
   /* LY: check conditions to shrink datafile */
   pgno_t shrink = 0;
   const pgno_t backlog_gap = pending->mm_aas[MDBX_GACO_AAH].aa_depth16 + backlog_extragap(env);
@@ -600,7 +597,6 @@ static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pendi
         meta_set_txnid(env, pending, pending->mm_txnid_a + 1);
     }
   }
-#endif /* not a Windows */
 
   /* Steady or Weak */
   if (env->me_lck->li_dirty_volume == 0) {
@@ -725,9 +721,6 @@ static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pendi
     }
   }
 
-#if defined(_WIN32) || defined(_WIN64)
-/* Windows is unable shrinking a mapped file */
-#else
   /* LY: shrink datafile if needed */
   if (unlikely(shrink)) {
     env_info("shrink to %" PRIaPGNO " pages (-%" PRIaPGNO ")", pending->mm_geo.now, shrink);
@@ -735,8 +728,6 @@ static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pendi
     if (MDBX_IS_ERROR(rc))
       goto fail;
   }
-#endif /* not a Windows */
-
   return MDBX_SUCCESS;
 
 fail:
