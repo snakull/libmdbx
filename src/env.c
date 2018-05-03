@@ -293,11 +293,11 @@ MDBX_numeric_result_t __cold check_registered_readers(MDBX_env_t *env, int rdt_l
     }
 
     /* clean it */
-    for (unsigned j = i; j < snap_nreaders; j++) {
-      if (lck->li_readers[j].mr_pid == pid) {
-        mdbx_debug("clear stale reader pid %" PRIuPTR " txn %" PRIaTXN "", (size_t)pid,
-                   lck->li_readers[j].mr_txnid);
-        lck->li_readers[j].mr_pid = 0;
+    for (unsigned n = i; n < snap_nreaders; n++) {
+      if (lck->li_readers[n].mr_pid == pid) {
+        log_verbose(MDBX_LOG_LCK, "clear stale reader-slot %u, pid %d, txn %" PRIaTXN, n, pid,
+                    lck->li_readers[n].mr_txnid);
+        lck->li_readers[n].mr_pid = 0;
         lck->li_readers_refresh_flag = true;
         result.value++;
       }
@@ -359,17 +359,21 @@ static txnid_t __cold rbr(MDBX_env_t *env, const txnid_t laggard) {
     pid = asleep->mr_pid;
     tid = asleep->mr_tid;
     if (asleep->mr_txnid != laggard || pid <= 0)
-      continue;
+      continue /* skip if changed */;
 
     const txnid_t gap = meta_txnid_stable(env, meta_head(env)) - laggard;
     rc = env->me_callback_rbr(env, pid, tid, laggard, (gap < UINT_MAX) ? (unsigned)gap : UINT_MAX, retry);
     if (rc <= MDBX_RBR_UNABLE)
       break;
 
+    if (pid != asleep->mr_pid || tid != asleep->mr_tid || laggard != asleep->mr_txnid)
+      continue /* skip if changed */;
     if (rc >= MDBX_RBR_EVICTED) {
       asleep->mr_txnid = ~(txnid_t)0;
       env->me_lck->li_readers_refresh_flag = true;
       if (rc >= MDBX_RBR_KILLED) {
+        log_verbose(MDBX_LOG_LCK, "clear killed reader-slot %" PRIiPTR ", pid %d, txn %" PRIaTXN,
+                    asleep - env->me_lck->li_readers, pid, asleep->mr_txnid);
         asleep->mr_tid = 0;
         asleep->mr_pid = 0;
         mdbx_coherent_barrier();

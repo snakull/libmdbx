@@ -101,17 +101,22 @@ static int txn_renew(MDBX_txn_t *txn, unsigned flags) {
     txn->mt_flags = MDBX_RDONLY;
     MDBX_reader_t *r = txn->mt_ro_reader;
     if (likely(env->me_flags32 & MDBX_ENV_TXKEY)) {
+      mdbx_assert(env, r == nullptr);
       mdbx_assert(env, !(env->me_flags32 & MDBX_NOTLS));
       r = tls_get(env->me_txkey);
-      if (likely(r)) {
-        mdbx_assert(env, r->mr_pid == env->me_pid);
-        mdbx_assert(env, r->mr_tid == mdbx_thread_self());
-      }
+      log_trace(MDBX_LOG_LCK, "tls[%u].reader-slot %p", env->me_txkey, r);
     } else {
+      log_trace(MDBX_LOG_LCK, "txn.reader-slot %p", r);
       mdbx_assert(env, !env->me_lck || (env->me_flags32 & MDBX_NOTLS));
     }
 
     if (likely(r)) {
+      const ptrdiff_t slot = r - env->me_lck->li_readers;
+      log_trace(MDBX_LOG_LCK, "have reader-slot %p, #%" PRIiPTR, r, slot);
+      mdbx_assert(env, slot >= 0 && slot < (ptrdiff_t)env->me_lck->li_numreaders);
+      mdbx_assert(env, r->mr_pid == env->me_pid);
+      mdbx_assert(env, r->mr_tid == mdbx_thread_self());
+      mdbx_assert(env, r->mr_txnid == ~(txnid_t)0);
       if (unlikely(r->mr_pid != env->me_pid || r->mr_txnid != ~(txnid_t)0)) {
         txn_trace("<< (txn = %p, flags = 0x%x): MDBX_BAD_RSLOT", txn, flags);
         return MDBX_BAD_RSLOT;
@@ -179,6 +184,7 @@ static int txn_renew(MDBX_txn_t *txn, unsigned flags) {
        * slot, next publish it in mtb.li_numreaders.  After
        * that, it is safe for mdbx_shutdown() to touch it.
        * When it will be closed, we can finally claim it. */
+      log_trace(MDBX_LOG_LCK, "acquire reader-slot %u, prev-pid %d", slot, r->mr_pid);
       r->mr_pid = 0;
       r->mr_txnid = ~(txnid_t)0;
       r->mr_tid = tid;
@@ -191,8 +197,14 @@ static int txn_renew(MDBX_txn_t *txn, unsigned flags) {
       if (likely((env->me_flags32 & MDBX_EXCLUSIVE) == 0))
         lck_reader_registration_release(env);
 
-      if (likely(env->me_flags32 & MDBX_ENV_TXKEY))
+      if (likely(env->me_flags32 & MDBX_ENV_TXKEY)) {
+        log_trace(MDBX_LOG_LCK, "store tls[%u].reader-slot %p, #%u, pid %d", env->me_txkey, r, slot,
+                  r->mr_pid);
         tls_set(env->me_txkey, r);
+      }
+      mdbx_assert(env, r->mr_pid == mdbx_getpid());
+      mdbx_assert(env, r->mr_tid == mdbx_thread_self());
+      mdbx_assert(env, r->mr_txnid == ~(txnid_t)0);
     }
 
     while (1) {
@@ -510,8 +522,11 @@ static int txn_end(MDBX_txn_t *txn, const unsigned mode) {
       txn->mt_ro_reader->mr_txnid = ~(txnid_t)0;
       env->me_lck->li_readers_refresh_flag = true;
       if (mode & MDBX_END_SLOT) {
-        if ((env->me_flags32 & MDBX_ENV_TXKEY) == 0)
+        if ((env->me_flags32 & MDBX_ENV_TXKEY) == 0) {
+          log_verbose(MDBX_LOG_LCK, "clear txn-end reader-slot %" PRIiPTR ", pid %d, txn %" PRIaTXN,
+                      txn->mt_ro_reader - env->me_lck->li_readers, txn->mt_ro_reader->mr_pid, txn->mt_txnid);
           txn->mt_ro_reader->mr_pid = 0;
+        }
         txn->mt_ro_reader = nullptr;
       }
     }

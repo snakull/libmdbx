@@ -177,6 +177,8 @@ void rthc_thread_dtor(void *ptr) {
               (uintptr_t)mdbx_thread_self(), rthc, i, rthc_table[i].begin, rthc_table[i].end,
               (int)(rthc - rthc_table[i].begin), rthc->mr_pid, self_pid);
     if (rthc->mr_pid == self_pid) {
+      log_verbose(MDBX_LOG_LCK, "clear thread-terminated reader-slot %" PRIiPTR ", pid %d, txn %" PRIaTXN,
+                  rthc - rthc_table[i].begin, rthc->mr_pid, rthc->mr_txnid);
       rthc_trace("==== thread 0x%" PRIxPTR ", rthc %p, cleanup", (uintptr_t)mdbx_thread_self(), rthc);
       rthc->mr_pid = 0;
     }
@@ -255,6 +257,8 @@ __cold void rthc_global_dtor(void) {
                  i, key, rthc_table[i].begin, rthc_table[i].end, rthc, (int)(rthc - rthc_table[i].begin),
                  rthc->mr_pid, self_pid);
       if (rthc->mr_pid == self_pid) {
+        log_verbose(MDBX_LOG_LCK, "clear global-dtored reader-slot %" PRIiPTR ", pid %d, txn %" PRIaTXN,
+                    rthc - rthc_table[i].begin, rthc->mr_pid, rthc->mr_txnid);
         rthc->mr_pid = 0;
         rthc_trace("== cleanup %p", rthc);
       }
@@ -327,6 +331,8 @@ __cold void rthc_release(const mdbx_thread_key_t key) {
 
       for (MDBX_reader_t *rthc = rthc_table[i].begin; rthc < rthc_table[i].end; ++rthc) {
         if (rthc->mr_pid == self_pid) {
+          log_verbose(MDBX_LOG_LCK, "clear rhtc-released reader-slot %" PRIiPTR ", pid %d, txn %" PRIaTXN,
+                      rthc - rthc_table[i].begin, rthc->mr_pid, rthc->mr_txnid);
           rthc->mr_pid = 0;
           rthc_trace("== cleanup %p", rthc);
         }
