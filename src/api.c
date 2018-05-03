@@ -32,6 +32,8 @@ __cold MDBX_id128_t mdbx_bootid(void) { return osal_bootid_value; }
 
 __cold size_t mdbx_syspage_size(void) { return osal_syspagesize; }
 
+__cold size_t mdbx_shared_cacheline_size(void) { return osal_cacheline_size; }
+
 //-----------------------------------------------------------------------------
 
 MDBX_error_t mdbx_cmp(MDBX_txn_t *txn, MDBX_aah_t aah, const MDBX_iov_t *a, const MDBX_iov_t *b) {
@@ -1430,6 +1432,12 @@ MDBX_error_t __cold mdbx_init_ex(MDBX_env_t **pbk, void *user_ctx, MDBX_ops_t *o
 
   if (unlikely(!is_power_of_2(osal_syspagesize) || osal_syspagesize < MIN_PAGESIZE)) {
     mdbx_error("unsuitable system pagesize %u", osal_syspagesize);
+    return MDBX_INCOMPATIBLE;
+  }
+
+  if (osal_cacheline_size > MDBX_CACHELINE_SIZE) {
+    mdbx_error("unsuitable shared cacheline size %u, expect %u or less", osal_cacheline_size,
+               MDBX_CACHELINE_SIZE);
     return MDBX_INCOMPATIBLE;
   }
 

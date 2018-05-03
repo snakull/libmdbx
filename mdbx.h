@@ -2436,6 +2436,9 @@ LIBMDBX_API MDBX_id128_t mdbx_bootid(void);
 /* FIXME: Describe */
 LIBMDBX_API size_t mdbx_syspage_size(void);
 
+/* FIXME: Describe */
+LIBMDBX_API size_t mdbx_shared_cacheline_size(void);
+
 /*----------------------------------------------------------------------------*/
 /* Version & Build info */
 

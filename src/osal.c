@@ -659,6 +659,27 @@ MDBX_INTERNAL void osal_ctor(void) {
   osal_syspagesize = (size_t)sysconf(_SC_PAGE_SIZE);
 #endif
 
+#if defined(_WIN32) || defined(_WIN64)
+  DWORD SharedDataAligment, len;
+  NTSTATUS status = NtQuerySystemInformation(0x3A /* SystemRecommendedSharedDataAlignment */,
+                                             &SharedDataAligment, sizeof(SharedDataAligment), &len);
+  if (NT_SUCCESS(status) && len == sizeof(SharedDataAligment))
+    osal_cacheline_size = SharedDataAligment;
+#else
+  long cls_value = sysconf(_SC_LEVEL1_DCACHE_LINESIZE);
+  if (cls_value > 0)
+    osal_cacheline_size = cls_value;
+  cls_value = sysconf(_SC_LEVEL2_CACHE_LINESIZE);
+  if (cls_value > 0 && osal_cacheline_size < (unsigned)cls_value)
+    osal_cacheline_size = cls_value;
+  cls_value = sysconf(_SC_LEVEL3_CACHE_LINESIZE);
+  if (cls_value > 0 && osal_cacheline_size < (unsigned)cls_value)
+    osal_cacheline_size = cls_value;
+  cls_value = sysconf(_SC_LEVEL4_CACHE_LINESIZE);
+  if (cls_value > 0 && osal_cacheline_size < (unsigned)cls_value)
+    osal_cacheline_size = cls_value;
+#endif
+
 // osal_bootid_value
 #if defined(_WIN32) || defined(_WIN64)
   t1ha_context_t hash;
@@ -683,7 +704,7 @@ MDBX_INTERNAL void osal_ctor(void) {
 
   static const wchar_t HKLM_PrefetcherParams[] =
       L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters";
-  DWORD len = sizeof(buffer);
+  len = sizeof(buffer);
   if (RegGetValueW(HKEY_LOCAL_MACHINE, HKLM_PrefetcherParams, L"BootId", RRF_RT_DWORD, NULL, &buffer.BootId,
                    &len) == ERROR_SUCCESS &&
       len > 0) {
