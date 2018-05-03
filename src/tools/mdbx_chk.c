@@ -337,13 +337,13 @@ static MDBX_error_t handle_gaco(const uint64_t record_number, const MDBX_iov_t k
       if (bk_info.bi_latter_reader_txnid > txnid)
         reclaimable_pages += number;
 
-      pgno_t prev = MDBX_PNL_ASCENDING ? MIN_PAGENO : (pgno_t)bk_info.bi_last_pgno + 1;
+      pgno_t prev = MDBX_PNL_ASCENDING ? MIN_PAGENO : (pgno_t)bk_info.bi_dxb_last_pgno + 1;
       pgno_t span = 1;
       for (unsigned i = 0; i < number; ++i) {
         const pgno_t pg = iptr[i];
-        if (pg < MDBX_NUM_METAS || pg > bk_info.bi_last_pgno)
+        if (pg < MDBX_NUM_METAS || pg > bk_info.bi_dxb_last_pgno)
           problem_add("entry", record_number, "wrong idl entry", "%u < %" PRIaPGNO " < %" PRIu64 "",
-                      MDBX_NUM_METAS, pg, bk_info.bi_last_pgno);
+                      MDBX_NUM_METAS, pg, bk_info.bi_dxb_last_pgno);
         else if (MDBX_PNL_DISORDERED(prev, pg)) {
           bad = " [bad sequence]";
           problem_add("entry", record_number, "bad sequence", "%" PRIaPGNO " <> %" PRIaPGNO "", prev, pg);
@@ -802,7 +802,7 @@ int main(int argc, char *argv[]) {
   }
 
   err = mdbx_open_ex(env, NULL /* required address */, envname /* dxb pathname */,
-                     (err == MDBX_SUCCESS) ? NULL : "." /* lck pathname */, NULL /* ovf pathname */,
+                     (err == MDBX_SUCCESS) ? NULL : "." /* lck pathname */, NULL /* sld pathname */,
                      open_flags /* regime flags */, 0 /* regime checkmask */, &regime /* regime present */,
                      0664);
   if (err) {
@@ -837,23 +837,23 @@ int main(int argc, char *argv[]) {
     goto bailout;
   }
 
-  lastpgno = bk_info.bi_last_pgno + 1;
+  lastpgno = bk_info.bi_dxb_last_pgno + 1;
   errno = 0;
 
   if (verbose) {
     print(" - pagesize %u (%u system), max keysize %" PRIuPTR ", max readers %u\n", bk_info.bi_pagesize,
           bk_info.bi_sys_pagesize, bk_info.bi_maxkeysize, bk_info.bi_readers_max);
     print_size(" - mapsize ", bk_info.bi_mapsize, "\n");
-    if (bk_info.bi_geo.lower == bk_info.bi_geo.upper)
-      print_size(" - fixed datafile: ", bk_info.bi_geo.current, "");
+    if (bk_info.bi_dxb_geo.lower == bk_info.bi_dxb_geo.upper)
+      print_size(" - fixed datafile: ", bk_info.bi_dxb_geo.current, "");
     else {
-      print_size(" - dynamic datafile: ", bk_info.bi_geo.lower, "");
-      print_size(" .. ", bk_info.bi_geo.upper, ", ");
-      print_size("+", bk_info.bi_geo.grow, ", ");
-      print_size("-", bk_info.bi_geo.shrink, "\n");
-      print_size(" - current datafile: ", bk_info.bi_geo.current, "");
+      print_size(" - dynamic datafile: ", bk_info.bi_dxb_geo.lower, "");
+      print_size(" .. ", bk_info.bi_dxb_geo.upper, ", ");
+      print_size("+", bk_info.bi_dxb_geo.grow, ", ");
+      print_size("-", bk_info.bi_dxb_geo.shrink, "\n");
+      print_size(" - current datafile: ", bk_info.bi_dxb_geo.current, "");
     }
-    printf(", %" PRIu64 " pages\n", bk_info.bi_geo.current / bk_info.bi_pagesize);
+    printf(", %" PRIu64 " pages\n", bk_info.bi_dxb_geo.current / bk_info.bi_pagesize);
     print(" - transactions: recent %" PRIu64 ", latter reader %" PRIu64 ", lag %" PRIi64 "\n",
           bk_info.bi_recent_txnid, bk_info.bi_latter_reader_txnid,
           bk_info.bi_recent_txnid - bk_info.bi_latter_reader_txnid);
@@ -982,7 +982,7 @@ int main(int argc, char *argv[]) {
     uint64_t value = bk_info.bi_mapsize / bk_info.bi_pagesize;
     double percent = value / 100.0;
     print(" - pages info: %" PRIu64 " total", value);
-    value = bk_info.bi_geo.current / bk_info.bi_pagesize;
+    value = bk_info.bi_dxb_geo.current / bk_info.bi_pagesize;
     print(", backed %" PRIu64 " (%.1f%%)", value, value / percent);
     print(", allocated %" PRIu64 " (%.1f%%)", lastpgno, lastpgno / percent);
 

@@ -710,15 +710,18 @@ typedef struct MDBX_aa_info {
 /* Information about the databook */
 typedef struct MDBX_db_info {
   struct {
-    uint64_t lower;   /* lower limit for datafile size */
-    uint64_t upper;   /* upper limit for datafile size */
-    uint64_t current; /* current datafile size */
-    uint64_t shrink;  /* shrink theshold for datafile */
-    uint64_t grow;    /* growth step for datafile */
-  } bi_geo;
-  uint64_t bi_mapsize;                  /* size of the memory map section */
-  uint64_t bi_last_pgno;                /* ID of the last used page */
-  uint64_t bi_recent_txnid;             /* ID of the last committed transaction */
+    uint64_t lower;       /* lower limit for datafile size */
+    uint64_t upper;       /* upper limit for datafile size */
+    uint64_t current;     /* current datafile size */
+    uint32_t shrink;      /* shrink theshold for datafile */
+    uint32_t grow;        /* growth step for datafile */
+    uint32_t ioblk;       /* ioblocksize for datafile */
+    uint32_t granularity; /* system granularity for datafile */
+  } bi_dxb_geo, bi_sld_geo;
+  uint64_t bi_mapsize; /* size of the memory map section, i.e limit for summary size of DXB and SLD portions */
+  uint64_t bi_dxb_last_pgno;  /* ID of the last used page of DXB file/device (allocation from begin to end) */
+  uint64_t bi_sld_first_pgno; /* ID of the fisrt used page of SLD file/device (top-down allocation) */
+  uint64_t bi_recent_txnid;   /* ID of the last committed transaction */
   uint64_t bi_latter_reader_txnid;      /* ID of the last reader transaction */
   uint64_t bi_self_latter_reader_txnid; /* ID of the last reader transaction of caller process */
   uint64_t bi_autosync_threshold;
@@ -730,8 +733,6 @@ typedef struct MDBX_db_info {
   uint32_t bi_maxkeysize;   /* maximum size of keys and MDBX_DUPSORT data */
   uint32_t bi_pagesize;     /* databook pagesize */
   uint32_t bi_sys_pagesize; /* system pagesize */
-  uint32_t bi_dxb_ioblk;    /* system ioblocksize for dxb file */
-  uint32_t bi_ovf_ioblk;    /* system ioblocksize for ovf file (if used) */
 
   uint32_t bi_regime;
   uint32_t bi_readers_max; /* max reader slots in the databook */
@@ -776,11 +777,11 @@ typedef struct MDBX_aux_info {
 
   MDBX_filehandle_t ei_dxb_fd;
   MDBX_filehandle_t ei_clk_fd;
-  MDBX_filehandle_t ei_ovf_fd;
+  MDBX_filehandle_t ei_sld_fd;
 
   /* Address of a string pointer to contain zero-separated
    * pathnames of databook files: data (dxb), lock (lck) and
-   * optional overflow (OVF) files.
+   * optional separate large data (SLD) files.
    * This is the actual string in the databook, not a copy.
    * It should not be altered in any way */
   const char *ei_pathnames;
@@ -1106,13 +1107,13 @@ LIBMDBX_API MDBX_error_t mdbx_open(MDBX_env_t *env, const char *path, MDBX_flags
  *  - open databook in exclusive mode, e.g. for checking.
  *
  * In general, MDBX support a set of modes for files placement. But firstly,
- * the OVF-file should be noted:
+ * the SLD-file should be noted:
  *  - It is optionals separate file for large data items (aka overflow pages);
  *  - Reasonably usage this dedicated file only when it placed on separate
  *    media, which implied to be cheap and slowly-seeking;
  *  - Therefore, when required it should be defined by while databook created,
  *    and then the same file must be preserved for every databook opening;
- *  - This file always defined by `ovf_pathname` argument, independently
+ *  - This file always defined by `sld_pathname` argument, independently
  *    from other files and pathnames;
  *
  * Secondly, MDBX support three options for placement of data (DXB)
@@ -1150,8 +1151,9 @@ LIBMDBX_API MDBX_error_t mdbx_open(MDBX_env_t *env, const char *path, MDBX_flags
  *                             directory for databook files. Otherwise it
  *                             defines pathname of LCK (lock) file, which could
  *                             be placed separately.
- * [in] ovf_pathname         - The optional separate file for large (overflow)
- *                             pages. Reasonably usage this dedicated file only
+ * [in] sld_pathname         - The optional separate file for large data items,
+ *                             which aren't fit into a one usual DB's page.
+ *                             Reasonably usage this dedicated file only
  *                             when it placed on separate media. Therefore,
  *                             when required it should be defined while
  *                             databook created, and then the same file must
@@ -1163,7 +1165,7 @@ LIBMDBX_API MDBX_error_t mdbx_open(MDBX_env_t *env, const char *path, MDBX_flags
  */
 /* TODO: FIXME (API MDBX_NONBLOCK) */
 LIBMDBX_API MDBX_error_t mdbx_open_ex(MDBX_env_t *env, void *required_base_address, const char *dxb_pathname,
-                                      const char *lck_pathname, const char *ovf_pathname,
+                                      const char *lck_pathname, const char *sld_pathname,
                                       unsigned regime_flags, unsigned regime_check_mask,
                                       unsigned *regime_present, mode_t mode4create);
 
@@ -1171,7 +1173,7 @@ LIBMDBX_API MDBX_error_t mdbx_open_ex(MDBX_env_t *env, void *required_base_addre
 /* TODO */
 LIBMDBX_API MDBX_error_t mdbx_open_fd(MDBX_env_t *env, void *required_base_address,
                                       MDBX_filehandle_t dxb_handle, MDBX_filehandle_t lck_handle,
-                                      MDBX_filehandle_t ovf_handle, unsigned regime_flags,
+                                      MDBX_filehandle_t sld_handle, unsigned regime_flags,
                                       unsigned regime_check_mask, unsigned *regime_present,
                                       mode_t mode4create);
 

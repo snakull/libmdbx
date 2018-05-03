@@ -213,9 +213,9 @@ static int txn_renew(MDBX_txn_t *txn, unsigned flags) {
 
       /* Snap the state from current meta-head */
       txn_set_txnid(txn, snap);
-      txn->mt_next_pgno = meta->mm_geo.next;
-      txn->mt_end_pgno = meta->mm_geo.now;
-      upper_pgno = meta->mm_geo.upper;
+      txn->mt_next_pgno = meta->mm_dxb_geo.next;
+      txn->mt_end_pgno = meta->mm_dxb_geo.now;
+      upper_pgno = meta->mm_dxb_geo.upper;
       rc = aa_db2txn(env, &meta->mm_aas[MDBX_GACO_AAH], &txn->txn_aht_array[MDBX_GACO_AAH], af_gaco);
       if (likely(rc == MDBX_SUCCESS))
         rc = aa_db2txn(env, &meta->mm_aas[MDBX_MAIN_AAH], &txn->txn_aht_array[MDBX_MAIN_AAH], af_main);
@@ -283,9 +283,9 @@ static int txn_renew(MDBX_txn_t *txn, unsigned flags) {
       txn_trace("<< (txn = %p, flags = 0x%x): aa_db2txn(MDBX_MAIN_AAH), rc = %d", txn, flags, rc);
       goto bailout;
     }
-    txn->mt_next_pgno = meta->mm_geo.next;
-    txn->mt_end_pgno = meta->mm_geo.now;
-    upper_pgno = meta->mm_geo.upper;
+    txn->mt_next_pgno = meta->mm_dxb_geo.next;
+    txn->mt_end_pgno = meta->mm_dxb_geo.now;
+    upper_pgno = meta->mm_dxb_geo.upper;
   }
 
   if (unlikely(env->me_flags32 & MDBX_ENV_TAINTED)) {
@@ -811,11 +811,12 @@ MDBX_error_t mdbx_commit(MDBX_txn_t *txn) {
     meta_t meta, *head = meta_head(env);
 
     meta.mm_magic_and_version = head->mm_magic_and_version;
-    meta.mm_reserved32 = head->mm_reserved32;
 
-    meta.mm_geo = head->mm_geo;
-    meta.mm_geo.next = txn->mt_next_pgno;
-    meta.mm_geo.now = txn->mt_end_pgno;
+    meta.mm_dxb_geo = head->mm_dxb_geo;
+    meta.mm_dxb_geo.next = txn->mt_next_pgno;
+    meta.mm_dxb_geo.now = txn->mt_end_pgno;
+    memset(&meta.mm_sld_geo, 0, sizeof(meta.mm_sld_geo) /* TODO */);
+
     aa_txn2db(env, &txn->txn_aht_array[MDBX_GACO_AAH], &meta.mm_aas[MDBX_GACO_AAH], af_gaco);
     aa_txn2db(env, &txn->txn_aht_array[MDBX_MAIN_AAH], &meta.mm_aas[MDBX_MAIN_AAH], af_main);
     meta.mm_canary = txn->mt_canary;

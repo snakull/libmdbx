@@ -187,10 +187,10 @@ static page_t *__cold meta_model(const MDBX_env_t *env, page_t *model, unsigned 
   mdbx_ensure(env, is_power_of_2(env->me_psize));
   mdbx_ensure(env, env->me_psize >= MIN_PAGESIZE);
   mdbx_ensure(env, env->me_psize <= MAX_PAGESIZE);
-  mdbx_ensure(env, env->me_geo.lower >= MIN_MAPSIZE);
-  mdbx_ensure(env, env->me_geo.upper <= MAX_MAPSIZE);
-  mdbx_ensure(env, env->me_geo.now >= env->me_geo.lower);
-  mdbx_ensure(env, env->me_geo.now <= env->me_geo.upper);
+  mdbx_ensure(env, env->me_dxb_geo.lower >= MIN_MAPSIZE);
+  mdbx_ensure(env, env->me_dxb_geo.upper <= MAX_MAPSIZE);
+  mdbx_ensure(env, env->me_dxb_geo.now >= env->me_dxb_geo.lower);
+  mdbx_ensure(env, env->me_dxb_geo.now <= env->me_dxb_geo.upper);
 
   memset(model, 0, sizeof(*model));
   model->mp_pgno = num;
@@ -198,21 +198,21 @@ static page_t *__cold meta_model(const MDBX_env_t *env, page_t *model, unsigned 
   model->mp_meta.mm_magic_and_version = MDBX_DATA_MAGIC;
   // model->mp_meta.mm_reserved32 = 42;
 
-  model->mp_meta.mm_geo.lower = bytes2pgno(env, env->me_geo.lower);
-  model->mp_meta.mm_geo.upper = bytes2pgno(env, env->me_geo.upper);
-  model->mp_meta.mm_geo.grow16 = (uint16_t)bytes2pgno(env, env->me_geo.grow);
-  model->mp_meta.mm_geo.shrink16 = (uint16_t)bytes2pgno(env, env->me_geo.shrink);
-  model->mp_meta.mm_geo.now = bytes2pgno(env, env->me_geo.now);
-  model->mp_meta.mm_geo.next = MDBX_NUM_METAS;
+  model->mp_meta.mm_dxb_geo.lower = bytes2pgno(env, env->me_dxb_geo.lower);
+  model->mp_meta.mm_dxb_geo.upper = bytes2pgno(env, env->me_dxb_geo.upper);
+  model->mp_meta.mm_dxb_geo.grow16 = (uint16_t)bytes2pgno(env, env->me_dxb_geo.grow);
+  model->mp_meta.mm_dxb_geo.shrink16 = (uint16_t)bytes2pgno(env, env->me_dxb_geo.shrink);
+  model->mp_meta.mm_dxb_geo.now = bytes2pgno(env, env->me_dxb_geo.now);
+  model->mp_meta.mm_dxb_geo.next = MDBX_NUM_METAS;
 
-  mdbx_ensure(env, model->mp_meta.mm_geo.lower >= MIN_PAGENO);
-  mdbx_ensure(env, model->mp_meta.mm_geo.upper <= MAX_PAGENO);
-  mdbx_ensure(env, model->mp_meta.mm_geo.now >= model->mp_meta.mm_geo.lower);
-  mdbx_ensure(env, model->mp_meta.mm_geo.now <= model->mp_meta.mm_geo.upper);
-  mdbx_ensure(env, model->mp_meta.mm_geo.next >= MIN_PAGENO);
-  mdbx_ensure(env, model->mp_meta.mm_geo.next <= model->mp_meta.mm_geo.now);
-  mdbx_ensure(env, model->mp_meta.mm_geo.grow16 == bytes2pgno(env, env->me_geo.grow));
-  mdbx_ensure(env, model->mp_meta.mm_geo.shrink16 == bytes2pgno(env, env->me_geo.shrink));
+  mdbx_ensure(env, model->mp_meta.mm_dxb_geo.lower >= MIN_PAGENO);
+  mdbx_ensure(env, model->mp_meta.mm_dxb_geo.upper <= MAX_PAGENO);
+  mdbx_ensure(env, model->mp_meta.mm_dxb_geo.now >= model->mp_meta.mm_dxb_geo.lower);
+  mdbx_ensure(env, model->mp_meta.mm_dxb_geo.now <= model->mp_meta.mm_dxb_geo.upper);
+  mdbx_ensure(env, model->mp_meta.mm_dxb_geo.next >= MIN_PAGENO);
+  mdbx_ensure(env, model->mp_meta.mm_dxb_geo.next <= model->mp_meta.mm_dxb_geo.now);
+  mdbx_ensure(env, model->mp_meta.mm_dxb_geo.grow16 == bytes2pgno(env, env->me_dxb_geo.grow));
+  mdbx_ensure(env, model->mp_meta.mm_dxb_geo.shrink16 == bytes2pgno(env, env->me_dxb_geo.shrink));
 
   model->mp_meta.mm_psize32 = env->me_psize;
   // model->mp_meta.mm_features16 = 42;

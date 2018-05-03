@@ -174,21 +174,22 @@ int main(int argc, char *argv[]) {
     (void)mdbx_info(env, &bk_info, sizeof(bk_info));
     printf("Databook Info\n");
     printf("  Pagesize: %u\n", bk_info.bi_pagesize);
-    if (bk_info.bi_geo.lower != bk_info.bi_geo.upper) {
-      printf("  Dynamic datafile: %" PRIu64 "..%" PRIu64 " bytes (+%" PRIu64 "/-%" PRIu64 "), %" PRIu64
-             "..%" PRIu64 " pages (+%" PRIu64 "/-%" PRIu64 ")\n",
-             bk_info.bi_geo.lower, bk_info.bi_geo.upper, bk_info.bi_geo.grow, bk_info.bi_geo.shrink,
-             bk_info.bi_geo.lower / bk_info.bi_pagesize, bk_info.bi_geo.upper / bk_info.bi_pagesize,
-             bk_info.bi_geo.grow / bk_info.bi_pagesize, bk_info.bi_geo.shrink / bk_info.bi_pagesize);
-      printf("  Current datafile: %" PRIu64 " bytes, %" PRIu64 " pages\n", bk_info.bi_geo.current,
-             bk_info.bi_geo.current / bk_info.bi_pagesize);
+    if (bk_info.bi_dxb_geo.lower != bk_info.bi_dxb_geo.upper) {
+      printf("  Dynamic datafile: %" PRIu64 "..%" PRIu64 " bytes (+%" PRIu32 "/-%" PRIu32 "), %" PRIu64
+             "..%" PRIu64 " pages (+%" PRIu32 "/-%" PRIu32 ")\n",
+             bk_info.bi_dxb_geo.lower, bk_info.bi_dxb_geo.upper, bk_info.bi_dxb_geo.grow,
+             bk_info.bi_dxb_geo.shrink, bk_info.bi_dxb_geo.lower / bk_info.bi_pagesize,
+             bk_info.bi_dxb_geo.upper / bk_info.bi_pagesize, bk_info.bi_dxb_geo.grow / bk_info.bi_pagesize,
+             bk_info.bi_dxb_geo.shrink / bk_info.bi_pagesize);
+      printf("  Current datafile: %" PRIu64 " bytes, %" PRIu64 " pages\n", bk_info.bi_dxb_geo.current,
+             bk_info.bi_dxb_geo.current / bk_info.bi_pagesize);
     } else {
-      printf("  Fixed datafile: %" PRIu64 " bytes, %" PRIu64 " pages\n", bk_info.bi_geo.current,
-             bk_info.bi_geo.current / bk_info.bi_pagesize);
+      printf("  Fixed datafile: %" PRIu64 " bytes, %" PRIu64 " pages\n", bk_info.bi_dxb_geo.current,
+             bk_info.bi_dxb_geo.current / bk_info.bi_pagesize);
     }
     printf("  Current mapsize: %" PRIu64 " bytes, %" PRIu64 " pages \n", bk_info.bi_mapsize,
            bk_info.bi_mapsize / bk_info.bi_pagesize);
-    printf("  Number of pages used: %" PRIu64 "\n", bk_info.bi_last_pgno + 1);
+    printf("  Number of pages used: %" PRIu64 "\n", bk_info.bi_dxb_last_pgno + 1);
     printf("  Last transaction ID: %" PRIu64 "\n", bk_info.bi_recent_txnid);
     printf("  Tail transaction ID: %" PRIu64 " (%" PRIi64 ")\n", bk_info.bi_latter_reader_txnid,
            bk_info.bi_latter_reader_txnid - bk_info.bi_recent_txnid);
@@ -263,7 +264,7 @@ int main(int argc, char *argv[]) {
 
       if (freinfo > 1) {
         char *bad = "";
-        pgno_t prev = MDBX_PNL_ASCENDING ? MIN_PAGENO : (pgno_t)bk_info.bi_last_pgno + 1;
+        pgno_t prev = MDBX_PNL_ASCENDING ? MIN_PAGENO : (pgno_t)bk_info.bi_dxb_last_pgno + 1;
         pgno_t span = 1;
         for (unsigned i = 0; i < number; ++i) {
           pgno_t pg = iptr[i];
@@ -311,13 +312,13 @@ int main(int argc, char *argv[]) {
       printf("Page Allocation Info\n");
       printf("  Max pages: %" PRIu64 " 100%%\n", value);
 
-      value = bk_info.bi_last_pgno + 1;
+      value = bk_info.bi_dxb_last_pgno + 1;
       printf("  Pages used: %" PRIu64 " %.1f%%\n", value, value / percent);
 
-      value = bk_info.bi_mapsize / bk_info.bi_pagesize - (bk_info.bi_last_pgno + 1);
+      value = bk_info.bi_mapsize / bk_info.bi_pagesize - (bk_info.bi_dxb_last_pgno + 1);
       printf("  Remained: %" PRIu64 " %.1f%%\n", value, value / percent);
 
-      value = bk_info.bi_last_pgno + 1 - pages;
+      value = bk_info.bi_dxb_last_pgno + 1 - pages;
       printf("  Used now: %" PRIu64 " %.1f%%\n", value, value / percent);
 
       value = pages;
@@ -329,7 +330,7 @@ int main(int argc, char *argv[]) {
       value = reclaimable;
       printf("  Reclaimable: %" PRIu64 " %.1f%%\n", value, value / percent);
 
-      value = bk_info.bi_mapsize / bk_info.bi_pagesize - (bk_info.bi_last_pgno + 1) + reclaimable;
+      value = bk_info.bi_mapsize / bk_info.bi_pagesize - (bk_info.bi_dxb_last_pgno + 1) + reclaimable;
       printf("  Available: %" PRIu64 " %.1f%%\n", value, value / percent);
     } else
       printf("  Free pages: %" PRIaPGNO "\n", pages);

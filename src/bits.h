@@ -252,19 +252,28 @@ typedef struct meta {
   volatile txnid_t mm_txnid_a;
 
   /* uint64_t boundary -----------------------------------------------------*/
-  uint32_t mm_reserved32; /* reserved */
+  struct {
+    uint16_t grow16;   /* dxb-file growth step in pages */
+    uint16_t shrink16; /* dxb-file shrink threshold in pages */
+    pgno_t lower;      /* minimal size of dxb-file in pages */
+                       /* ------------------------------- uint64_t boundary */
+    pgno_t upper;      /* maximal size of dxb-file in pages */
+    pgno_t now;        /* current size of dxb-file in pages */
+                       /* ------------------------------- uint64_t boundary */
+    pgno_t next;       /* first unused page in the dxb-file (begin-to-end allocation),
+                        * but actually the file may be shorter. */
+  } mm_dxb_geo;
 
   struct {
-    uint16_t grow16;   /* datafile growth step in pages */
-    uint16_t shrink16; /* datafile shrink threshold in pages */
+    uint16_t grow16;   /* sld-file growth step in pages */
+    uint16_t shrink16; /* sld-file shrink threshold in pages */
                        /* ------------------------------- uint64_t boundary */
-    pgno_t lower;      /* minimal size of datafile in pages */
-    pgno_t upper;      /* maximal size of datafile in pages */
+    pgno_t lower;      /* minimal size of sld-file in pages */
+    pgno_t upper;      /* maximal size of sld-file in pages */
                        /* ------------------------------- uint64_t boundary */
-    pgno_t now;        /* current size of datafile in pages */
-    pgno_t next;       /* first unused page in the datafile,
-                        * but actually the file may be shorter. */
-  } mm_geo;
+    pgno_t now;        /* current size of sld-file in pages */
+    pgno_t next;       /* first unused page in the sld-file (top-down allocation) */
+  } mm_sld_geo;
 
   /* uint64_t boundary -----------------------------------------------------*/
   aatree_t mm_aas[CORE_AAH]; /* first is GACO space, 2nd is main AA */
@@ -855,7 +864,7 @@ struct MDBX_env {
     size_t now;    /* current size of datafile */
     size_t grow;   /* step to grow datafile */
     size_t shrink; /* threshold to shrink datafile */
-  } me_geo;        /* */
+  } me_dxb_geo, me_sld_geo;
 
 #if defined(_WIN32) || defined(_WIN64)
   SRWLOCK me_remap_guard;
@@ -867,7 +876,7 @@ struct MDBX_env {
 
   char *me_pathname_lck; /* pathname of the LCK file */
   char *me_pathname_dxb; /* pathname of the DXB file */
-  char *me_pathname_ovf; /* pathname of the OVF file */
+  char *me_pathname_sld; /* optional pathname of the SLD file (Separate Large Data) */
   char *me_pathname_buf; /* buffer for all pathnames */
 
 #if MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_CONFIG_DBG_ASSERTIONS

@@ -360,18 +360,18 @@ static int page_alloc(cursor_t *mc, unsigned num, page_t **mp, int flags) {
       }
     }
 
-    if (rc == MDBX_MAP_FULL && next < head->mm_geo.upper) {
+    if (rc == MDBX_MAP_FULL && next < head->mm_dxb_geo.upper) {
       mdbx_assert(env, next > txn->mt_end_pgno);
       pgno_t aligned =
-          pgno_align2os_pgno(env, pgno_add(next, head->mm_geo.grow16 - next % head->mm_geo.grow16));
+          pgno_align2os_pgno(env, pgno_add(next, head->mm_dxb_geo.grow16 - next % head->mm_dxb_geo.grow16));
 
-      if (aligned > head->mm_geo.upper)
-        aligned = head->mm_geo.upper;
+      if (aligned > head->mm_dxb_geo.upper)
+        aligned = head->mm_dxb_geo.upper;
       mdbx_assert(env, aligned > txn->mt_end_pgno);
 
       gaco_info("try growth datafile to %" PRIaPGNO " pages (+%" PRIaPGNO ")", aligned,
                 aligned - txn->mt_end_pgno);
-      rc = mdbx_mapresize(env, aligned, head->mm_geo.upper);
+      rc = mdbx_mapresize(env, aligned, head->mm_dxb_geo.upper);
       if (rc == MDBX_SUCCESS) {
         assert(txn->mt_end_pgno >= next);
         if (!mp)

@@ -74,7 +74,7 @@ static int mdbx_mapresize(MDBX_env_t *env, const pgno_t size_pgno, const pgno_t 
   env_info("resize datafile/mapping: "
            "present %" PRIuPTR " -> %" PRIuPTR ", "
            "limit %" PRIuPTR " -> %" PRIuPTR,
-           env->me_geo.now, size_bytes, env->me_geo.upper, limit_bytes);
+           env->me_dxb_geo.now, size_bytes, env->me_dxb_geo.upper, limit_bytes);
 
   mdbx_assert(env, limit_bytes >= size_bytes);
   mdbx_assert(env, bytes2pgno(env, size_bytes) == size_pgno);
@@ -82,7 +82,7 @@ static int mdbx_mapresize(MDBX_env_t *env, const pgno_t size_pgno, const pgno_t 
 
 #if defined(_WIN32) || defined(_WIN64)
   /* Acquire guard in exclusive mode for:
-   *   - to avoid collision between read and write txns around env->me_geo;
+   *   - to avoid collision between read and write txns around env->me_dxb_geo;
    *   - to avoid attachment of new reading threads (see mdbx_rdt_lock); */
   AcquireSRWLockExclusive(&env->me_remap_guard);
   mdbx_handle_array_t *suspended = NULL;
@@ -108,11 +108,11 @@ static int mdbx_mapresize(MDBX_env_t *env, const pgno_t size_pgno, const pgno_t 
   }
 #else
   /* Acquire guard to avoid collision between read and write txns
-   * around env->me_geo */
+   * around env->me_dxb_geo */
   int rc = mdbx_fastmutex_acquire(&env->me_remap_guard, 0);
   if (rc != MDBX_SUCCESS)
     return rc;
-  if (limit_bytes == env->me_dxb_mmap.length && bytes2pgno(env, size_bytes) == env->me_geo.now)
+  if (limit_bytes == env->me_dxb_mmap.length && bytes2pgno(env, size_bytes) == env->me_dxb_geo.now)
     goto bailout;
 #endif /* Windows */
 
@@ -120,8 +120,8 @@ static int mdbx_mapresize(MDBX_env_t *env, const pgno_t size_pgno, const pgno_t 
 
 bailout:
   if (rc == MDBX_SUCCESS) {
-    env->me_geo.now = size_bytes;
-    env->me_geo.upper = limit_bytes;
+    env->me_dxb_geo.now = size_bytes;
+    env->me_dxb_geo.upper = limit_bytes;
     if (env->me_current_txn) {
       mdbx_assert(env, env->me_current_txn->mt_owner == mdbx_thread_self());
       mdbx_assert(env, size_pgno >= env->me_current_txn->mt_next_pgno);
@@ -139,12 +139,12 @@ bailout:
     mdbx_error("failed resize datafile/mapping: "
                "present %" PRIuPTR " -> %" PRIuPTR ", "
                "limit %" PRIuPTR " -> %" PRIuPTR ", errcode %d",
-               env->me_geo.now, size_bytes, env->me_geo.upper, limit_bytes, rc);
+               env->me_dxb_geo.now, size_bytes, env->me_dxb_geo.upper, limit_bytes, rc);
   } else {
     mdbx_notice("unable resize datafile/mapping: "
                 "present %" PRIuPTR " -> %" PRIuPTR ", "
                 "limit %" PRIuPTR " -> %" PRIuPTR ", errcode %d",
-                env->me_geo.now, size_bytes, env->me_geo.upper, limit_bytes, rc);
+                env->me_dxb_geo.now, size_bytes, env->me_dxb_geo.upper, limit_bytes, rc);
     if (!env->me_dxb_mmap.address) {
       env->me_flags32 |= MDBX_ENV_TAINTED;
       if (env->me_current_txn)
@@ -207,7 +207,7 @@ MDBX_error_t mdbx_sync(MDBX_env_t *env) {
   if (!META_IS_STEADY(head) || env->me_lck->li_dirty_volume) {
 
     if (outside_txn && env->me_lck->li_dirty_volume > pgno2bytes(env, 16 /* FIXME: define threshold */)) {
-      const size_t usedbytes = pgno_align2os_bytes(env, head->mm_geo.next);
+      const size_t usedbytes = pgno_align2os_bytes(env, head->mm_dxb_geo.next);
 
       lck_writer_release(env);
 
@@ -393,47 +393,47 @@ static int __cold mdbx_read_header(MDBX_env_t *env, meta_t *meta) {
     meta_verbose("read meta%" PRIaPGNO " = root %" PRIaPGNO "/%" PRIaPGNO ", geo %" PRIaPGNO "/%" PRIaPGNO
                  "-%" PRIaPGNO "/%" PRIaPGNO " +%u -%u, txn_id %" PRIaTXN ", %s",
                  page.mp_pgno, page.mp_meta.mm_aas[MDBX_MAIN_AAH].aa_root,
-                 page.mp_meta.mm_aas[MDBX_GACO_AAH].aa_root, page.mp_meta.mm_geo.lower,
-                 page.mp_meta.mm_geo.next, page.mp_meta.mm_geo.now, page.mp_meta.mm_geo.upper,
-                 page.mp_meta.mm_geo.grow16, page.mp_meta.mm_geo.shrink16, page.mp_meta.mm_txnid_a,
+                 page.mp_meta.mm_aas[MDBX_GACO_AAH].aa_root, page.mp_meta.mm_dxb_geo.lower,
+                 page.mp_meta.mm_dxb_geo.next, page.mp_meta.mm_dxb_geo.now, page.mp_meta.mm_dxb_geo.upper,
+                 page.mp_meta.mm_dxb_geo.grow16, page.mp_meta.mm_dxb_geo.shrink16, page.mp_meta.mm_txnid_a,
                  durable_str(&page.mp_meta));
 
     /* LY: check min-pages value */
-    if (page.mp_meta.mm_geo.lower < MIN_PAGENO || page.mp_meta.mm_geo.lower > MAX_PAGENO) {
+    if (page.mp_meta.mm_dxb_geo.lower < MIN_PAGENO || page.mp_meta.mm_dxb_geo.lower > MAX_PAGENO) {
       meta_notice("meta[%u] has invalid min-pages (%" PRIaPGNO "), skip it", meta_number,
-                  page.mp_meta.mm_geo.lower);
+                  page.mp_meta.mm_dxb_geo.lower);
       rc = MDBX_INVALID;
       continue;
     }
 
     /* LY: check max-pages value */
-    if (page.mp_meta.mm_geo.upper < MIN_PAGENO || page.mp_meta.mm_geo.upper > MAX_PAGENO ||
-        page.mp_meta.mm_geo.upper < page.mp_meta.mm_geo.lower) {
+    if (page.mp_meta.mm_dxb_geo.upper < MIN_PAGENO || page.mp_meta.mm_dxb_geo.upper > MAX_PAGENO ||
+        page.mp_meta.mm_dxb_geo.upper < page.mp_meta.mm_dxb_geo.lower) {
       meta_notice("meta[%u] has invalid max-pages (%" PRIaPGNO "), skip it", meta_number,
-                  page.mp_meta.mm_geo.upper);
+                  page.mp_meta.mm_dxb_geo.upper);
       rc = MDBX_INVALID;
       continue;
     }
 
     /* LY: check end_pgno */
-    if (page.mp_meta.mm_geo.now < page.mp_meta.mm_geo.lower ||
-        page.mp_meta.mm_geo.now > page.mp_meta.mm_geo.upper) {
+    if (page.mp_meta.mm_dxb_geo.now < page.mp_meta.mm_dxb_geo.lower ||
+        page.mp_meta.mm_dxb_geo.now > page.mp_meta.mm_dxb_geo.upper) {
       meta_notice("meta[%u] has invalid end-pageno (%" PRIaPGNO "), skip it", meta_number,
-                  page.mp_meta.mm_geo.now);
+                  page.mp_meta.mm_dxb_geo.now);
       rc = MDBX_CORRUPTED;
       continue;
     }
 
     /* LY: check last_pgno */
-    if (page.mp_meta.mm_geo.next < MIN_PAGENO || page.mp_meta.mm_geo.next - 1 > MAX_PAGENO) {
+    if (page.mp_meta.mm_dxb_geo.next < MIN_PAGENO || page.mp_meta.mm_dxb_geo.next - 1 > MAX_PAGENO) {
       meta_notice("meta[%u] has invalid next-pageno (%" PRIaPGNO "), skip it", meta_number,
-                  page.mp_meta.mm_geo.next);
+                  page.mp_meta.mm_dxb_geo.next);
       rc = MDBX_CORRUPTED;
       continue;
     }
 
     /* LY: check mapsize limits */
-    const uint64_t mapsize_min = page.mp_meta.mm_geo.lower * (uint64_t)page.mp_meta.mm_psize32;
+    const uint64_t mapsize_min = page.mp_meta.mm_dxb_geo.lower * (uint64_t)page.mp_meta.mm_psize32;
     STATIC_ASSERT(MAX_MAPSIZE < SSIZE_MAX - MAX_PAGESIZE);
     if (mapsize_min < MIN_MAPSIZE || mapsize_min > MAX_MAPSIZE) {
       meta_notice("meta[%u] has invalid min-mapsize (%" PRIu64 "), skip it", meta_number, mapsize_min);
@@ -442,11 +442,11 @@ static int __cold mdbx_read_header(MDBX_env_t *env, meta_t *meta) {
     }
 
     STATIC_ASSERT(MIN_MAPSIZE < MAX_MAPSIZE);
-    const uint64_t mapsize_max = page.mp_meta.mm_geo.upper * (uint64_t)page.mp_meta.mm_psize32;
+    const uint64_t mapsize_max = page.mp_meta.mm_dxb_geo.upper * (uint64_t)page.mp_meta.mm_psize32;
     if (mapsize_max > MAX_MAPSIZE ||
         MAX_PAGENO < mdbx_roundup2((size_t)mapsize_max, env->me_os_psize) / (size_t)page.mp_meta.mm_psize32) {
-      const uint64_t used_bytes = page.mp_meta.mm_geo.next * (uint64_t)page.mp_meta.mm_psize32;
-      if (page.mp_meta.mm_geo.next - 1 > MAX_PAGENO || used_bytes > MAX_MAPSIZE) {
+      const uint64_t used_bytes = page.mp_meta.mm_dxb_geo.next * (uint64_t)page.mp_meta.mm_psize32;
+      if (page.mp_meta.mm_dxb_geo.next - 1 > MAX_PAGENO || used_bytes > MAX_MAPSIZE) {
         meta_notice("meta[%u] has too large max-mapsize (%" PRIu64 "), skip it", meta_number, mapsize_max);
         rc = MDBX_TOO_LARGE;
         continue;
@@ -456,14 +456,14 @@ static int __cold mdbx_read_header(MDBX_env_t *env, meta_t *meta) {
       meta_notice("meta[%u] has too large max-mapsize (%" PRIu64 "), "
                   "but size of used space still acceptable (%" PRIu64 ")",
                   meta_number, mapsize_max, used_bytes);
-      page.mp_meta.mm_geo.upper = (pgno_t)(MAX_MAPSIZE / page.mp_meta.mm_psize32);
-      if (page.mp_meta.mm_geo.now > page.mp_meta.mm_geo.upper)
-        page.mp_meta.mm_geo.now = page.mp_meta.mm_geo.upper;
+      page.mp_meta.mm_dxb_geo.upper = (pgno_t)(MAX_MAPSIZE / page.mp_meta.mm_psize32);
+      if (page.mp_meta.mm_dxb_geo.now > page.mp_meta.mm_dxb_geo.upper)
+        page.mp_meta.mm_dxb_geo.now = page.mp_meta.mm_dxb_geo.upper;
     }
 
-    if (page.mp_meta.mm_geo.next > page.mp_meta.mm_geo.now) {
+    if (page.mp_meta.mm_dxb_geo.next > page.mp_meta.mm_dxb_geo.now) {
       meta_notice("meta[%u] next-pageno (%" PRIaPGNO ") is beyond end-pgno (%" PRIaPGNO "), skip it",
-                  meta_number, page.mp_meta.mm_geo.next, page.mp_meta.mm_geo.now);
+                  meta_number, page.mp_meta.mm_dxb_geo.next, page.mp_meta.mm_dxb_geo.now);
       rc = MDBX_CORRUPTED;
       continue;
     }
@@ -478,7 +478,7 @@ static int __cold mdbx_read_header(MDBX_env_t *env, meta_t *meta) {
         rc = MDBX_CORRUPTED;
         continue;
       }
-    } else if (page.mp_meta.mm_aas[MDBX_GACO_AAH].aa_root >= page.mp_meta.mm_geo.next) {
+    } else if (page.mp_meta.mm_aas[MDBX_GACO_AAH].aa_root >= page.mp_meta.mm_dxb_geo.next) {
       meta_notice("meta[%u] has invalid GACO-root %" PRIaPGNO ", skip it", meta_number,
                   page.mp_meta.mm_aas[MDBX_GACO_AAH].aa_root);
       rc = MDBX_CORRUPTED;
@@ -495,23 +495,16 @@ static int __cold mdbx_read_header(MDBX_env_t *env, meta_t *meta) {
         rc = MDBX_CORRUPTED;
         continue;
       }
-    } else if (page.mp_meta.mm_aas[MDBX_MAIN_AAH].aa_root >= page.mp_meta.mm_geo.next) {
+    } else if (page.mp_meta.mm_aas[MDBX_MAIN_AAH].aa_root >= page.mp_meta.mm_dxb_geo.next) {
       meta_notice("meta[%u] has invalid maindb-root %" PRIaPGNO ", skip it", meta_number,
                   page.mp_meta.mm_aas[MDBX_MAIN_AAH].aa_root);
       rc = MDBX_CORRUPTED;
       continue;
     }
 
-    if (page.mp_meta.mm_extra_flags16 != 0) {
-      mdbx_notice("meta[%u] has unsupported mm_extra_flags16 0x%x, skip it", meta_number,
-                  page.mp_meta.mm_extra_flags16);
-      rc = MDBX_INCOMPATIBLE;
-      continue;
-    }
-
-    if (page.mp_meta.mm_reserved32 != 0) {
-      meta_notice("meta[%u] has unsupported mm_reserved32 0x%x, skip it", meta_number,
-                  page.mp_meta.mm_reserved32);
+    if (page.mp_meta.mm_sld_geo.lower != 0 || page.mp_meta.mm_sld_geo.now != 0 ||
+        page.mp_meta.mm_sld_geo.upper != 0) {
+      meta_notice("meta[%u] has unsupported (non-zeroed) SLD-geometry, skip it", meta_number);
       rc = MDBX_INCOMPATIBLE;
       continue;
     }
@@ -549,9 +542,9 @@ static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pendi
   mdbx_assert(env, pending < metapage(env, 0) || pending > metapage(env, MDBX_NUM_METAS));
   mdbx_assert(env, (env->me_flags32 & (MDBX_RDONLY | MDBX_ENV_TAINTED)) == 0);
   mdbx_assert(env, !META_IS_STEADY(head) || env->me_lck->li_dirty_volume != 0);
-  mdbx_assert(env, pending->mm_geo.next <= pending->mm_geo.now);
+  mdbx_assert(env, pending->mm_dxb_geo.next <= pending->mm_dxb_geo.now);
 
-  const size_t usedbytes = pgno_align2os_bytes(env, pending->mm_geo.next);
+  const size_t usedbytes = pgno_align2os_bytes(env, pending->mm_dxb_geo.next);
   if (env->me_lck->li_autosync_threshold && env->me_lck->li_dirty_volume >= env->me_lck->li_autosync_threshold)
     flags &= MDBX_WRITEMAP | MDBX_SHRINK_ALLOWED;
 
@@ -566,7 +559,7 @@ static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pendi
       if (unlikely(rc != MDBX_SUCCESS))
         goto fail;
       if ((flags & MDBX_MAPASYNC) == 0) {
-        if (unlikely(pending->mm_geo.next > steady->mm_geo.now)) {
+        if (unlikely(pending->mm_dxb_geo.next > steady->mm_dxb_geo.now)) {
           rc = mdbx_filesize_sync(env->me_dxb_fd);
           if (unlikely(rc != MDBX_SUCCESS))
             goto fail;
@@ -574,7 +567,7 @@ static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pendi
         env->me_lck->li_dirty_volume = 0;
       }
     } else {
-      rc = mdbx_filesync(env->me_dxb_fd, pending->mm_geo.next > steady->mm_geo.now);
+      rc = mdbx_filesync(env->me_dxb_fd, pending->mm_dxb_geo.next > steady->mm_dxb_geo.now);
       if (unlikely(rc != MDBX_SUCCESS))
         goto fail;
       env->me_lck->li_dirty_volume = 0;
@@ -584,15 +577,16 @@ static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pendi
   /* LY: check conditions to shrink datafile */
   pgno_t shrink = 0;
   const pgno_t backlog_gap = pending->mm_aas[MDBX_GACO_AAH].aa_depth16 + backlog_extragap(env);
-  if ((flags & MDBX_SHRINK_ALLOWED) && pending->mm_geo.shrink16 &&
-      pending->mm_geo.now - pending->mm_geo.next > pending->mm_geo.shrink16 + backlog_gap) {
-    const pgno_t aligner = pending->mm_geo.grow16 ? pending->mm_geo.grow16 : pending->mm_geo.shrink16;
-    const pgno_t with_backlog_gap = pending->mm_geo.next + backlog_gap;
+  if ((flags & MDBX_SHRINK_ALLOWED) && pending->mm_dxb_geo.shrink16 &&
+      pending->mm_dxb_geo.now - pending->mm_dxb_geo.next > pending->mm_dxb_geo.shrink16 + backlog_gap) {
+    const pgno_t aligner =
+        pending->mm_dxb_geo.grow16 ? pending->mm_dxb_geo.grow16 : pending->mm_dxb_geo.shrink16;
+    const pgno_t with_backlog_gap = pending->mm_dxb_geo.next + backlog_gap;
     const pgno_t aligned = pgno_align2os_pgno(env, with_backlog_gap + aligner - with_backlog_gap % aligner);
-    const pgno_t bottom = (aligned > pending->mm_geo.lower) ? aligned : pending->mm_geo.lower;
-    if (pending->mm_geo.now > bottom) {
-      shrink = pending->mm_geo.now - bottom;
-      pending->mm_geo.now = bottom;
+    const pgno_t bottom = (aligned > pending->mm_dxb_geo.lower) ? aligned : pending->mm_dxb_geo.lower;
+    if (pending->mm_dxb_geo.now > bottom) {
+      shrink = pending->mm_dxb_geo.now - bottom;
+      pending->mm_dxb_geo.now = bottom;
       if (meta_txnid_stable(env, head) == pending->mm_txnid_a)
         meta_set_txnid(env, pending, pending->mm_txnid_a + 1);
     }
@@ -611,7 +605,7 @@ static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pendi
   if (meta_txnid_stable(env, head) == pending->mm_txnid_a) {
     mdbx_assert(env, memcmp(&head->mm_aas, &pending->mm_aas, sizeof(head->mm_aas)) == 0);
     mdbx_assert(env, memcmp(&head->mm_canary, &pending->mm_canary, sizeof(head->mm_canary)) == 0);
-    mdbx_assert(env, memcmp(&head->mm_geo, &pending->mm_geo, sizeof(pending->mm_geo)) == 0);
+    mdbx_assert(env, memcmp(&head->mm_dxb_geo, &pending->mm_dxb_geo, sizeof(pending->mm_dxb_geo)) == 0);
     if (!META_IS_STEADY(head) && META_IS_STEADY(pending))
       target = head;
     else {
@@ -632,9 +626,9 @@ static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pendi
   mdbx_debug("writing meta%" PRIaPGNO " = root %" PRIaPGNO "/%" PRIaPGNO ", geo %" PRIaPGNO "/%" PRIaPGNO
              "-%" PRIaPGNO "/%" PRIaPGNO " +%u -%u, txn_id %" PRIaTXN ", %s",
              container_of(target, page_t, mp_data)->mp_pgno, pending->mm_aas[MDBX_MAIN_AAH].aa_root,
-             pending->mm_aas[MDBX_GACO_AAH].aa_root, pending->mm_geo.lower, pending->mm_geo.next,
-             pending->mm_geo.now, pending->mm_geo.upper, pending->mm_geo.grow16, pending->mm_geo.shrink16,
-             pending->mm_txnid_a, durable_str(pending));
+             pending->mm_aas[MDBX_GACO_AAH].aa_root, pending->mm_dxb_geo.lower, pending->mm_dxb_geo.next,
+             pending->mm_dxb_geo.now, pending->mm_dxb_geo.upper, pending->mm_dxb_geo.grow16,
+             pending->mm_dxb_geo.shrink16, pending->mm_txnid_a, durable_str(pending));
 
   mdbx_debug("meta0: %s, %s, txn_id %" PRIaTXN ", root %" PRIaPGNO "/%" PRIaPGNO,
              (meta0 == head) ? "head" : (meta0 == target) ? "tail" : "stay", durable_str(meta0),
@@ -668,7 +662,7 @@ static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pendi
 #endif
 
       /* LY: update info */
-      target->mm_geo = pending->mm_geo;
+      target->mm_dxb_geo = pending->mm_dxb_geo;
       target->mm_aas[MDBX_GACO_AAH] = pending->mm_aas[MDBX_GACO_AAH];
       target->mm_aas[MDBX_MAIN_AAH] = pending->mm_aas[MDBX_MAIN_AAH];
       target->mm_canary = pending->mm_canary;
@@ -683,7 +677,7 @@ static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pendi
        * me updated, check assertions once again */
       mdbx_ensure(env, meta_txnid_stable(env, head) == pending->mm_txnid_a && !META_IS_STEADY(head) &&
                            META_IS_STEADY(pending));
-      mdbx_ensure(env, memcmp(&head->mm_geo, &pending->mm_geo, sizeof(head->mm_geo)) == 0);
+      mdbx_ensure(env, memcmp(&head->mm_dxb_geo, &pending->mm_dxb_geo, sizeof(head->mm_dxb_geo)) == 0);
       mdbx_ensure(env, memcmp(&head->mm_aas, &pending->mm_aas, sizeof(head->mm_aas)) == 0);
       mdbx_ensure(env, memcmp(&head->mm_canary, &pending->mm_canary, sizeof(head->mm_canary)) == 0);
     }
@@ -723,8 +717,8 @@ static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pendi
 
   /* LY: shrink datafile if needed */
   if (unlikely(shrink)) {
-    env_info("shrink to %" PRIaPGNO " pages (-%" PRIaPGNO ")", pending->mm_geo.now, shrink);
-    rc = mdbx_mapresize(env, pending->mm_geo.now, pending->mm_geo.upper);
+    env_info("shrink to %" PRIaPGNO " pages (-%" PRIaPGNO ")", pending->mm_dxb_geo.now, shrink);
+    rc = mdbx_mapresize(env, pending->mm_dxb_geo.now, pending->mm_dxb_geo.upper);
     if (MDBX_IS_ERROR(rc))
       goto fail;
   }
@@ -770,7 +764,7 @@ static void __cold setup_pagesize(MDBX_env_t *env, const size_t pagesize) {
 }
 
 static int __cold mdbx_bk_map(MDBX_env_t *env, size_t usedsize) {
-  int rc = mdbx_mmap(env->me_flags32, &env->me_dxb_mmap, env->me_geo.now, env->me_geo.upper);
+  int rc = mdbx_mmap(env->me_flags32, &env->me_dxb_mmap, env->me_dxb_geo.now, env->me_dxb_geo.upper);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
@@ -860,17 +854,17 @@ LIBMDBX_API MDBX_error_t mdbx_set_geometry(MDBX_env_t *env, intptr_t size_lower,
     }
 
     if (size_lower < 0)
-      size_lower = pgno2bytes(env, head->mm_geo.lower);
+      size_lower = pgno2bytes(env, head->mm_dxb_geo.lower);
     if (size_now < 0)
-      size_now = pgno2bytes(env, head->mm_geo.now);
+      size_now = pgno2bytes(env, head->mm_dxb_geo.now);
     if (size_upper < 0)
-      size_upper = pgno2bytes(env, head->mm_geo.upper);
+      size_upper = pgno2bytes(env, head->mm_dxb_geo.upper);
     if (growth_step < 0)
-      growth_step = pgno2bytes(env, head->mm_geo.grow16);
+      growth_step = pgno2bytes(env, head->mm_dxb_geo.grow16);
     if (shrink_threshold < 0)
-      shrink_threshold = pgno2bytes(env, head->mm_geo.shrink16);
+      shrink_threshold = pgno2bytes(env, head->mm_dxb_geo.shrink16);
 
-    const size_t usedbytes = pgno2bytes(env, head->mm_geo.next);
+    const size_t usedbytes = pgno2bytes(env, head->mm_dxb_geo.next);
     if ((size_t)size_upper < usedbytes) {
       rc = MDBX_MAP_FULL;
       goto bailout;
@@ -878,7 +872,7 @@ LIBMDBX_API MDBX_error_t mdbx_set_geometry(MDBX_env_t *env, intptr_t size_lower,
     if ((size_t)size_now < usedbytes)
       size_now = usedbytes;
 #if defined(_WIN32) || defined(_WIN64)
-    if ((size_t)size_now < env->me_geo.now || (size_t)size_upper < env->me_geo.upper) {
+    if ((size_t)size_now < env->me_dxb_geo.now || (size_t)size_upper < env->me_dxb_geo.upper) {
       /* Windows is unable shrinking a mapped file */
       return ERROR_USER_MAPPED_FILE;
     }
@@ -991,11 +985,11 @@ LIBMDBX_API MDBX_error_t mdbx_set_geometry(MDBX_env_t *env, intptr_t size_lower,
     shrink_threshold = pgno2bytes(env, UINT16_MAX);
 
   /* save user's geo-params for future open/create */
-  env->me_geo.lower = size_lower;
-  env->me_geo.now = size_now;
-  env->me_geo.upper = size_upper;
-  env->me_geo.grow = growth_step;
-  env->me_geo.shrink = shrink_threshold;
+  env->me_dxb_geo.lower = size_lower;
+  env->me_dxb_geo.now = size_now;
+  env->me_dxb_geo.upper = size_upper;
+  env->me_dxb_geo.grow = growth_step;
+  env->me_dxb_geo.shrink = shrink_threshold;
   rc = MDBX_SUCCESS;
 
   if (env->me_map) {
@@ -1004,26 +998,26 @@ LIBMDBX_API MDBX_error_t mdbx_set_geometry(MDBX_env_t *env, intptr_t size_lower,
 
     const meta_t *head = meta_head(env);
     meta_t meta = *head;
-    meta.mm_geo.lower = bytes2pgno(env, env->me_geo.lower);
-    meta.mm_geo.now = bytes2pgno(env, env->me_geo.now);
-    meta.mm_geo.upper = bytes2pgno(env, env->me_geo.upper);
-    meta.mm_geo.grow16 = (uint16_t)bytes2pgno(env, env->me_geo.grow);
-    meta.mm_geo.shrink16 = (uint16_t)bytes2pgno(env, env->me_geo.shrink);
+    meta.mm_dxb_geo.lower = bytes2pgno(env, env->me_dxb_geo.lower);
+    meta.mm_dxb_geo.now = bytes2pgno(env, env->me_dxb_geo.now);
+    meta.mm_dxb_geo.upper = bytes2pgno(env, env->me_dxb_geo.upper);
+    meta.mm_dxb_geo.grow16 = (uint16_t)bytes2pgno(env, env->me_dxb_geo.grow);
+    meta.mm_dxb_geo.shrink16 = (uint16_t)bytes2pgno(env, env->me_dxb_geo.shrink);
 
-    mdbx_assert(env, env->me_geo.lower >= MIN_MAPSIZE);
-    mdbx_assert(env, meta.mm_geo.lower >= MIN_PAGENO);
-    mdbx_assert(env, env->me_geo.upper <= MAX_MAPSIZE);
-    mdbx_assert(env, meta.mm_geo.upper <= MAX_PAGENO);
-    mdbx_assert(env, meta.mm_geo.now >= meta.mm_geo.next);
-    mdbx_assert(env, env->me_geo.upper >= env->me_geo.lower);
-    mdbx_assert(env, meta.mm_geo.upper >= meta.mm_geo.now);
-    mdbx_assert(env, meta.mm_geo.now >= meta.mm_geo.lower);
-    mdbx_assert(env, meta.mm_geo.grow16 == bytes2pgno(env, env->me_geo.grow));
-    mdbx_assert(env, meta.mm_geo.shrink16 == bytes2pgno(env, env->me_geo.shrink));
+    mdbx_assert(env, env->me_dxb_geo.lower >= MIN_MAPSIZE);
+    mdbx_assert(env, meta.mm_dxb_geo.lower >= MIN_PAGENO);
+    mdbx_assert(env, env->me_dxb_geo.upper <= MAX_MAPSIZE);
+    mdbx_assert(env, meta.mm_dxb_geo.upper <= MAX_PAGENO);
+    mdbx_assert(env, meta.mm_dxb_geo.now >= meta.mm_dxb_geo.next);
+    mdbx_assert(env, env->me_dxb_geo.upper >= env->me_dxb_geo.lower);
+    mdbx_assert(env, meta.mm_dxb_geo.upper >= meta.mm_dxb_geo.now);
+    mdbx_assert(env, meta.mm_dxb_geo.now >= meta.mm_dxb_geo.lower);
+    mdbx_assert(env, meta.mm_dxb_geo.grow16 == bytes2pgno(env, env->me_dxb_geo.grow));
+    mdbx_assert(env, meta.mm_dxb_geo.shrink16 == bytes2pgno(env, env->me_dxb_geo.shrink));
 
-    if (memcmp(&meta.mm_geo, &head->mm_geo, sizeof(meta.mm_geo))) {
-      if (meta.mm_geo.now != head->mm_geo.now || meta.mm_geo.upper != head->mm_geo.upper) {
-        rc = mdbx_mapresize(env, meta.mm_geo.now, meta.mm_geo.upper);
+    if (memcmp(&meta.mm_dxb_geo, &head->mm_dxb_geo, sizeof(meta.mm_dxb_geo))) {
+      if (meta.mm_dxb_geo.now != head->mm_dxb_geo.now || meta.mm_dxb_geo.upper != head->mm_dxb_geo.upper) {
+        rc = mdbx_mapresize(env, meta.mm_dxb_geo.now, meta.mm_dxb_geo.upper);
         if (unlikely(rc != MDBX_SUCCESS))
           goto bailout;
         head = /* base address could be changed */ meta_head(env);
@@ -1104,7 +1098,7 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
     mdbx_debug("create new database");
     rc = /* new database */ MDBX_SIGN;
 
-    if (!env->me_geo.now) {
+    if (!env->me_dxb_geo.now) {
       /* set defaults if not configured */
       err = mdbx_set_mapsize(env, DEFAULT_MAPSIZE);
       if (unlikely(err != MDBX_SUCCESS))
@@ -1121,7 +1115,7 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 
-    err = mdbx_ftruncate(env->me_dxb_fd, env->me_geo.now);
+    err = mdbx_ftruncate(env->me_dxb_fd, env->me_dxb_geo.now);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 
@@ -1134,72 +1128,73 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
 
   env_info("header: root %" PRIaPGNO "/%" PRIaPGNO ", geo %" PRIaPGNO "/%" PRIaPGNO "-%" PRIaPGNO "/%" PRIaPGNO
            " +%u -%u, txn_id %" PRIaTXN ", %s",
-           meta.mm_aas[MDBX_MAIN_AAH].aa_root, meta.mm_aas[MDBX_GACO_AAH].aa_root, meta.mm_geo.lower,
-           meta.mm_geo.next, meta.mm_geo.now, meta.mm_geo.upper, meta.mm_geo.grow16, meta.mm_geo.shrink16,
-           meta.mm_txnid_a, durable_str(&meta));
+           meta.mm_aas[MDBX_MAIN_AAH].aa_root, meta.mm_aas[MDBX_GACO_AAH].aa_root, meta.mm_dxb_geo.lower,
+           meta.mm_dxb_geo.next, meta.mm_dxb_geo.now, meta.mm_dxb_geo.upper, meta.mm_dxb_geo.grow16,
+           meta.mm_dxb_geo.shrink16, meta.mm_txnid_a, durable_str(&meta));
 
   setup_pagesize(env, meta.mm_psize32);
-  const size_t used_bytes = pgno2bytes(env, meta.mm_geo.next);
+  const size_t used_bytes = pgno2bytes(env, meta.mm_dxb_geo.next);
   if ((env->me_flags32 & MDBX_RDONLY) /* readonly */
       || !IS_SEIZE_EXCLUSIVE(seize)) {
     /* use present params from db */
     const intptr_t meta_page_size = meta.mm_psize32;
-    err = mdbx_set_geometry(env, meta.mm_geo.lower * meta_page_size, meta.mm_geo.now * meta_page_size,
-                            meta.mm_geo.upper * meta_page_size, meta.mm_geo.grow16 * meta_page_size,
-                            meta.mm_geo.shrink16 * meta_page_size, meta_page_size);
+    err = mdbx_set_geometry(env, meta.mm_dxb_geo.lower * meta_page_size, meta.mm_dxb_geo.now * meta_page_size,
+                            meta.mm_dxb_geo.upper * meta_page_size, meta.mm_dxb_geo.grow16 * meta_page_size,
+                            meta.mm_dxb_geo.shrink16 * meta_page_size, meta_page_size);
     if (unlikely(err != MDBX_SUCCESS)) {
       mdbx_error("could not use present dbsize-params from db");
       return MDBX_INCOMPATIBLE;
     }
-  } else if (env->me_geo.now) {
+  } else if (env->me_dxb_geo.now) {
     /* silently growth to last used page */
-    if (env->me_geo.now < used_bytes)
-      env->me_geo.now = used_bytes;
-    if (env->me_geo.upper < used_bytes)
-      env->me_geo.upper = used_bytes;
+    if (env->me_dxb_geo.now < used_bytes)
+      env->me_dxb_geo.now = used_bytes;
+    if (env->me_dxb_geo.upper < used_bytes)
+      env->me_dxb_geo.upper = used_bytes;
 
     /* apply preconfigured params, but only if substantial changes:
      *  - upper or lower limit changes
      *  - shrink theshold or growth step
      * But ignore just chagne just a 'now/current' size. */
-    if (bytes_align2os_bytes(env, env->me_geo.upper) != pgno_align2os_bytes(env, meta.mm_geo.upper) ||
-        bytes_align2os_bytes(env, env->me_geo.lower) != pgno_align2os_bytes(env, meta.mm_geo.lower) ||
-        bytes_align2os_bytes(env, env->me_geo.shrink) != pgno_align2os_bytes(env, meta.mm_geo.shrink16) ||
-        bytes_align2os_bytes(env, env->me_geo.grow) != pgno_align2os_bytes(env, meta.mm_geo.grow16)) {
+    if (bytes_align2os_bytes(env, env->me_dxb_geo.upper) != pgno_align2os_bytes(env, meta.mm_dxb_geo.upper) ||
+        bytes_align2os_bytes(env, env->me_dxb_geo.lower) != pgno_align2os_bytes(env, meta.mm_dxb_geo.lower) ||
+        bytes_align2os_bytes(env, env->me_dxb_geo.shrink) !=
+            pgno_align2os_bytes(env, meta.mm_dxb_geo.shrink16) ||
+        bytes_align2os_bytes(env, env->me_dxb_geo.grow) != pgno_align2os_bytes(env, meta.mm_dxb_geo.grow16)) {
 
-      if (env->me_geo.shrink && env->me_geo.now > used_bytes)
+      if (env->me_dxb_geo.shrink && env->me_dxb_geo.now > used_bytes)
         /* pre-shrink if enabled */
-        env->me_geo.now = used_bytes + env->me_geo.shrink - used_bytes % env->me_geo.shrink;
+        env->me_dxb_geo.now = used_bytes + env->me_dxb_geo.shrink - used_bytes % env->me_dxb_geo.shrink;
 
-      err = mdbx_set_geometry(env, env->me_geo.lower, env->me_geo.now, env->me_geo.upper, env->me_geo.grow,
-                              env->me_geo.shrink, meta.mm_psize32);
+      err = mdbx_set_geometry(env, env->me_dxb_geo.lower, env->me_dxb_geo.now, env->me_dxb_geo.upper,
+                              env->me_dxb_geo.grow, env->me_dxb_geo.shrink, meta.mm_psize32);
       if (unlikely(err != MDBX_SUCCESS)) {
         mdbx_error("could not apply preconfigured dbsize-params to db");
         return MDBX_INCOMPATIBLE;
       }
 
       /* update meta fields */
-      meta.mm_geo.now = bytes2pgno(env, env->me_geo.now);
-      meta.mm_geo.lower = bytes2pgno(env, env->me_geo.lower);
-      meta.mm_geo.upper = bytes2pgno(env, env->me_geo.upper);
-      meta.mm_geo.grow16 = (uint16_t)bytes2pgno(env, env->me_geo.grow);
-      meta.mm_geo.shrink16 = (uint16_t)bytes2pgno(env, env->me_geo.shrink);
+      meta.mm_dxb_geo.now = bytes2pgno(env, env->me_dxb_geo.now);
+      meta.mm_dxb_geo.lower = bytes2pgno(env, env->me_dxb_geo.lower);
+      meta.mm_dxb_geo.upper = bytes2pgno(env, env->me_dxb_geo.upper);
+      meta.mm_dxb_geo.grow16 = (uint16_t)bytes2pgno(env, env->me_dxb_geo.grow);
+      meta.mm_dxb_geo.shrink16 = (uint16_t)bytes2pgno(env, env->me_dxb_geo.shrink);
 
       env_info("amended: root %" PRIaPGNO "/%" PRIaPGNO ", geo %" PRIaPGNO "/%" PRIaPGNO "-%" PRIaPGNO
                "/%" PRIaPGNO " +%u -%u, txn_id %" PRIaTXN ", %s",
-               meta.mm_aas[MDBX_MAIN_AAH].aa_root, meta.mm_aas[MDBX_GACO_AAH].aa_root, meta.mm_geo.lower,
-               meta.mm_geo.next, meta.mm_geo.now, meta.mm_geo.upper, meta.mm_geo.grow16, meta.mm_geo.shrink16,
-               meta.mm_txnid_a, durable_str(&meta));
+               meta.mm_aas[MDBX_MAIN_AAH].aa_root, meta.mm_aas[MDBX_GACO_AAH].aa_root, meta.mm_dxb_geo.lower,
+               meta.mm_dxb_geo.next, meta.mm_dxb_geo.now, meta.mm_dxb_geo.upper, meta.mm_dxb_geo.grow16,
+               meta.mm_dxb_geo.shrink16, meta.mm_txnid_a, durable_str(&meta));
     }
-    mdbx_ensure(env, meta.mm_geo.now >= meta.mm_geo.next);
+    mdbx_ensure(env, meta.mm_dxb_geo.now >= meta.mm_dxb_geo.next);
   } else {
     /* geo-params not pre-configured by user,
      * get current values from a meta. */
-    env->me_geo.now = pgno2bytes(env, meta.mm_geo.now);
-    env->me_geo.lower = pgno2bytes(env, meta.mm_geo.lower);
-    env->me_geo.upper = pgno2bytes(env, meta.mm_geo.upper);
-    env->me_geo.grow = pgno2bytes(env, meta.mm_geo.grow16);
-    env->me_geo.shrink = pgno2bytes(env, meta.mm_geo.shrink16);
+    env->me_dxb_geo.now = pgno2bytes(env, meta.mm_dxb_geo.now);
+    env->me_dxb_geo.lower = pgno2bytes(env, meta.mm_dxb_geo.lower);
+    env->me_dxb_geo.upper = pgno2bytes(env, meta.mm_dxb_geo.upper);
+    env->me_dxb_geo.grow = pgno2bytes(env, meta.mm_dxb_geo.grow16);
+    env->me_dxb_geo.shrink = pgno2bytes(env, meta.mm_dxb_geo.shrink16);
   }
 
   uint64_t filesize_before_mmap;
@@ -1207,7 +1202,7 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  const size_t expected_bytes = mdbx_roundup2(pgno2bytes(env, meta.mm_geo.now), env->me_os_psize);
+  const size_t expected_bytes = mdbx_roundup2(pgno2bytes(env, meta.mm_dxb_geo.now), env->me_os_psize);
   mdbx_ensure(env, expected_bytes >= used_bytes);
   if (filesize_before_mmap != expected_bytes) {
     if (!IS_SEIZE_EXCLUSIVE(seize)) {
@@ -1220,8 +1215,8 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
                   expected_bytes, bytes2pgno(env, expected_bytes), filesize_before_mmap,
                   bytes2pgno(env, (size_t)filesize_before_mmap));
       if (filesize_before_mmap < used_bytes) {
-        mdbx_error("last-page beyond end-of-file (last %" PRIaPGNO ", have %" PRIaPGNO ")", meta.mm_geo.next,
-                   bytes2pgno(env, (size_t)filesize_before_mmap));
+        mdbx_error("last-page beyond end-of-file (last %" PRIaPGNO ", have %" PRIaPGNO ")",
+                   meta.mm_dxb_geo.next, bytes2pgno(env, (size_t)filesize_before_mmap));
         return MDBX_CORRUPTED;
       }
 
@@ -1333,26 +1328,26 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
     if (filesize_after_mmap != expected_bytes) {
       if (filesize_after_mmap != filesize_before_mmap)
         env_info("datafile resized by system to %" PRIu64 " bytes", filesize_after_mmap);
-      if (filesize_after_mmap % env->me_os_psize || filesize_after_mmap > env->me_geo.upper ||
+      if (filesize_after_mmap % env->me_os_psize || filesize_after_mmap > env->me_dxb_geo.upper ||
           filesize_after_mmap < used_bytes) {
         env_info("unacceptable/unexpected  datafile size %" PRIu64, filesize_after_mmap);
         return MDBX_PROBLEM;
       }
       if ((env->me_flags32 & MDBX_RDONLY) == 0) {
-        meta.mm_geo.now = bytes2pgno(env, env->me_geo.now = (size_t)filesize_after_mmap);
-        env_info("update meta-geo to filesize %" PRIuPTR " bytes, %" PRIaPGNO " pages", env->me_geo.now,
-                 meta.mm_geo.now);
+        meta.mm_dxb_geo.now = bytes2pgno(env, env->me_dxb_geo.now = (size_t)filesize_after_mmap);
+        env_info("update meta-geo to filesize %" PRIuPTR " bytes, %" PRIaPGNO " pages", env->me_dxb_geo.now,
+                 meta.mm_dxb_geo.now);
       }
     }
 
-    if (memcmp(&meta.mm_geo, &head->mm_geo, sizeof(meta.mm_geo))) {
+    if (memcmp(&meta.mm_dxb_geo, &head->mm_dxb_geo, sizeof(meta.mm_dxb_geo))) {
       const txnid_t txnid = meta_txnid_stable(env, head);
       env_info("updating meta.geo: "
                "from l%" PRIaPGNO "-n%" PRIaPGNO "-u%" PRIaPGNO "/s%u-g%u (txn#%" PRIaTXN "), "
                "to l%" PRIaPGNO "-n%" PRIaPGNO "-u%" PRIaPGNO "/s%u-g%u (txn#%" PRIaTXN ")",
-               head->mm_geo.lower, head->mm_geo.now, head->mm_geo.upper, head->mm_geo.shrink16,
-               head->mm_geo.grow16, txnid, meta.mm_geo.lower, meta.mm_geo.now, meta.mm_geo.upper,
-               meta.mm_geo.shrink16, meta.mm_geo.grow16, txnid + 1);
+               head->mm_dxb_geo.lower, head->mm_dxb_geo.now, head->mm_dxb_geo.upper, head->mm_dxb_geo.shrink16,
+               head->mm_dxb_geo.grow16, txnid, meta.mm_dxb_geo.lower, meta.mm_dxb_geo.now,
+               meta.mm_dxb_geo.upper, meta.mm_dxb_geo.shrink16, meta.mm_dxb_geo.grow16, txnid + 1);
 
       mdbx_ensure(env, meta_eq(env, &meta, head));
       meta_set_txnid(env, &meta, txnid + 1);
@@ -1362,9 +1357,10 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
         env_info("error %d, while updating meta.geo: "
                  "from l%" PRIaPGNO "-n%" PRIaPGNO "-u%" PRIaPGNO "/s%u-g%u (txn#%" PRIaTXN "), "
                  "to l%" PRIaPGNO "-n%" PRIaPGNO "-u%" PRIaPGNO "/s%u-g%u (txn#%" PRIaTXN ")",
-                 err, head->mm_geo.lower, head->mm_geo.now, head->mm_geo.upper, head->mm_geo.shrink16,
-                 head->mm_geo.grow16, txnid, meta.mm_geo.lower, meta.mm_geo.now, meta.mm_geo.upper,
-                 meta.mm_geo.shrink16, meta.mm_geo.grow16, txnid + 1);
+                 err, head->mm_dxb_geo.lower, head->mm_dxb_geo.now, head->mm_dxb_geo.upper,
+                 head->mm_dxb_geo.shrink16, head->mm_dxb_geo.grow16, txnid, meta.mm_dxb_geo.lower,
+                 meta.mm_dxb_geo.now, meta.mm_dxb_geo.upper, meta.mm_dxb_geo.shrink16, meta.mm_dxb_geo.grow16,
+                 txnid + 1);
         return err;
       }
     }
@@ -1516,13 +1512,13 @@ MDBX_error_t mdbx_open(MDBX_env_t *env, const char *path, MDBX_flags_t flags, mo
   STATIC_ASSERT((MDBX_TXN_STATE_FLAGS & MDBX_TXN_BEGIN_FLAGS) == 0);
 
   return mdbx_open_ex(env, nullptr /* required base address */, path /* dxb pathname */,
-                      (rc == MDBX_SUCCESS) ? NULL : "." /* lck pathname */, nullptr /* ovf pathname */,
+                      (rc == MDBX_SUCCESS) ? NULL : "." /* lck pathname */, nullptr /* sld pathname */,
                       flags /* regime flags */, MDBX_REGIME_PRINCIPAL_FLAGS /* regime check mask */,
                       nullptr /* regime present */, mode4create);
 }
 
 MDBX_error_t __cold mdbx_open_ex(MDBX_env_t *env, void *required_base_address, const char *dxb_pathname,
-                                 const char *lck_pathname, const char *ovf_pathname, unsigned regime_flags,
+                                 const char *lck_pathname, const char *sld_pathname, unsigned regime_flags,
                                  unsigned regime_check_mask, unsigned *regime_present, mode_t mode4create) {
   if (unlikely(!env || !dxb_pathname))
     return MDBX_EINVAL;
@@ -1538,15 +1534,15 @@ MDBX_error_t __cold mdbx_open_ex(MDBX_env_t *env, void *required_base_address, c
   if ((regime_flags & (MDBX_RDONLY | MDBX_CREATE)) == (MDBX_RDONLY | MDBX_CREATE))
     return MDBX_EINVAL;
 
-  if (ovf_pathname && (ovf_pathname[0] == '\0' || strcmp(ovf_pathname, ".") == 0))
-    ovf_pathname = nullptr;
+  if (sld_pathname && (sld_pathname[0] == '\0' || strcmp(sld_pathname, ".") == 0))
+    sld_pathname = nullptr;
 
-  if (ovf_pathname && required_base_address)
+  if (sld_pathname && required_base_address)
     /* FIXME: This is correct (and could be implemented),
      * in the case databook size is fixed */
     return MDBX_EINVAL;
 
-  if (ovf_pathname || required_base_address)
+  if (sld_pathname || required_base_address)
     return MDBX_ENOSYS /* FIXME: TODO - implement both features */;
 
   char *molded_lck_filename = nullptr;
@@ -1608,7 +1604,7 @@ MDBX_error_t __cold mdbx_open_ex(MDBX_env_t *env, void *required_base_address, c
   env->me_flags32 = regime_flags | MDBX_ENV_ACTIVE;
 
   const size_t pathname_buflen =
-      strlen(lck_pathname) + 1 + strlen(dxb_pathname) + 1 + (ovf_pathname ? strlen(ovf_pathname) : 0) + 1;
+      strlen(lck_pathname) + 1 + strlen(dxb_pathname) + 1 + (sld_pathname ? strlen(sld_pathname) : 0) + 1;
   env->me_pathname_buf = malloc(pathname_buflen);
   env->env_ahe_array = calloc(env->env_ah_max, sizeof(ahe_t));
   if (!(env->env_ahe_array && env->me_pathname_buf)) {
@@ -1619,8 +1615,8 @@ MDBX_error_t __cold mdbx_open_ex(MDBX_env_t *env, void *required_base_address, c
   char *append_ptr = env->me_pathname_buf;
   append_ptr = mdbx_stpcpy(env->me_pathname_dxb = append_ptr, dxb_pathname);
   append_ptr = mdbx_stpcpy(env->me_pathname_lck = append_ptr, lck_pathname);
-  if (ovf_pathname)
-    append_ptr = mdbx_stpcpy(env->me_pathname_ovf = append_ptr, ovf_pathname);
+  if (sld_pathname)
+    append_ptr = mdbx_stpcpy(env->me_pathname_sld = append_ptr, sld_pathname);
   else
     *append_ptr++ = '\0';
   mdbx_assert(env, append_ptr == env->me_pathname_buf + pathname_buflen);
@@ -3951,7 +3947,7 @@ static int __cold bk_copy_compact(MDBX_env_t *env, MDBX_filehandle_t fd) {
                  my.mc_txn->txn_aht_array[MDBX_GACO_AAH].aa.overflow_pages;
 
     new_root = my.mc_txn->mt_next_pgno - 1 - freecount;
-    meta->mp_meta.mm_geo.next = meta->mp_meta.mm_geo.now = new_root + 1;
+    meta->mp_meta.mm_dxb_geo.next = meta->mp_meta.mm_dxb_geo.now = new_root + 1;
     aa_txn2db(env, &my.mc_txn->txn_aht_array[MDBX_MAIN_AAH], &meta->mp_meta.mm_aas[MDBX_MAIN_AAH], af_main);
     meta->mp_meta.mm_aas[MDBX_MAIN_AAH].aa_root = new_root;
   } else {
@@ -4017,7 +4013,7 @@ static int __cold bk_copy_asis(MDBX_env_t *env, MDBX_filehandle_t fd) {
 
   tr.err = mdbx_write(fd, env->me_map, pgno2bytes(env, MDBX_NUM_METAS));
   meta_t *const head = meta_head(env);
-  const uint64_t size = mdbx_roundup2(pgno2bytes(env, head->mm_geo.now), env->me_os_psize);
+  const uint64_t size = mdbx_roundup2(pgno2bytes(env, head->mm_dxb_geo.now), env->me_os_psize);
   if ((env->me_flags32 & MDBX_EXCLUSIVE) == 0)
     lck_writer_release(env);
 

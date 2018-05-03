@@ -109,7 +109,7 @@ static void __cold env_destroy(MDBX_env_t *env) {
 
     env->me_pathname_lck = nullptr;
     env->me_pathname_dxb = nullptr;
-    env->me_pathname_ovf = nullptr;
+    env->me_pathname_sld = nullptr;
     free(env->me_pathname_buf);
     env->me_pathname_buf = nullptr;
   }

@@ -540,12 +540,14 @@ MDBX_error_t mdbx_info_ex(MDBX_env_t *env, MDBX_db_info_t *info, size_t info_siz
       info->bi_meta[1].sign_checksum = meta1->mm_sign_checksum;
       info->bi_meta[2].txnid = meta_txnid_fluid(env, meta2);
       info->bi_meta[2].sign_checksum = meta2->mm_sign_checksum;
-      info->bi_last_pgno = meta->mm_geo.next - 1;
-      info->bi_geo.lower = pgno2bytes(env, meta->mm_geo.lower);
-      info->bi_geo.upper = pgno2bytes(env, meta->mm_geo.upper);
-      info->bi_geo.current = pgno2bytes(env, meta->mm_geo.now);
-      info->bi_geo.shrink = pgno2bytes(env, meta->mm_geo.shrink16);
-      info->bi_geo.grow = pgno2bytes(env, meta->mm_geo.grow16);
+      info->bi_dxb_last_pgno = meta->mm_dxb_geo.next - 1;
+      memset(&info->bi_sld_geo, 0, sizeof(info->bi_sld_geo) /* FIXME: TODO */);
+      info->bi_sld_first_pgno = 0 /* FIXME: TODO */;
+      info->bi_dxb_geo.lower = pgno2bytes(env, meta->mm_dxb_geo.lower);
+      info->bi_dxb_geo.upper = pgno2bytes(env, meta->mm_dxb_geo.upper);
+      info->bi_dxb_geo.current = pgno2bytes(env, meta->mm_dxb_geo.now);
+      info->bi_dxb_geo.shrink = (uint32_t)pgno2bytes(env, meta->mm_dxb_geo.shrink16);
+      info->bi_dxb_geo.grow = (uint32_t)pgno2bytes(env, meta->mm_dxb_geo.grow16);
       info->bi_mapsize = env->me_mapsize;
       info->bi_dirty_volume = env->me_lck ? env->me_lck->li_dirty_volume : 0;
       mdbx_compiler_barrier();
@@ -559,8 +561,10 @@ MDBX_error_t mdbx_info_ex(MDBX_env_t *env, MDBX_db_info_t *info, size_t info_siz
 
     info->bi_pagesize = env->me_psize;
     info->bi_sys_pagesize = env->me_os_psize;
-    info->bi_dxb_ioblk = 0 /* FIXME: TODO */;
-    info->bi_ovf_ioblk = 0 /* FIXME: TODO */;
+    info->bi_dxb_geo.ioblk = 0 /* FIXME: TODO */;
+    info->bi_dxb_geo.granularity = 0 /* FIXME: TODO */;
+    info->bi_sld_geo.ioblk = 0 /* FIXME: TODO */;
+    info->bi_sld_geo.granularity = 0 /* FIXME: TODO */;
     info->bi_maxkeysize = env->me_keymax;
 
     info->bi_readers_max = env->me_maxreaders;
@@ -603,7 +607,7 @@ MDBX_error_t mdbx_info_ex(MDBX_env_t *env, MDBX_db_info_t *info, size_t info_siz
     aux->ei_rbr_callback = env->me_callback_rbr;
     aux->ei_dxb_fd = env->me_dxb_fd;
     aux->ei_clk_fd = env->me_lck_fd;
-    aux->ei_ovf_fd = MDBX_INVALID_FD /* FIXME: TODO */;
+    aux->ei_sld_fd = MDBX_INVALID_FD /* FIXME: TODO */;
     aux->ei_pathnames = env->me_pathname_buf;
   }
 
@@ -637,8 +641,8 @@ MDBX_numeric_result_t mdbx_txn_lag(MDBX_txn_t *txn, unsigned *alloc_ratio) {
     for (;;) {
       meta_t *meta = meta_head(env);
       txnid_t recent = meta_txnid_fluid(env, meta);
-      limit = meta->mm_geo.upper;
-      allocated = meta->mm_geo.next;
+      limit = meta->mm_dxb_geo.upper;
+      allocated = meta->mm_dxb_geo.next;
       if (likely(meta == meta_head(env) && recent == meta_txnid_fluid(env, meta))) {
         txnid_t gap = recent - txn->mt_txnid;
         result.value = unlikely(gap > UINTPTR_MAX) ? UINTPTR_MAX : (uintptr_t)gap;
@@ -646,7 +650,7 @@ MDBX_numeric_result_t mdbx_txn_lag(MDBX_txn_t *txn, unsigned *alloc_ratio) {
       }
     }
   } else {
-    limit = meta_head(env)->mm_geo.upper;
+    limit = meta_head(env)->mm_dxb_geo.upper;
     allocated = txn->mt_next_pgno;
     result.err = MDBX_SIGN;
   }
