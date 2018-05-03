@@ -76,7 +76,7 @@ static int page_alloc(cursor_t *mc, unsigned num, page_t **mp, int flags) {
       mdbx_debug("db %d use loose page %" PRIaPGNO, DAAH(mc), np->mp_pgno);
       ASAN_UNPOISON_MEMORY_REGION(np, env->me_psize);
       assert(np->mp_pgno < txn->mt_next_pgno);
-      mdbx_ensure(env, np->mp_pgno >= NUM_METAS);
+      mdbx_ensure(env, np->mp_pgno >= MDBX_NUM_METAS);
       *mp = np;
       return MDBX_SUCCESS;
     }
@@ -265,7 +265,7 @@ static int page_alloc(cursor_t *mc, unsigned num, page_t **mp, int flags) {
 #else
         for (higest = begin; higest < end; ++higest) {
 #endif /* MDBX_PNL sort-order */
-          assert(*higest >= NUM_METAS && *higest < tail);
+          assert(*higest >= MDBX_NUM_METAS && *higest < tail);
           if (*higest != tail - 1)
             break;
           tail -= 1;
@@ -395,9 +395,9 @@ static int page_alloc(cursor_t *mc, unsigned num, page_t **mp, int flags) {
 
 done:
   assert(mp && num);
-  assert(pgno >= NUM_METAS);
-  mdbx_ensure(env, pgno >= NUM_METAS);
-  if (unlikely(pgno < NUM_METAS)) {
+  assert(pgno >= MDBX_NUM_METAS);
+  mdbx_ensure(env, pgno >= MDBX_NUM_METAS);
+  if (unlikely(pgno < MDBX_NUM_METAS)) {
     rc = MDBX_PANIC;
     goto fail;
   }
@@ -581,7 +581,7 @@ again_on_freelist_change:
       MDBX_ID2L dl = txn->mt_rw_dirtylist;
       for (page_t *mp = txn->mt_loose_pages; mp;) {
         mdbx_assert(env, mp->mp_pgno < txn->mt_next_pgno);
-        mdbx_ensure(env, mp->mp_pgno >= NUM_METAS);
+        mdbx_ensure(env, mp->mp_pgno >= MDBX_NUM_METAS);
 
         unsigned s, d;
         for (s = d = 0; ++s <= dl[0].mid;)
@@ -613,7 +613,7 @@ again_on_freelist_change:
 #else
       for (higest = begin; higest < end; ++higest) {
 #endif /* MDBX_PNL sort-order */
-        assert(*higest >= NUM_METAS && *higest < tail);
+        assert(*higest >= MDBX_NUM_METAS && *higest < tail);
         if (*higest != tail - 1)
           break;
         tail -= 1;

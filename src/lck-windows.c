@@ -79,7 +79,7 @@ static inline BOOL lck_is_collision(MDBX_error_t err) {
 /* global lock for write-transactions */
 
 #define DXB_HEAD_OFFSET 0
-#define DXB_HEAD_LEN (NUM_METAS * (size_t)MAX_PAGESIZE)
+#define DXB_HEAD_LEN (MDBX_NUM_METAS * (size_t)MAX_PAGESIZE)
 #define DXB_BODY_OFFSET DXB_HEAD_LEN
 #define DXB_BODY_LEN (MAX_MAPSIZE - DXB_BODY_OFFSET)
 #define LCK_DXB_BODY DXB_BODY_OFFSET, DXB_BODY_LEN

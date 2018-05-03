@@ -534,12 +534,12 @@ MDBX_error_t mdbx_info_ex(MDBX_env_t *env, MDBX_db_info_t *info, size_t info_siz
     do {
       meta = meta_head(env);
       info->bi_recent_txnid = meta_txnid_fluid(env, meta);
-      info->bi_meta.txnid0 = meta_txnid_fluid(env, meta0);
-      info->bi_meta.sign0 = meta0->mm_datasync_sign;
-      info->bi_meta.txnid1 = meta_txnid_fluid(env, meta1);
-      info->bi_meta.sign1 = meta1->mm_datasync_sign;
-      info->bi_meta.txnid2 = meta_txnid_fluid(env, meta2);
-      info->bi_meta.sign2 = meta2->mm_datasync_sign;
+      info->bi_meta[0].txnid = meta_txnid_fluid(env, meta0);
+      info->bi_meta[0].sign_checksum = meta0->mm_sign_checksum;
+      info->bi_meta[1].txnid = meta_txnid_fluid(env, meta1);
+      info->bi_meta[1].sign_checksum = meta1->mm_sign_checksum;
+      info->bi_meta[2].txnid = meta_txnid_fluid(env, meta2);
+      info->bi_meta[2].sign_checksum = meta2->mm_sign_checksum;
       info->bi_last_pgno = meta->mm_geo.next - 1;
       info->bi_geo.lower = pgno2bytes(env, meta->mm_geo.lower);
       info->bi_geo.upper = pgno2bytes(env, meta->mm_geo.upper);
@@ -549,12 +549,12 @@ MDBX_error_t mdbx_info_ex(MDBX_env_t *env, MDBX_db_info_t *info, size_t info_siz
       info->bi_mapsize = env->me_mapsize;
       info->bi_dirty_volume = env->me_lck ? env->me_lck->li_dirty_volume : 0;
       mdbx_compiler_barrier();
-    } while (unlikely(info->bi_meta.txnid0 != meta_txnid_fluid(env, meta0) ||
-                      info->bi_meta.sign0 != meta0->mm_datasync_sign ||
-                      info->bi_meta.txnid1 != meta_txnid_fluid(env, meta1) ||
-                      info->bi_meta.sign1 != meta1->mm_datasync_sign ||
-                      info->bi_meta.txnid2 != meta_txnid_fluid(env, meta2) ||
-                      info->bi_meta.sign2 != meta2->mm_datasync_sign || meta != meta_head(env) ||
+    } while (unlikely(info->bi_meta[0].txnid != meta_txnid_fluid(env, meta0) ||
+                      info->bi_meta[0].sign_checksum != meta0->mm_sign_checksum ||
+                      info->bi_meta[1].txnid != meta_txnid_fluid(env, meta1) ||
+                      info->bi_meta[1].sign_checksum != meta1->mm_sign_checksum ||
+                      info->bi_meta[2].txnid != meta_txnid_fluid(env, meta2) ||
+                      info->bi_meta[2].sign_checksum != meta2->mm_sign_checksum || meta != meta_head(env) ||
                       info->bi_recent_txnid != meta_txnid_fluid(env, meta)));
 
     info->bi_pagesize = env->me_psize;
@@ -666,8 +666,9 @@ MDBX_error_t __cold mdbx_walk(MDBX_txn_t *txn, MDBX_walk_func_t *visitor, void *
   ctx.mw_user = user;
   ctx.mw_visitor = visitor;
 
-  err = visitor(0, NUM_METAS, user, mdbx_str2iov("meta"), "meta", NUM_METAS, sizeof(meta_t) * NUM_METAS,
-                PAGEHDRSZ * NUM_METAS, (txn->mt_env->me_psize - sizeof(meta_t) - PAGEHDRSZ) * NUM_METAS);
+  err = visitor(0, MDBX_NUM_METAS, user, mdbx_str2iov("meta"), "meta", MDBX_NUM_METAS,
+                sizeof(meta_t) * MDBX_NUM_METAS, PAGEHDRSZ * MDBX_NUM_METAS,
+                (txn->mt_env->me_psize - sizeof(meta_t) - PAGEHDRSZ) * MDBX_NUM_METAS);
   if (!err)
     err = do_walk(&ctx, mdbx_str2iov("gaco"), txn->txn_aht_array[MDBX_GACO_AAH].aa.root, 0);
   if (!err)

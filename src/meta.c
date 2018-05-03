@@ -30,7 +30,7 @@
 
 static inline meta_t *metapage(const MDBX_env_t *env, unsigned n) { return &pgno2page(env, n)->mp_meta; }
 
-#define METAPAGE_END(env) metapage(env, NUM_METAS)
+#define METAPAGE_END(env) metapage(env, MDBX_NUM_METAS)
 
 static inline txnid_t meta_txnid(const MDBX_env_t *env, const meta_t *meta, bool allow_volatile) {
   mdbx_assert(env, meta >= metapage(env, 0) || meta < METAPAGE_END(env));
@@ -178,7 +178,7 @@ static const char *durable_str(const meta_t *const meta) {
   if (META_IS_WEAK(meta))
     return "Weak";
   if (META_IS_STEADY(meta))
-    return (meta->mm_datasync_sign == meta_sign(meta)) ? "Steady" : "Tainted";
+    return (meta->mm_sign_checksum == meta_sign(meta)) ? "Steady" : "Tainted";
   return "Legacy";
 }
 
@@ -203,7 +203,7 @@ static page_t *__cold meta_model(const MDBX_env_t *env, page_t *model, unsigned 
   model->mp_meta.mm_geo.grow16 = (uint16_t)bytes2pgno(env, env->me_geo.grow);
   model->mp_meta.mm_geo.shrink16 = (uint16_t)bytes2pgno(env, env->me_geo.shrink);
   model->mp_meta.mm_geo.now = bytes2pgno(env, env->me_geo.now);
-  model->mp_meta.mm_geo.next = NUM_METAS;
+  model->mp_meta.mm_geo.next = MDBX_NUM_METAS;
 
   mdbx_ensure(env, model->mp_meta.mm_geo.lower >= MIN_PAGENO);
   mdbx_ensure(env, model->mp_meta.mm_geo.upper <= MAX_PAGENO);
@@ -215,13 +215,13 @@ static page_t *__cold meta_model(const MDBX_env_t *env, page_t *model, unsigned 
   mdbx_ensure(env, model->mp_meta.mm_geo.shrink16 == bytes2pgno(env, env->me_geo.shrink));
 
   model->mp_meta.mm_psize32 = env->me_psize;
-  // model->mp_meta.mm_extra_flags16 = 42;
+  // model->mp_meta.mm_features16 = 42;
   model->mp_meta.mm_db_flags16 = (uint16_t)(env->me_flags32 & (MDBX_DB_FLAGS | MDBX_AA_FLAGS));
   model->mp_meta.mm_aas[MDBX_GACO_AAH].aa_root = P_INVALID;
   model->mp_meta.mm_aas[MDBX_MAIN_AAH].aa_root = P_INVALID;
 
   meta_set_txnid(env, &model->mp_meta, MIN_TXNID + num);
-  model->mp_meta.mm_datasync_sign = meta_sign(&model->mp_meta);
+  model->mp_meta.mm_sign_checksum = meta_sign(&model->mp_meta);
   return (page_t *)((uint8_t *)model + env->me_psize);
 }
 
@@ -232,7 +232,7 @@ static page_t *__cold init_metas(const MDBX_env_t *env, void *buffer) {
   page_t *page1 = meta_model(env, page0, 0);
   page_t *page2 = meta_model(env, page1, 1);
   meta_model(env, page2, 2);
-  page2->mp_meta.mm_datasync_sign = MDBX_DATASIGN_WEAK;
+  page2->mp_meta.mm_sign_checksum = MDBX_DATASIGN_WEAK;
   mdbx_assert(env, !meta_eq(env, &page0->mp_meta, &page1->mp_meta));
   mdbx_assert(env, !meta_eq(env, &page1->mp_meta, &page2->mp_meta));
   mdbx_assert(env, !meta_eq(env, &page2->mp_meta, &page0->mp_meta));

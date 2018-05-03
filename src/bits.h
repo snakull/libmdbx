@@ -146,9 +146,6 @@
 #define CORE_AAH 2
 #define MAX_AAH (INT16_MAX - CORE_AAH)
 
-/* Number of meta pages - also hardcoded elsewhere */
-#define NUM_METAS 3
-
 /* A page number in the databook.
  *
  * MDBX uses 32 bit for page numbers. This limits databook
@@ -156,7 +153,7 @@
 typedef uint32_t pgno_t;
 #define PRIaPGNO PRIu32
 #define MAX_PAGENO ((pgno_t)UINT64_C(0xffffFFFFffff))
-#define MIN_PAGENO NUM_METAS
+#define MIN_PAGENO MDBX_NUM_METAS
 
 /* A transaction ID. */
 typedef uint64_t txnid_t;
@@ -275,9 +272,9 @@ typedef struct meta {
 #define MDBX_DATASIGN_WEAK 1u
 #define SIGN_IS_WEAK(sign) ((sign) == MDBX_DATASIGN_WEAK)
 #define SIGN_IS_STEADY(sign) ((sign) > MDBX_DATASIGN_WEAK)
-#define META_IS_WEAK(meta) SIGN_IS_WEAK((meta)->mm_datasync_sign)
-#define META_IS_STEADY(meta) SIGN_IS_STEADY((meta)->mm_datasync_sign)
-  volatile checksum_t mm_datasync_sign;
+#define META_IS_WEAK(meta) SIGN_IS_WEAK((meta)->mm_sign_checksum)
+#define META_IS_STEADY(meta) SIGN_IS_STEADY((meta)->mm_sign_checksum)
+  volatile checksum_t mm_sign_checksum;
 
   /* uint64_t boundary -----------------------------------------------------*/
   /* txnid that committed this page, the second of a two-phase-update pair */

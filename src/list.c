@@ -74,8 +74,8 @@ static __maybe_unused bool mdbx_pnl_check(MDBX_PNL pl) {
   if (pl) {
     for (const pgno_t *ptr = pl + pl[0]; --ptr > pl;) {
       assert(MDBX_PNL_ORDERED(ptr[0], ptr[1]));
-      assert(ptr[0] >= NUM_METAS);
-      if (unlikely(MDBX_PNL_DISORDERED(ptr[0], ptr[1]) || ptr[0] < NUM_METAS))
+      assert(ptr[0] >= MDBX_NUM_METAS);
+      if (unlikely(MDBX_PNL_DISORDERED(ptr[0], ptr[1]) || ptr[0] < MDBX_NUM_METAS))
         return false;
     }
   }
@@ -372,7 +372,7 @@ static unsigned __hot mdbx_mid2l_search(MDBX_ID2L pnl, pgno_t id) {
 #if MDBX_DEBUG
   for (const MDBX_ID2 *ptr = pnl + pnl[0].mid; --ptr > pnl;) {
     assert(ptr[0].mid < ptr[1].mid);
-    assert(ptr[0].mid >= NUM_METAS);
+    assert(ptr[0].mid >= MDBX_NUM_METAS);
   }
 #endif
 

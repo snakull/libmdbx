@@ -263,7 +263,7 @@ int main(int argc, char *argv[]) {
 
       if (freinfo > 1) {
         char *bad = "";
-        pgno_t prev = MDBX_PNL_ASCENDING ? NUM_METAS - 1 : (pgno_t)bk_info.bi_last_pgno + 1;
+        pgno_t prev = MDBX_PNL_ASCENDING ? MIN_PAGENO : (pgno_t)bk_info.bi_last_pgno + 1;
         pgno_t span = 1;
         for (unsigned i = 0; i < number; ++i) {
           pgno_t pg = iptr[i];

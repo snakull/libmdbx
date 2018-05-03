@@ -881,7 +881,7 @@ static int page_search(cursor_t *mc, MDBX_iov_t *key, int flags) {
   }
 
   assert(mc->mc_txn->mt_txnid >= mc->mc_txn->mt_env->me_oldest[0]);
-  assert(root >= NUM_METAS);
+  assert(root >= MDBX_NUM_METAS);
   if (!mc->mc_pg[0] || mc->mc_pg[0]->mp_pgno != root) {
     int rc = page_get(mc->mc_txn, root, &mc->mc_pg[0], nullptr);
     if (unlikely(rc != MDBX_SUCCESS))

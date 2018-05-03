@@ -337,13 +337,13 @@ static MDBX_error_t handle_gaco(const uint64_t record_number, const MDBX_iov_t k
       if (bk_info.bi_latter_reader_txnid > txnid)
         reclaimable_pages += number;
 
-      pgno_t prev = MDBX_PNL_ASCENDING ? NUM_METAS - 1 : (pgno_t)bk_info.bi_last_pgno + 1;
+      pgno_t prev = MDBX_PNL_ASCENDING ? MIN_PAGENO : (pgno_t)bk_info.bi_last_pgno + 1;
       pgno_t span = 1;
       for (unsigned i = 0; i < number; ++i) {
         const pgno_t pg = iptr[i];
-        if (pg < NUM_METAS || pg > bk_info.bi_last_pgno)
-          problem_add("entry", record_number, "wrong idl entry", "%u < %" PRIaPGNO " < %" PRIu64 "", NUM_METAS,
-                      pg, bk_info.bi_last_pgno);
+        if (pg < MDBX_NUM_METAS || pg > bk_info.bi_last_pgno)
+          problem_add("entry", record_number, "wrong idl entry", "%u < %" PRIaPGNO " < %" PRIu64 "",
+                      MDBX_NUM_METAS, pg, bk_info.bi_last_pgno);
         else if (MDBX_PNL_DISORDERED(prev, pg)) {
           bad = " [bad sequence]";
           problem_add("entry", record_number, "bad sequence", "%" PRIaPGNO " <> %" PRIaPGNO "", prev, pg);
@@ -593,15 +593,15 @@ static inline bool meta_eq(txnid_t txn_a, uint64_t sign_a, txnid_t txn_b, uint64
 
 static inline int meta_recent(const bool roolback2steady) {
 
-  if (meta_ot(bk_info.bi_meta.txnid0, bk_info.bi_meta.sign0, bk_info.bi_meta.txnid1, bk_info.bi_meta.sign1,
-              roolback2steady))
-    return meta_ot(bk_info.bi_meta.txnid2, bk_info.bi_meta.sign2, bk_info.bi_meta.txnid1,
-                   bk_info.bi_meta.sign1, roolback2steady)
+  if (meta_ot(bk_info.bi_meta[0].txnid, bk_info.bi_meta[0].sign_checksum, bk_info.bi_meta[1].txnid,
+              bk_info.bi_meta[1].sign_checksum, roolback2steady))
+    return meta_ot(bk_info.bi_meta[2].txnid, bk_info.bi_meta[2].sign_checksum, bk_info.bi_meta[1].txnid,
+                   bk_info.bi_meta[1].sign_checksum, roolback2steady)
                ? 1
                : 2;
 
-  return meta_ot(bk_info.bi_meta.txnid0, bk_info.bi_meta.sign0, bk_info.bi_meta.txnid2, bk_info.bi_meta.sign2,
-                 roolback2steady)
+  return meta_ot(bk_info.bi_meta[0].txnid, bk_info.bi_meta[0].sign_checksum, bk_info.bi_meta[2].txnid,
+                 bk_info.bi_meta[2].sign_checksum, roolback2steady)
              ? 2
              : 0;
 }
@@ -609,18 +609,18 @@ static inline int meta_recent(const bool roolback2steady) {
 static inline int meta_tail(int head) {
 
   if (head == 0)
-    return meta_ot(bk_info.bi_meta.txnid1, bk_info.bi_meta.sign1, bk_info.bi_meta.txnid2,
-                   bk_info.bi_meta.sign2, true)
+    return meta_ot(bk_info.bi_meta[1].txnid, bk_info.bi_meta[1].sign_checksum, bk_info.bi_meta[2].txnid,
+                   bk_info.bi_meta[2].sign_checksum, true)
                ? 1
                : 2;
   if (head == 1)
-    return meta_ot(bk_info.bi_meta.txnid0, bk_info.bi_meta.sign0, bk_info.bi_meta.txnid2,
-                   bk_info.bi_meta.sign2, true)
+    return meta_ot(bk_info.bi_meta[0].txnid, bk_info.bi_meta[0].sign_checksum, bk_info.bi_meta[2].txnid,
+                   bk_info.bi_meta[2].sign_checksum, true)
                ? 0
                : 2;
   if (head == 2)
-    return meta_ot(bk_info.bi_meta.txnid0, bk_info.bi_meta.sign0, bk_info.bi_meta.txnid1,
-                   bk_info.bi_meta.sign1, true)
+    return meta_ot(bk_info.bi_meta[0].txnid, bk_info.bi_meta[0].sign_checksum, bk_info.bi_meta[1].txnid,
+                   bk_info.bi_meta[1].sign_checksum, true)
                ? 0
                : 1;
   assert(false);
@@ -667,23 +667,23 @@ static int check_meta_head(bool steady) {
     error(" - unexpected internal error (%s)\n", steady ? "meta_steady_head" : "meta_weak_head");
   /* fallthrough */
   case 0:
-    if (bk_info.bi_meta.txnid0 != bk_info.bi_recent_txnid) {
+    if (bk_info.bi_meta[0].txnid != bk_info.bi_recent_txnid) {
       print(" - meta-%d txn-id mismatch recent-txn-id (%" PRIi64 " != %" PRIi64 ")\n", 0,
-            bk_info.bi_meta.txnid0, bk_info.bi_recent_txnid);
+            bk_info.bi_meta[0].txnid, bk_info.bi_recent_txnid);
       return 1;
     }
     break;
   case 1:
-    if (bk_info.bi_meta.txnid1 != bk_info.bi_recent_txnid) {
+    if (bk_info.bi_meta[1].txnid != bk_info.bi_recent_txnid) {
       print(" - meta-%d txn-id mismatch recent-txn-id (%" PRIi64 " != %" PRIi64 ")\n", 1,
-            bk_info.bi_meta.txnid1, bk_info.bi_recent_txnid);
+            bk_info.bi_meta[1].txnid, bk_info.bi_recent_txnid);
       return 1;
     }
     break;
   case 2:
-    if (bk_info.bi_meta.txnid2 != bk_info.bi_recent_txnid) {
+    if (bk_info.bi_meta[2].txnid != bk_info.bi_recent_txnid) {
       print(" - meta-%d txn-id mismatch recent-txn-id (%" PRIi64 " != %" PRIi64 ")\n", 2,
-            bk_info.bi_meta.txnid2, bk_info.bi_recent_txnid);
+            bk_info.bi_meta[2].txnid, bk_info.bi_recent_txnid);
       return 1;
     }
   }
@@ -858,22 +858,25 @@ int main(int argc, char *argv[]) {
           bk_info.bi_recent_txnid, bk_info.bi_latter_reader_txnid,
           bk_info.bi_recent_txnid - bk_info.bi_latter_reader_txnid);
 
-    verbose_meta(0, bk_info.bi_meta.txnid0, bk_info.bi_meta.sign0);
-    verbose_meta(1, bk_info.bi_meta.txnid1, bk_info.bi_meta.sign1);
-    verbose_meta(2, bk_info.bi_meta.txnid2, bk_info.bi_meta.sign2);
+    verbose_meta(0, bk_info.bi_meta[0].txnid, bk_info.bi_meta[0].sign_checksum);
+    verbose_meta(1, bk_info.bi_meta[1].txnid, bk_info.bi_meta[1].sign_checksum);
+    verbose_meta(2, bk_info.bi_meta[2].txnid, bk_info.bi_meta[2].sign_checksum);
   }
 
   if (verbose)
     print(" - performs check for meta-pages clashes\n");
-  if (meta_eq(bk_info.bi_meta.txnid0, bk_info.bi_meta.sign0, bk_info.bi_meta.txnid1, bk_info.bi_meta.sign1)) {
+  if (meta_eq(bk_info.bi_meta[0].txnid, bk_info.bi_meta[0].sign_checksum, bk_info.bi_meta[1].txnid,
+              bk_info.bi_meta[1].sign_checksum)) {
     print(" - meta-%d and meta-%d are clashed\n", 0, 1);
     ++problems_meta;
   }
-  if (meta_eq(bk_info.bi_meta.txnid1, bk_info.bi_meta.sign1, bk_info.bi_meta.txnid2, bk_info.bi_meta.sign2)) {
+  if (meta_eq(bk_info.bi_meta[1].txnid, bk_info.bi_meta[1].sign_checksum, bk_info.bi_meta[2].txnid,
+              bk_info.bi_meta[2].sign_checksum)) {
     print(" - meta-%d and meta-%d are clashed\n", 1, 2);
     ++problems_meta;
   }
-  if (meta_eq(bk_info.bi_meta.txnid2, bk_info.bi_meta.sign2, bk_info.bi_meta.txnid0, bk_info.bi_meta.sign0)) {
+  if (meta_eq(bk_info.bi_meta[2].txnid, bk_info.bi_meta[2].sign_checksum, bk_info.bi_meta[0].txnid,
+              bk_info.bi_meta[0].sign_checksum)) {
     print(" - meta-%d and meta-%d are clashed\n", 2, 0);
     ++problems_meta;
   }

@@ -531,6 +531,9 @@ typedef uint_fast32_t MDBX_aah_t;
 /* Predefined handle for main AA. */
 #define MDBX_MAIN_AAH 1
 
+/* Number of meta pages - also hardcoded elsewhere */
+#define MDBX_NUM_METAS 3
+
 /* Generic structure used for passing keys and data in and out
  * of the engine.
  *
@@ -704,10 +707,8 @@ typedef struct MDBX_db_info {
   uint64_t bi_autosync_threshold;
   uint64_t bi_dirty_volume;
   struct {
-    uint64_t txnid0, sign0;
-    uint64_t txnid1, sign1;
-    uint64_t txnid2, sign2;
-  } bi_meta;
+    uint64_t txnid, sign_checksum;
+  } bi_meta[MDBX_NUM_METAS];
   uint32_t bi_maxkeysize;   /* maximum size of keys and MDBX_DUPSORT data */
   uint32_t bi_pagesize;     /* databook pagesize */
   uint32_t bi_sys_pagesize; /* system pagesize */
