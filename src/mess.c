@@ -1141,9 +1141,8 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
 
   setup_pagesize(env, meta.mm_psize32);
   const size_t used_bytes = pgno2bytes(env, meta.mm_dxb_geo.next);
-  if ((env->me_flags32 & MDBX_RDONLY) /* readonly */
-      || !IS_SEIZE_EXCLUSIVE(seize)) {
-    /* use present params from db */
+  if ((env->me_flags32 & MDBX_RDONLY) || !IS_SEIZE_EXCLUSIVE(seize)) {
+    /* apply geometry from db */
     const intptr_t meta_page_size = meta.mm_psize32;
     err = mdbx_set_geometry(env, meta.mm_dxb_geo.lower * meta_page_size, meta.mm_dxb_geo.now * meta_page_size,
                             meta.mm_dxb_geo.upper * meta_page_size, meta.mm_dxb_geo.grow16 * meta_page_size,
@@ -1173,6 +1172,9 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
         /* pre-shrink if enabled */
         env->me_dxb_geo.now = used_bytes + env->me_dxb_geo.shrink - used_bytes % env->me_dxb_geo.shrink;
 
+      /* При изменении параметров mdbx_set_geometry() обновляет мета и выполняет sync, что не допустимо
+       * до анализа номеров txnid и выполнения rollback. Но здесь этот вызов mdbx_set_geometry() безопасен,
+       * так как при нулевом me_map описанных действий не будет. */
       err = mdbx_set_geometry(env, env->me_dxb_geo.lower, env->me_dxb_geo.now, env->me_dxb_geo.upper,
                               env->me_dxb_geo.grow, env->me_dxb_geo.shrink, meta.mm_psize32);
       if (unlikely(err != MDBX_SUCCESS)) {
@@ -1195,7 +1197,7 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
     }
     mdbx_ensure(env, meta.mm_dxb_geo.now >= meta.mm_dxb_geo.next);
   } else {
-    /* geo-params not pre-configured by user,
+    /* geometry-params not pre-configured by user,
      * get current values from a meta. */
     env->me_dxb_geo.now = pgno2bytes(env, meta.mm_dxb_geo.now);
     env->me_dxb_geo.lower = pgno2bytes(env, meta.mm_dxb_geo.lower);
@@ -1243,6 +1245,10 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
     }
   }
 
+  log_info(MDBX_LOG_MISC, "current boot-id %" PRIx64 "-%" PRIx64 " (%savailable)", osal_bootid_value.qwords[0],
+           osal_bootid_value.qwords[1],
+           (osal_bootid_value.qwords[0] | osal_bootid_value.qwords[1]) ? "" : "not-");
+
   err = mdbx_bk_map(env, IS_SEIZE_EXCLUSIVE(seize) ? expected_bytes : 0);
   if (err != MDBX_SUCCESS)
     return err;
@@ -1268,6 +1274,13 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
                    "), but unable in read-only mode",
                    head_txnid, meta.mm_txnid_a);
         return MDBX_WANNA_RECOVERY /* LY: could not recovery/rollback */;
+      }
+
+      if ((osal_bootid_value.qwords[0] | osal_bootid_value.qwords[1]) /* sys boot-id available */ &&
+          osal_bootid_value.qwords[0] == env->me_lck->li_bootid.qwords[0] &&
+          osal_bootid_value.qwords[1] == env->me_lck->li_bootid.qwords[1] /* and match */) {
+        env_notice("opening after a unclean shutdown, but boot-id is match, rollback not needed");
+        break;
       }
 
       const meta_t *const meta0 = metapage(env, 0);
@@ -1327,6 +1340,9 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
 
   const meta_t *head = meta_head(env);
   if (IS_SEIZE_EXCLUSIVE(seize)) {
+    /* set current bootid, even it not available */
+    env->me_lck->li_bootid = osal_bootid_value;
+
     /* re-check file size after mmap */
     uint64_t filesize_after_mmap;
     err = mdbx_filesize(env->me_dxb_fd, &filesize_after_mmap);

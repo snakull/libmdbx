@@ -447,6 +447,8 @@ typedef struct MDBX_lockinfo {
   /* Flags which databook was opened. */
   volatile uint32_t li_regime;
   /* uint64_t boundary -----------------------------------------------------*/
+  MDBX_id128_t li_bootid /* host's bootid when DB was changed last time */;
+  /* uint64_t boundary -----------------------------------------------------*/
   /* Treshold to force synchronous flush */
   volatile uint32_t li_autosync_threshold;
   volatile uint32_t li_reserved32 /* reserved */;
@@ -456,8 +458,8 @@ typedef struct MDBX_lockinfo {
   MDBX_CACHELINE_ALIGN_PAD(li_alignment_pad1, sizeof(uint64_t /* li_magic_and_version */) +
                                                   sizeof(uint32_t /* li_os_and_format */) +
                                                   sizeof(uint32_t /* li_regime */) +
+                                                  sizeof(MDBX_id128_t /* li_bootid */) +
                                                   sizeof(uint64_t /* li_autosync_threshold */));
-
 /*------------------------------------------------------------- cacheline */
 
 #ifdef MDBX_OSAL_LOCK
