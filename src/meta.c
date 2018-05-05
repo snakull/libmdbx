@@ -196,7 +196,6 @@ static page_t *__cold meta_model(const MDBX_env_t *env, page_t *model, unsigned 
   model->mp_pgno = num;
   model->mp_flags16 = P_META;
   model->mp_meta.mm_magic_and_version = MDBX_DATA_MAGIC;
-  // model->mp_meta.mm_reserved32 = 42;
 
   model->mp_meta.mm_dxb_geo.lower = bytes2pgno(env, env->me_dxb_geo.lower);
   model->mp_meta.mm_dxb_geo.upper = bytes2pgno(env, env->me_dxb_geo.upper);
@@ -214,13 +213,32 @@ static page_t *__cold meta_model(const MDBX_env_t *env, page_t *model, unsigned 
   mdbx_ensure(env, model->mp_meta.mm_dxb_geo.grow16 == bytes2pgno(env, env->me_dxb_geo.grow));
   mdbx_ensure(env, model->mp_meta.mm_dxb_geo.shrink16 == bytes2pgno(env, env->me_dxb_geo.shrink));
 
-  model->mp_meta.mm_psize32 = env->me_psize;
-  // model->mp_meta.mm_features16 = 42;
-  model->mp_meta.mm_db_flags16 = (uint16_t)(env->me_flags32 & (MDBX_DB_FLAGS | MDBX_AA_FLAGS));
-  model->mp_meta.mm_aas[MDBX_GACO_AAH].aa_root = P_INVALID;
-  model->mp_meta.mm_aas[MDBX_MAIN_AAH].aa_root = P_INVALID;
+  const txnid_t txnid = MIN_TXNID + num;
+  const MDBX_time_t now_timestamp = {0};
+  const uint16_t db_flags16 = (uint16_t)(env->me_flags32 & (MDBX_DB_FLAGS | MDBX_AA_FLAGS));
+  const uint16_t db_features16 = 0 /* TODO */;
+  const uint16_t main_keysize_if_fixed = 0 /* FIXME */;
 
-  meta_set_txnid(env, &model->mp_meta, MIN_TXNID + num);
+  aatree_t *const aa_gaco = &model->mp_meta.mm_aas[MDBX_GACO_AAH];
+  set_le16_aligned(&aa_gaco->aa_flags16, db_features16);
+  set_le32_aligned(&aa_gaco->aa_xsize32, env->me_psize);
+  set_le64_aligned(&aa_gaco->aa_modification_txnid, txnid);
+  set_le64_aligned(&aa_gaco->aa_modification_time.fixedpoint, now_timestamp.fixedpoint);
+  /* TODO: meta_gaco_reserved */
+  set_le32_aligned(&aa_gaco->aa_root, P_INVALID);
+  set_le64_aligned(&aa_gaco->aa_merkle, aa_checksum(env, aa_gaco));
+
+  aatree_t *const aa_main = &model->mp_meta.mm_aas[MDBX_MAIN_AAH];
+  set_le16_aligned(&aa_main->aa_flags16, db_flags16);
+  set_le32_aligned(&aa_main->aa_xsize32, main_keysize_if_fixed);
+  set_le64_aligned(&aa_main->aa_creation_txnid, txnid);
+  set_le64_aligned(&aa_main->aa_creation_time.fixedpoint, now_timestamp.fixedpoint);
+  set_le64_aligned(&aa_main->aa_modification_txnid, txnid);
+  set_le64_aligned(&aa_main->aa_modification_time.fixedpoint, now_timestamp.fixedpoint);
+  set_le32_aligned(&aa_main->aa_root, P_INVALID);
+  set_le64_aligned(&aa_main->aa_merkle, aa_checksum(env, aa_main));
+
+  meta_set_txnid(env, &model->mp_meta, txnid);
   model->mp_meta.mm_sign_checksum = meta_sign(&model->mp_meta);
   return (page_t *)((uint8_t *)model + env->me_psize);
 }

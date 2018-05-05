@@ -156,6 +156,7 @@ static inline void aa_txn2db(const MDBX_env_t *env, const aht_t *aht, aatree_t *
     set_le32_aligned(&dst->aa_xsize32, env->me_psize) /* set mm_psize32 at [MDBX_GACO_AAH].aa_xsize32 */;
     set_le64_aligned(&dst->aa_modification_txnid, aht->aa.modification_txnid);
     set_le64_aligned(&dst->aa_modification_time.fixedpoint, aht->aa.modification_time.fixedpoint);
+    /* TODO: meta_gaco_reserved */
   }
 
   STATIC_ASSERT(sizeof(pgno_t) == 4);
@@ -164,6 +165,7 @@ static inline void aa_txn2db(const MDBX_env_t *env, const aht_t *aht, aatree_t *
   set_le32_aligned(&dst->aa_leaf_pages, aht->aa.leaf_pages);
   set_le32_aligned(&dst->aa_overflow_pages, aht->aa.overflow_pages);
   /* } else {
+    STATIC_ASSERT(sizeof(pgno_t) == 8);
     set_le64_aligned(&dst->aa_root, aht->aa.root);
     set_le64_aligned(&dst->aa_branch_pages, aht->aa.branch_pages);
     set_le64_aligned(&dst->aa_leaf_pages, aht->aa.leaf_pages);

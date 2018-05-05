@@ -232,9 +232,14 @@ typedef struct aatree {
   /* uint64_t boundary -----------------------------------------------------*/
   MDBX_time_t aa_modification_time;
   /* uint64_t boundary -----------------------------------------------------*/
-  txnid_t aa_creation_txnid;
-  /* uint64_t boundary -------------------------------------------------*/
-  MDBX_time_t aa_creation_time;
+  union {
+    struct {
+      txnid_t aa_creation_txnid;
+      /* uint64_t boundary -------------------------------------------------*/
+      MDBX_time_t aa_creation_time;
+    };
+    uint64_t meta_gaco_reserved[2];
+  };
   /* uint64_t boundary -----------------------------------------------------*/
   checksum_t aa_merkle; /* Merkle tree checksum */
 } aatree_t;
