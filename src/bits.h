@@ -47,6 +47,9 @@
 #endif
 #pragma warning(disable : 4710) /* 'foo': function not inlined */
 #pragma warning(disable : 4711) /* function 'bar' selected for automatic inline expansion */
+#if _MSC_VER > 1913
+#   pragma warning(disable : 5045) /* Compiler will insert Spectre mitigation... */
+#endif
 #pragma warning(disable : 4702) /* unreachable code */
 #pragma warning(disable : 4127) /* conditional expression is constant */
 #pragma warning(disable : 4310) /* cast truncates constant value */
