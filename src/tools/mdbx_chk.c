@@ -784,7 +784,7 @@ int main(int argc, char *argv[]) {
         (open_flags & MDBX_RDONLY) ? "only" : "write");
   fflush(NULL);
 
-#if MDXB_DEBUG == 0
+#if MDBX_DEBUG == 0
   mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_ERROR);
 #elif MDBX_DEBUG == 1
   mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_NOTICE);

@@ -89,7 +89,7 @@ int main(int argc, char *argv[]) {
   char *prog = argv[0];
   char *envname;
   char *subname = NULL;
-  int alldbs = 0, envinfo = 0, envflags = 0, freinfo = 0, rdrinfo = 0;
+  int alldbs = 0, envinfo = 0, envflags = 0, gacoinfo = 0, rdrinfo = 0;
 
   if (argc < 2) {
     usage(prog);
@@ -98,7 +98,7 @@ int main(int argc, char *argv[]) {
   /* -a: print stat of main AA and all subAAs
    * -s: print stat of only the named subAA
    * -e: print env info
-   * -f: print freelist info
+   * -f: print gaco info
    * -r: print reader info
    * -n: use NOSUBDIR flag on env_open
    * -V: print version and exit
@@ -119,7 +119,7 @@ int main(int argc, char *argv[]) {
       envinfo++;
       break;
     case 'f':
-      freinfo++;
+      gacoinfo++;
       break;
     case 'n':
       /* silently ignore for compatibility (MDB_NOSUBDIR option) */
@@ -155,7 +155,7 @@ int main(int argc, char *argv[]) {
 
   envname = argv[optind];
 
-#if MDXB_DEBUG == 0
+#if MDBX_DEBUG == 0
   mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_ERROR);
 #elif MDBX_DEBUG == 1
   mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_NOTICE);
@@ -179,8 +179,14 @@ int main(int argc, char *argv[]) {
     goto env_close;
   }
 
-  if (envinfo) {
+  if (envinfo || gacoinfo) {
     (void)mdbx_info(env, &bk_info, sizeof(bk_info));
+  } else {
+    /* LY: zap warnings from gcc */
+    memset(&bk_info, 0, sizeof(bk_info));
+  }
+
+  if (envinfo) {
     printf("Databook Info\n");
     printf("  Pagesize: %u\n", bk_info.bi_pagesize);
     if (bk_info.bi_dxb_geo.lower != bk_info.bi_dxb_geo.upper) {
@@ -204,9 +210,6 @@ int main(int argc, char *argv[]) {
            bk_info.bi_latter_reader_txnid - bk_info.bi_recent_txnid);
     printf("  Max readers: %u\n", bk_info.bi_readers_max);
     printf("  Number of readers used: %u\n", bk_info.bi_readers_num);
-  } else {
-    /* LY: zap warnings from gcc */
-    memset(&bk_info, 0, sizeof(bk_info));
   }
 
   if (rdrinfo) {
@@ -230,7 +233,7 @@ int main(int argc, char *argv[]) {
         goto env_close;
       }
     }
-    if (!(subname || alldbs || freinfo))
+    if (!(subname || alldbs || gacoinfo))
       goto env_close;
   }
 
@@ -242,7 +245,7 @@ int main(int argc, char *argv[]) {
     goto env_close;
   }
 
-  if (freinfo) {
+  if (gacoinfo) {
     MDBX_iov_t key, data;
     pgno_t pages = 0, *iptr;
     pgno_t reclaimable = 0;
@@ -271,7 +274,7 @@ int main(int argc, char *argv[]) {
       if (envinfo && bk_info.bi_latter_reader_txnid > *(size_t *)key.iov_base)
         reclaimable += number;
 
-      if (freinfo > 1) {
+      if (gacoinfo > 1) {
         char *bad = "";
         pgno_t prev = MDBX_PNL_ASCENDING ? MIN_PAGENO : (pgno_t)bk_info.bi_dxb_last_pgno + 1;
         pgno_t span = 1;
@@ -286,7 +289,7 @@ int main(int argc, char *argv[]) {
         }
         printf("    Transaction %" PRIaTXN ", %" PRIaPGNO " pages, maxspan %" PRIaPGNO "%s\n",
                *(txnid_t *)key.iov_base, number, span, bad);
-        if (freinfo > 2) {
+        if (gacoinfo > 2) {
           for (unsigned i = 0; i < number; i += span) {
             const pgno_t pg = iptr[i];
             for (span = 1; i + span < number &&
