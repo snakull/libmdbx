@@ -33,8 +33,9 @@
 
 static const char *leafnode_type(node_t *n) {
   static char *const tp[2][2] = {{"", ": AA"}, {": sub-page", ": sub-AA"}};
-  return unlikely(n->node_flags8 & NODE_BIG) ? ": overflow page" : tp[F_ISSET(n->node_flags8, NODE_DUP)]
-                                                                     [F_ISSET(n->node_flags8, NODE_SUBTREE)];
+  return unlikely(n->node_flags8 & NODE_BIG)
+             ? ": overflow page"
+             : tp[F_ISSET(n->node_flags8, NODE_DUP)][F_ISSET(n->node_flags8, NODE_SUBTREE)];
 }
 
 /* Display all the keys in the page. */
@@ -184,8 +185,9 @@ static int audit(MDBX_txn_t *txn) {
     }
   }
   if (freecount + count + MDBX_NUM_METAS != txn->mt_next_pgno) {
-    log_error(MDBX_LOG_AUDIT, "audit: %" PRIaTXN " gaco: %" PRIu64 " count: %" PRIu64 " total: %" PRIu64
-                              " next_pgno: %" PRIaPGNO "\n",
+    log_error(MDBX_LOG_AUDIT,
+              "audit: %" PRIaTXN " gaco: %" PRIu64 " count: %" PRIu64 " total: %" PRIu64
+              " next_pgno: %" PRIaPGNO "\n",
               txn->mt_txnid, freecount, count + MDBX_NUM_METAS, freecount + count + MDBX_NUM_METAS,
               txn->mt_next_pgno);
     return MDBX_SIGN;

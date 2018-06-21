@@ -58,8 +58,9 @@ static inline BOOL lck_unlock(MDBX_filehandle_t fd, uint64_t offset, size_t byte
 
 static inline MDBX_error_t lck_exclusive(MDBX_filehandle_t fd, const MDBX_flags_t flags, uint64_t offset,
                                          size_t bytes) {
-  return lck_lock(fd, (flags & MDBX_NONBLOCK) ? LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY
-                                              : LOCKFILE_EXCLUSIVE_LOCK,
+  return lck_lock(fd,
+                  (flags & MDBX_NONBLOCK) ? LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY
+                                          : LOCKFILE_EXCLUSIVE_LOCK,
                   offset, bytes)
              ? MDBX_SUCCESS
              : GetLastError();
@@ -490,12 +491,12 @@ MDBX_error_t mdbx_lck_upgrade(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLO
   assert(env->me_dxb_fd != INVALID_HANDLE_VALUE);
   assert(env->me_lck_fd != INVALID_HANDLE_VALUE);
   /* lck_upgrade MUST returns:
-  *   MDBX_SUCCESS - exclusive lock acquired,
-  *                  NO other processes use DB.
-  *   MDBX_BUSY    - exclusive lock NOT acquired, other processes use DB,
-  *                  but not known readers, writers or mixed.
-  *   MDBX_SIGN    - exclusive lock NOT acquired and SURE known that
-  *                  other writer(s) is present, i.e. db-sync not required on close */
+   *   MDBX_SUCCESS - exclusive lock acquired,
+   *                  NO other processes use DB.
+   *   MDBX_BUSY    - exclusive lock NOT acquired, other processes use DB,
+   *                  but not known readers, writers or mixed.
+   *   MDBX_SIGN    - exclusive lock NOT acquired and SURE known that
+   *                  other writer(s) is present, i.e. db-sync not required on close */
 
   MDBX_error_t err = lck_shared2locked(env, flags);
   if (err != MDBX_SUCCESS) {

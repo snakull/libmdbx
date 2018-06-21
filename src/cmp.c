@@ -70,7 +70,7 @@ static ptrdiff_t __hot cmp_int_aligned_to2(const MDBX_iov_t a, const MDBX_iov_t 
     pb = (const uint16_t *)((char *)b.iov_base + a.iov_len);
     do {
       diff = *--pa - *--pb;
-#else /* __BYTE_ORDER__ */
+#else  /* __BYTE_ORDER__ */
     end = (const uint16_t *)((char *)a.iov_base + a.iov_len);
     pa = (const uint16_t *)a.iov_base;
     pb = (const uint16_t *)b.iov_base;

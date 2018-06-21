@@ -85,7 +85,9 @@ MDBX_INTERNAL void mdbx_dbglog(const debug_event_t event, const char *function, 
 #endif
     ;
 
-typedef struct MDBX_debug_cookie { void *ptr; } MDBX_debug_cookie_t;
+typedef struct MDBX_debug_cookie {
+  void *ptr;
+} MDBX_debug_cookie_t;
 
 MDBX_INTERNAL MDBX_debug_cookie_t mdbx_dbglog_begin(const debug_event_t event, const char *function);
 MDBX_INTERNAL void mdbx_dbglog_continue(MDBX_debug_cookie_t cookie, const char *fmt, ...)

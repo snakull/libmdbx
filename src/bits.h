@@ -178,19 +178,19 @@ typedef uint64_t checksum_t;
 #define MEGABYTE ((size_t)1 << 20)
 
 /* The maximum size of a associative array page.
-*
-* It is 64K, but value - PAGEHDRSZ must fit in page_t.mp_upper.
-*
-* MDBX will use associative array pages < OS pages if needed.
-* That causes more I/O in write transactions: The OS must
-* know (read) the whole page before writing a partial page.
-*
-* Note that we don't currently support Huge pages. On Linux,
-* regular data files cannot use Huge pages, and in general
-* Huge pages aren't actually pageable. We rely on the OS
-* demand-pager to read our data and page it out when memory
-* pressure from other processes is high. So until OSs have
-* actual paging support for Huge pages, they're not viable. */
+ *
+ * It is 64K, but value - PAGEHDRSZ must fit in page_t.mp_upper.
+ *
+ * MDBX will use associative array pages < OS pages if needed.
+ * That causes more I/O in write transactions: The OS must
+ * know (read) the whole page before writing a partial page.
+ *
+ * Note that we don't currently support Huge pages. On Linux,
+ * regular data files cannot use Huge pages, and in general
+ * Huge pages aren't actually pageable. We rely on the OS
+ * demand-pager to read our data and page it out when memory
+ * pressure from other processes is high. So until OSs have
+ * actual paging support for Huge pages, they're not viable. */
 #define MAX_PAGESIZE 0x10000u
 #define MIN_PAGESIZE 512u
 
@@ -289,7 +289,7 @@ typedef struct meta {
 /* Any persistent databook flags, see MDBX_aa_flags_t */
 #define mm_db_flags16 mm_aas[MDBX_MAIN_AAH].aa_flags16
   MDBX_canary_t mm_canary;
-/* uint64_t boundary -------------------------------------------------------*/
+  /* uint64_t boundary -------------------------------------------------------*/
 
 #define MDBX_DATASIGN_NONE 0u
 #define MDBX_DATASIGN_WEAK 1u
@@ -340,7 +340,7 @@ typedef enum mp_flags {
 typedef struct page {
   union {
     struct page *mp_next;     /* for in-memory list of freed pages,
-                                * must be first field, see NEXT_LOOSE_PAGE */
+                               * must be first field, see NEXT_LOOSE_PAGE */
     checksum_t page_checksum; /* checksum of page content or a txnid during
                                * which the page has been updated */
   };
@@ -465,7 +465,7 @@ typedef struct MDBX_lockinfo {
                                                   sizeof(uint32_t /* li_regime */) +
                                                   sizeof(MDBX_id128_t /* li_bootid */) +
                                                   sizeof(uint64_t /* li_autosync_threshold */));
-/*------------------------------------------------------------- cacheline */
+  /*------------------------------------------------------------- cacheline */
 
 #ifdef MDBX_OSAL_LOCK
   union {
@@ -572,7 +572,7 @@ typedef MDBX_ID2 *MDBX_ID2L;
  * limiting factors: sizeof(pgno_t), thread stack size */
 #define MDBX_PNL_LOGN                                                                                         \
   16 /* MDBX_PNL_DB_SIZE = 2^16, MDBX_PNL_UM_SIZE = 2^17                                                      \
-        */
+      */
 #define MDBX_PNL_DB_SIZE (1 << MDBX_PNL_LOGN)
 #define MDBX_PNL_UM_SIZE (1 << (MDBX_PNL_LOGN + 1))
 

@@ -723,9 +723,8 @@ MDBX_INTERNAL void osal_ctor(void) {
   // BootIdentifier from SYSTEM_BOOT_ENVIRONMENT_INFORMATION
   status = NtQuerySystemInformation(0x5A /* SystemBootEnvironmentInformation */, &buffer.SysBootEnvInfo,
                                     sizeof(buffer.SysBootEnvInfo), &len);
-  if (NT_SUCCESS(status) &&
-      len >= offsetof(union Buffer, SysBootEnvInfo.BootIdentifier) +
-                 sizeof(buffer.SysBootEnvInfo.BootIdentifier)) {
+  if (NT_SUCCESS(status) && len >= offsetof(union Buffer, SysBootEnvInfo.BootIdentifier) +
+                                       sizeof(buffer.SysBootEnvInfo.BootIdentifier)) {
     t1ha2_update(&hash, &buffer.SysBootEnvInfo.BootIdentifier, sizeof(buffer.SysBootEnvInfo.BootIdentifier));
     got_bootid = true;
   }
@@ -733,9 +732,8 @@ MDBX_INTERNAL void osal_ctor(void) {
   // BootTime from SYSTEM_TIMEOFDAY_INFORMATION
   status = NtQuerySystemInformation(0x03 /* SystemTmeOfDayInformation */, &buffer.SysTimeOfDayInfo,
                                     sizeof(buffer.SysTimeOfDayInfo), &len);
-  if (NT_SUCCESS(status) &&
-      len >= offsetof(union Buffer, SysTimeOfDayInfoHacked.BootTime) +
-                 sizeof(buffer.SysTimeOfDayInfoHacked.BootTime)) {
+  if (NT_SUCCESS(status) && len >= offsetof(union Buffer, SysTimeOfDayInfoHacked.BootTime) +
+                                       sizeof(buffer.SysTimeOfDayInfoHacked.BootTime)) {
     t1ha2_update(&hash, &buffer.SysTimeOfDayInfoHacked.BootTime,
                  sizeof(buffer.SysTimeOfDayInfoHacked.BootTime));
     got_timesalt = true;
@@ -898,7 +896,8 @@ int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t size, size_t limit) {
   LARGE_INTEGER SectionSize;
   SectionSize.QuadPart = size;
   rc = NtCreateSection(&map->section,
-                       /* DesiredAccess */ (flags & MDBX_WRITEMAP)
+                       /* DesiredAccess */
+                           (flags & MDBX_WRITEMAP)
                            ? SECTION_QUERY | SECTION_MAP_READ | SECTION_EXTEND_SIZE | SECTION_MAP_WRITE
                            : SECTION_QUERY | SECTION_MAP_READ | SECTION_EXTEND_SIZE,
                        /* ObjectAttributes */ NULL, /* MaximumSize (InitialSize) */ &SectionSize,
@@ -997,10 +996,10 @@ int mdbx_mresize(int flags, mdbx_mmap_t *map, size_t size, size_t limit) {
   }
 
   /* Windows unable:
-    *  - shrink a mapped file;
-    *  - change size of mapped view;
-    *  - extend read-only mapping;
-    * Therefore we should unmap/map entire section. */
+   *  - shrink a mapped file;
+   *  - change size of mapped view;
+   *  - extend read-only mapping;
+   * Therefore we should unmap/map entire section. */
   status = NtUnmapViewOfSection(GetCurrentProcess(), map->address);
   if (!NT_SUCCESS(status))
     return ntstatus2errcode(status);
@@ -1049,7 +1048,8 @@ retry_file_and_section:
 
   SectionSize.QuadPart = size;
   status = NtCreateSection(&map->section,
-                           /* DesiredAccess */ (flags & MDBX_WRITEMAP)
+                           /* DesiredAccess */
+                               (flags & MDBX_WRITEMAP)
                                ? SECTION_QUERY | SECTION_MAP_READ | SECTION_EXTEND_SIZE | SECTION_MAP_WRITE
                                : SECTION_QUERY | SECTION_MAP_READ | SECTION_EXTEND_SIZE,
                            /* ObjectAttributes */ NULL,

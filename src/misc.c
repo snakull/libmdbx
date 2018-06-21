@@ -19,11 +19,15 @@
 
 static const char *__mdbx_strerr(int errnum) {
   static const char *const tbl[MDBX_LAST_ERRCODE - MDBX_KEYEXIST] = {
-      "MDBX_KEYEXIST: Key/data pair already exists", "MDBX_NOTFOUND: No matching key/data pair found",
-      "MDBX_PAGE_NOTFOUND: Requested page not found", "MDBX_CORRUPTED: Databook is corrupted",
+      "MDBX_KEYEXIST: Key/data pair already exists",
+      "MDBX_NOTFOUND: No matching key/data pair found",
+      "MDBX_PAGE_NOTFOUND: Requested page not found",
+      "MDBX_CORRUPTED: Databook is corrupted",
       "MDBX_PANIC: Update of meta page failed or databook had fatal error",
-      "MDBX_VERSION_MISMATCH: Databook version mismatch libmdbx", "MDBX_INVALID: File is not an MDBX file",
-      "MDBX_MAP_FULL: Databook mapsize limit reached", "MDBX_DBS_FULL: Too may AAH (maxdbs reached)",
+      "MDBX_VERSION_MISMATCH: Databook version mismatch libmdbx",
+      "MDBX_INVALID: File is not an MDBX file",
+      "MDBX_MAP_FULL: Databook mapsize limit reached",
+      "MDBX_DBS_FULL: Too may AAH (maxdbs reached)",
       "MDBX_READERS_FULL: Too many readers (maxreaders reached)",
       "MDBX_TXN_FULL: Transaction has too many dirty pages - transaction too "
       "big",

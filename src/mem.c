@@ -77,8 +77,8 @@ void __weak mdbx_aligned_free(void *ptr, MDBX_env_t *env) {
 #if defined(__e2k__) && !__GLIBC_PREREQ(2, 24)
 int __hot mdbx_e2k_memcmp_bug_workaround(const void *s1, const void *s2, size_t n) {
   if (unlikely(n > 42
-               /* LY: align followed access if reasonable possible */ &&
-               (((uintptr_t)s1) & 7) != 0 && (((uintptr_t)s1) & 7) == (((uintptr_t)s2) & 7))) {
+               /* LY: align followed access if reasonable possible */
+               && (((uintptr_t)s1) & 7) != 0 && (((uintptr_t)s1) & 7) == (((uintptr_t)s2) & 7))) {
     if (((uintptr_t)s1) & 1) {
       const int diff = *(uint8_t *)s1 - *(uint8_t *)s2;
       if (diff)

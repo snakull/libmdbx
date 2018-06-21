@@ -76,8 +76,8 @@ static void mdbx_logger(MDBX_debuglog_subsystem_t subsys, MDBX_debuglog_level_t 
   if (level >= MDBX_LOGLEVEL_FATAL)
     log_error("mdbx: assertion failure: %s, %d", function, line);
 
-  if (logging::output((logging::loglevel)level, strncmp(function, "mdbx_", 5) == 0 ? "%s: " : "mdbx: %s: ",
-                      function))
+  if (logging::output((logging::loglevel)level,
+                      strncmp(function, "mdbx_", 5) == 0 ? "%s: " : "mdbx: %s: ", function))
     logging::feed(msg, args);
   if (level >= MDBX_LOGLEVEL_FATAL)
     abort();

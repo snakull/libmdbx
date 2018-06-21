@@ -478,10 +478,10 @@ typedef struct MDBX_debug_result {
 LIBMDBX_API MDBX_debug_result_t mdbx_set_debug(MDBX_debugbits_t bits, MDBX_debuglog_callback_t *logger);
 
 /* A callback function for most MDBX assertion failures.
-*
-* [in] env  An databook handle returned by mdbx_init(),
-*           or NULL in case assertion at global scope.
-* [in] msg  The assertion message, not including newline. */
+ *
+ * [in] env  An databook handle returned by mdbx_init(),
+ *           or NULL in case assertion at global scope.
+ * [in] msg  The assertion message, not including newline. */
 typedef void MDBX_assert_callback_t(const MDBX_env_t *env, const char *msg, const char *function,
                                     unsigned line);
 /* FIXME: Describe */
@@ -566,7 +566,8 @@ typedef enum MDBX_flags {
   /*--------------------------------------------------- Associative Arrays */
 
   MDBX_INTEGERKEY /* numeric keys in native byte order, either uint32_t or uint64_t.
-                   * The keys must all be of the same size. */ = 1u << 2,
+                   * The keys must all be of the same size. */
+  = 1u << 2,
   MDBX_REVERSEKEY /* use reverse string keys */ = 1u << 0,
 
   MDBX_DUPSORT /* use sorted duplicates */ = 1u << 1,
@@ -1421,7 +1422,8 @@ LIBMDBX_API MDBX_numeric_result_t mdbx_readers_check(MDBX_env_t *env);
 /* Copy Flags */
 typedef enum MDBX_copy_flags {
   MDBX_CP_COMPACT = 1 /* Compacting copy: Omit free space from copy,
-                       * and renumber all pages sequentially. */,
+                       * and renumber all pages sequentially. */
+  ,
   MDBX_CP_NOSUBDIR = 2 /* no-subdir mode for destination */,
 } MDBX_copy_flags_t;
 MDBX_ENUM_FLAG_OPERATORS(MDBX_copy_flags)
@@ -1505,7 +1507,7 @@ LIBMDBX_API MDBX_error_t mdbx_bk_copy2fd(MDBX_env_t *env, MDBX_filehandle_t fd, 
  * Returns A non-zero error value on failure and 0 on success, some
  * possible errors are:
  *  - MDBX_PANIC         - a fatal error occurred earlier and the databook
-  *                        must be shut down.
+ *                        must be shut down.
  *  - MDBX_MAP_RESIZED   - another process wrote data beyond this MDBX_env_t's
  *                         mapsize and this databook's map must be resized
  *                         as well. See mdbx_set_mapsize().
@@ -1636,7 +1638,9 @@ LIBMDBX_API MDBX_error_t mdbx_txn_renew(MDBX_txn_t *txn);
 LIBMDBX_API MDBX_numeric_result_t mdbx_txn_lag(MDBX_txn_t *txn, unsigned *alloc_ratio);
 
 /* FIXME: Describe */
-typedef struct MDBX_canary { uint64_t x, y, z, v; } MDBX_canary_t;
+typedef struct MDBX_canary {
+  uint64_t x, y, z, v;
+} MDBX_canary_t;
 
 /* FIXME: Describe */
 LIBMDBX_API MDBX_error_t mdbx_canary_put(MDBX_txn_t *txn, const MDBX_canary_t *canary);
@@ -2076,33 +2080,40 @@ LIBMDBX_API MDBX_aah_result_t mdbx_cursor_aah(const MDBX_cursor_t *cursor);
 typedef enum MDBX_cursor_op {
   MDBX_FIRST /* Position at first key/data item */,
   MDBX_FIRST_DUP /* MDBX_DUPSORT-only: Position at first data item
-                       * of current key. */,
+                  * of current key. */
+  ,
   MDBX_GET_BOTH /* MDBX_DUPSORT-only: Position at key/data pair. */,
   MDBX_GET_BOTH_RANGE /* MDBX_DUPSORT-only: position at key, nearest data. */,
   MDBX_GET_CURRENT /* Return key/data at current cursor position */,
   MDBX_GET_MULTIPLE /* MDBX_DUPFIXED-only: Return key and up to a page of
-                       * duplicate data items from current cursor position.
-                       * Move cursor to prepare for MDBX_NEXT_MULTIPLE.*/,
+                     * duplicate data items from current cursor position.
+                     * Move cursor to prepare for MDBX_NEXT_MULTIPLE.*/
+  ,
   MDBX_LAST /* Position at last key/data item */,
   MDBX_LAST_DUP /* MDBX_DUPSORT-only: Position at last data item
-                       * of current key. */,
+                 * of current key. */
+  ,
   MDBX_NEXT /* Position at next data item */,
   MDBX_NEXT_DUP /* MDBX_DUPSORT-only: Position at next data item
-                       * of current key. */,
+                 * of current key. */
+  ,
   MDBX_NEXT_MULTIPLE /* MDBX_DUPFIXED-only: Return key and up to a page of
-                       * duplicate data items from next cursor position.
-                       * Move cursor to prepare for MDBX_NEXT_MULTIPLE. */,
+                      * duplicate data items from next cursor position.
+                      * Move cursor to prepare for MDBX_NEXT_MULTIPLE. */
+  ,
   MDBX_NEXT_NODUP /* Position at first data item of next key */,
   MDBX_PREV /* Position at previous data item */,
   MDBX_PREV_DUP /* MDBX_DUPSORT-only: Position at previous data item
-                       * of current key. */,
+                 * of current key. */
+  ,
   MDBX_PREV_NODUP /* Position at last data item of previous key */,
   MDBX_SET /* Position at specified key */,
   MDBX_SET_KEY /* Position at specified key, return both key and data */,
   MDBX_SET_RANGE /* Position at first key greater than or equal to
-                       * specified key. */,
+                  * specified key. */
+  ,
   MDBX_PREV_MULTIPLE /* MDBX_DUPFIXED-only: Position at previous page and
-                     * return key and up to a page of duplicate data items. */
+                      * return key and up to a page of duplicate data items. */
 } MDBX_cursor_op_t;
 
 /* Retrieve by cursor.

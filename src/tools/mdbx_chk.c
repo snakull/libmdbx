@@ -546,15 +546,16 @@ bailout:
 }
 
 static void usage(char *prog) {
-  fprintf(stderr, "usage: %s dbpath [-V] [-v] [-n] [-q] [-w] [-c] [-d] [-s subdb]\n"
-                  "  -V\t\tshow version\n"
-                  "  -v\t\tmore verbose, could be used multiple times\n"
-                  "  -n\t\tNOSUBDIR mode for open\n"
-                  "  -q\t\tbe quiet\n"
-                  "  -w\t\tlock databook for writing while checking\n"
-                  "  -d\t\tdisable page-by-page traversal of b-tree\n"
-                  "  -s subdb\tprocess a specific subdatabase only\n"
-                  "  -c\t\tforce cooperative mode (don't try exclusive)\n",
+  fprintf(stderr,
+          "usage: %s dbpath [-V] [-v] [-n] [-q] [-w] [-c] [-d] [-s subdb]\n"
+          "  -V\t\tshow version\n"
+          "  -v\t\tmore verbose, could be used multiple times\n"
+          "  -n\t\tNOSUBDIR mode for open\n"
+          "  -q\t\tbe quiet\n"
+          "  -w\t\tlock databook for writing while checking\n"
+          "  -d\t\tdisable page-by-page traversal of b-tree\n"
+          "  -s subdb\tprocess a specific subdatabase only\n"
+          "  -c\t\tforce cooperative mode (don't try exclusive)\n",
           prog);
   exit(EXIT_INTERRUPTED);
 }

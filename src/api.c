@@ -917,9 +917,8 @@ MDBX_error_t mdbx_replace(MDBX_txn_t *txn, MDBX_aah_t aah, MDBX_iov_t *key, MDBX
   if (unlikely(new_data == nullptr && !(flags & MDBX_IUD_CURRENT)))
     return MDBX_EINVAL;
 
-  if (unlikely(flags &
-               ~(MDBX_IUD_NOOVERWRITE | MDBX_IUD_NODUP | MDBX_IUD_RESERVE | MDBX_IUD_APPEND |
-                 MDBX_IUD_APPENDDUP | MDBX_IUD_CURRENT)))
+  if (unlikely(flags & ~(MDBX_IUD_NOOVERWRITE | MDBX_IUD_NODUP | MDBX_IUD_RESERVE | MDBX_IUD_APPEND |
+                         MDBX_IUD_APPENDDUP | MDBX_IUD_CURRENT)))
     return MDBX_EINVAL;
 
   MDBX_error_t err = validate_txn_rw(txn);

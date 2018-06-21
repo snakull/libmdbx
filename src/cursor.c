@@ -738,7 +738,7 @@ static int page_get(MDBX_txn_t *const txn, pgno_t pgno, page_t **ret, int *lvl) 
 
 mapped:
   p = pgno2page(env, pgno);
-/* TODO: check p->page_checksum here */
+  /* TODO: check p->page_checksum here */
 
 done:
   *ret = p;
