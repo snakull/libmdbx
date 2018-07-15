@@ -834,8 +834,6 @@ LIBMDBX_API MDBX_error_t mdbx_set_geometry(MDBX_env_t *env, intptr_t size_lower,
   if (unlikely(env->me_flags32 & MDBX_ENV_TAINTED))
     return MDBX_PANIC;
 
-  const bool outside_txn = ((env->me_flags32 & MDBX_EXCLUSIVE) == 0 &&
-                            (!env->me_wpa_txn || env->me_wpa_txn->mt_owner != mdbx_thread_self()));
   bool need_unlock = false;
   int rc = MDBX_PROBLEM;
 
@@ -844,6 +842,8 @@ LIBMDBX_API MDBX_error_t mdbx_set_geometry(MDBX_env_t *env, intptr_t size_lower,
     if (!env->me_lck || (env->me_flags32 & MDBX_RDONLY))
       return MDBX_EACCESS;
 
+    const bool outside_txn = ((env->me_flags32 & MDBX_EXCLUSIVE) == 0 &&
+                              (!env->me_wpa_txn || env->me_wpa_txn->mt_owner != mdbx_thread_self()));
     if (outside_txn) {
       int err = lck_writer_acquire(env, 0);
       if (unlikely(err != MDBX_SUCCESS))
@@ -886,9 +886,6 @@ LIBMDBX_API MDBX_error_t mdbx_set_geometry(MDBX_env_t *env, intptr_t size_lower,
 #endif /* Windows */
   } else {
     /* env NOT yet mapped */
-    if (unlikely(!outside_txn))
-      return MDBX_PANIC;
-
     if (pagesize < 0) {
       pagesize = osal_syspagesize;
       if ((uintptr_t)pagesize > MAX_PAGESIZE)
