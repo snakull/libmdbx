@@ -308,11 +308,15 @@ MDBX_error_t mdbx_abort(MDBX_txn_t *txn) {
 }
 
 /* Read the databook header before mapping it into memory. */
-static int __cold mdbx_read_header(MDBX_env_t *env, meta_t *meta) {
+static int __cold mdbx_read_header(MDBX_env_t *env, meta_t *meta, uint64_t *filesize) {
   assert(offsetof(page_t, mp_meta) == mdbx_roundup2(PAGEHDRSZ, 8));
+  int rc = mdbx_filesize(env->me_dxb_fd, filesize);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
   memset(meta, 0, sizeof(meta_t));
   meta->mm_sign_checksum = MDBX_DATASIGN_WEAK;
-  int rc = MDBX_CORRUPTED;
+  rc = MDBX_CORRUPTED;
 
   /* Read twice all meta pages so we can find the latest one. */
   unsigned loop_limit = MDBX_NUM_METAS * 2;
@@ -432,6 +436,15 @@ static int __cold mdbx_read_header(MDBX_env_t *env, meta_t *meta) {
       continue;
     }
 
+    /* LY: check filesize & used_bytes */
+    const uint64_t used_bytes = page.mp_meta.mm_dxb_geo.next * (uint64_t)page.mp_meta.mm_psize32;
+    if (used_bytes > *filesize) {
+      mdbx_notice("meta[%u] used-bytes (%" PRIu64 ") beyond filesize (%" PRIu64 "), skip it", meta_number,
+                  used_bytes, *filesize);
+      rc = MDBX_CORRUPTED;
+      continue;
+    }
+
     /* LY: check mapsize limits */
     const uint64_t mapsize_min = page.mp_meta.mm_dxb_geo.lower * (uint64_t)page.mp_meta.mm_psize32;
     STATIC_ASSERT(MAX_MAPSIZE < SSIZE_MAX - MAX_PAGESIZE);
@@ -445,7 +458,6 @@ static int __cold mdbx_read_header(MDBX_env_t *env, meta_t *meta) {
     const uint64_t mapsize_max = page.mp_meta.mm_dxb_geo.upper * (uint64_t)page.mp_meta.mm_psize32;
     if (mapsize_max > MAX_MAPSIZE ||
         MAX_PAGENO < mdbx_roundup2((size_t)mapsize_max, osal_syspagesize) / (size_t)page.mp_meta.mm_psize32) {
-      const uint64_t used_bytes = page.mp_meta.mm_dxb_geo.next * (uint64_t)page.mp_meta.mm_psize32;
       if (page.mp_meta.mm_dxb_geo.next - 1 > MAX_PAGENO || used_bytes > MAX_MAPSIZE) {
         meta_notice("meta[%u] has too large max-mapsize (%" PRIu64 "), skip it", meta_number, mapsize_max);
         rc = MDBX_TOO_LARGE;
@@ -1093,9 +1105,10 @@ MDBX_error_t __cold mdbx_get_maxreaders(MDBX_env_t *env, unsigned *readers) {
 
 /* Further setup required for opening an MDBX databook */
 static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t seize) {
+  uint64_t filesize_before_mmap;
   meta_t meta;
   int rc = MDBX_SUCCESS;
-  int err = mdbx_read_header(env, &meta);
+  int err = mdbx_read_header(env, &meta, &filesize_before_mmap);
   if (unlikely(err != MDBX_SUCCESS)) {
     if (seize != MDBX_SEIZE_EXCLUSIVE_FIRST || err != MDBX_ENODATA || (env->me_flags32 & MDBX_RDONLY) != 0)
       return err;
@@ -1120,12 +1133,12 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 
-    err = mdbx_ftruncate(env->me_dxb_fd, env->me_dxb_geo.now);
+    err = mdbx_ftruncate(env->me_dxb_fd, filesize_before_mmap = env->me_dxb_geo.now);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 
 #ifndef NDEBUG /* just for checking */
-    err = mdbx_read_header(env, &meta);
+    err = mdbx_read_header(env, &meta, &filesize_before_mmap);
     if (unlikely(err != MDBX_SUCCESS))
       return err;
 #endif
@@ -1203,11 +1216,6 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
     env->me_dxb_geo.grow = pgno2bytes(env, meta.mm_dxb_geo.grow16);
     env->me_dxb_geo.shrink = pgno2bytes(env, meta.mm_dxb_geo.shrink16);
   }
-
-  uint64_t filesize_before_mmap;
-  err = mdbx_filesize(env->me_dxb_fd, &filesize_before_mmap);
-  if (unlikely(err != MDBX_SUCCESS))
-    return err;
 
   const size_t expected_bytes = mdbx_roundup2(pgno2bytes(env, meta.mm_dxb_geo.now), osal_syspagesize);
   mdbx_ensure(env, expected_bytes >= used_bytes);

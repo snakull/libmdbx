@@ -132,7 +132,7 @@ static int __must_check_result page_merge(cursor_t *csrc, cursor_t *cdst);
 static int __must_check_result page_split(cursor_t *mc, MDBX_iov_t *newkey, MDBX_iov_t *newdata,
                                           pgno_t newpgno, unsigned nflags);
 
-static int __must_check_result mdbx_read_header(MDBX_env_t *env, meta_t *meta);
+static int __must_check_result mdbx_read_header(MDBX_env_t *env, meta_t *meta, uint64_t *filesize);
 static void env_destroy(MDBX_env_t *env);
 static int env_shutdown(MDBX_env_t *env, MDBX_shutdown_mode_t mode);
 
@@ -180,7 +180,6 @@ static int txn_renew(MDBX_txn_t *txn, unsigned flags);
 static int txn_end(MDBX_txn_t *txn, unsigned mode);
 static int prep_backlog(MDBX_txn_t *txn, cursor_t *mc);
 static MDBX_error_t freelist_save(MDBX_txn_t *txn);
-static int mdbx_read_header(MDBX_env_t *env, meta_t *meta);
 static page_t *meta_model(const MDBX_env_t *env, page_t *model, unsigned num);
 static page_t *init_metas(const MDBX_env_t *env, void *buffer);
 static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pending);
