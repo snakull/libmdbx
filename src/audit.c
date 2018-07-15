@@ -143,53 +143,68 @@ __maybe_unused static void cursor_check(MDBX_cursor_t *mc) {
 static int audit(MDBX_txn_t *txn) {
   MDBX_cursor_t mc;
   int rc = cursor_init(&mc, txn, aht_gaco(txn));
-  if (unlikely(rc != MDBX_SUCCESS))
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    audit_error("%s failed %d\n", "cursor_init(GACO)", rc);
     return rc;
+  }
 
-  MDBX_iov_t key, data;
-  uint64_t freecount = 0;
-  while ((rc = mdbx_cursor_get(&mc, &key, &data, MDBX_NEXT)) == 0)
-    freecount += *(pgno_t *)data.iov_base;
-  if (unlikely(rc != MDBX_SUCCESS))
-    return rc;
-
-  uint64_t count = 0;
-  aht_t *aht = txn->txn_aht_array;
-  for (MDBX_aah_t aah = 0; aah < txn->txn_ah_num; ++aah, ++aht) {
-    if (!(aht->ah.state8 & MDBX_AAH_VALID))
-      continue;
-    rc = cursor_init(&mc, txn, aht);
-    if (unlikely(rc != MDBX_SUCCESS))
+  uint64_t caco = 0, tree = 0;
+  aht_t *gaco_aht = aht_gaco(txn);
+  if (gaco_aht->aa.root != P_INVALID) {
+    MDBX_iov_t key, data;
+    while ((rc = mdbx_cursor_get(&mc, &key, &data, MDBX_NEXT)) == MDBX_SUCCESS)
+      caco += *(pgno_t *)data.iov_base;
+    if (unlikely(rc != MDBX_NOTFOUND)) {
+      audit_error("%s failed %d\n", "mdbx_cursor_get(GACO, MDBX_NEXT)", rc);
       return rc;
-    if (aht->aa.root == P_INVALID)
-      continue;
-    count += aht->aa.branch_pages + aht->aa.leaf_pages + aht->aa.overflow_pages;
-    if (aht->aa.flags16 & MDBX_DUPSORT) {
-      rc = page_search(&mc.primal, nullptr, MDBX_PS_FIRST);
-      if (unlikely(rc != MDBX_SUCCESS))
-        return rc;
-      while (true) {
-        page_t *mp = mc.primal.mc_pg[mc.primal.mc_top];
-        for (unsigned n = 0; n < page_numkeys(mp); n++) {
-          node_t *leaf = node_ptr(mp, n);
-          if (leaf->node_flags8 & NODE_SUBTREE) {
-            aatree_t *entry = NODEDATA(leaf);
-            count += get_le64_aligned2(&entry->aa_branch_pages) + get_le64_aligned2(&entry->aa_leaf_pages) +
-                     get_le64_aligned2(&entry->aa_overflow_pages);
+    }
+    tree = gaco_aht->aa.branch_pages + gaco_aht->aa.leaf_pages + gaco_aht->aa.overflow_pages;
+  }
+
+  aht_t *main_aht = aht_main(txn);
+  if (main_aht->aa.root != P_INVALID) {
+    tree += main_aht->aa.branch_pages + main_aht->aa.leaf_pages + main_aht->aa.overflow_pages;
+
+    rc = cursor_init(&mc, txn, main_aht);
+    if (unlikely(rc != MDBX_SUCCESS)) {
+      audit_error("%s failed %d\n", "cursor_init(MAIN)", rc);
+      return rc;
+    }
+
+    rc = page_search(&mc.primal, nullptr, MDBX_PS_FIRST);
+    if (unlikely(rc != MDBX_SUCCESS)) {
+      audit_error("%s failed %d\n", "page_search(MDBX_PS_FIRST)", rc);
+      return rc;
+    }
+
+    do {
+      page_t *mp = mc.primal.mc_pg[mc.primal.mc_top];
+      for (unsigned n = 0; n < page_numkeys(mp); n++) {
+        node_t *leaf = node_ptr(mp, n);
+        if (leaf->node_flags8 == NODE_SUBTREE) {
+          aatree_t *entry = NODEDATA(leaf);
+          if (sizeof(pgno_t) == 4) {
+            tree += get_le32_unaligned(&entry->aa_branch_pages) + get_le32_unaligned(&entry->aa_leaf_pages) +
+                    get_le32_unaligned(&entry->aa_overflow_pages);
+          } else {
+            tree += get_le64_unaligned(&entry->aa_branch_pages) + get_le64_unaligned(&entry->aa_leaf_pages) +
+                    get_le64_unaligned(&entry->aa_overflow_pages);
           }
         }
-        rc = cursor_sibling(&mc.primal, true);
-        if (unlikely(rc != MDBX_SUCCESS))
-          return rc;
       }
+      rc = cursor_sibling(&mc.primal, true);
+    } while (rc == MDBX_SUCCESS);
+
+    if (unlikely(rc != MDBX_NOTFOUND)) {
+      audit_error("%s failed %d\n", "cursor_sibling()", rc);
+      return rc;
     }
   }
-  if (freecount + count + MDBX_NUM_METAS != txn->mt_next_pgno) {
-    log_error(MDBX_LOG_AUDIT,
-              "audit: %" PRIaTXN " gaco: %" PRIu64 " count: %" PRIu64 " total: %" PRIu64
-              " next_pgno: %" PRIaPGNO "\n",
-              txn->mt_txnid, freecount, count + MDBX_NUM_METAS, freecount + count + MDBX_NUM_METAS,
-              txn->mt_next_pgno);
+
+  if (caco + tree + MDBX_NUM_METAS != txn->mt_next_pgno) {
+    audit_error("mismatch txn#%" PRIaTXN ": gaco %" PRIu64 ", data %" PRIu64 ", total %" PRIu64
+                " != next %" PRIaPGNO,
+                txn->mt_txnid, caco, tree, caco + tree + MDBX_NUM_METAS, txn->mt_next_pgno);
     return MDBX_SIGN;
   }
   return MDBX_SUCCESS;
