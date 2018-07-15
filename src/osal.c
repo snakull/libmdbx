@@ -897,7 +897,7 @@ int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t size, size_t limit) {
   SectionSize.QuadPart = size;
   rc = NtCreateSection(&map->section,
                        /* DesiredAccess */
-                           (flags & MDBX_WRITEMAP)
+                       (flags & MDBX_WRITEMAP)
                            ? SECTION_QUERY | SECTION_MAP_READ | SECTION_EXTEND_SIZE | SECTION_MAP_WRITE
                            : SECTION_QUERY | SECTION_MAP_READ | SECTION_EXTEND_SIZE,
                        /* ObjectAttributes */ NULL, /* MaximumSize (InitialSize) */ &SectionSize,
@@ -1049,7 +1049,7 @@ retry_file_and_section:
   SectionSize.QuadPart = size;
   status = NtCreateSection(&map->section,
                            /* DesiredAccess */
-                               (flags & MDBX_WRITEMAP)
+                           (flags & MDBX_WRITEMAP)
                                ? SECTION_QUERY | SECTION_MAP_READ | SECTION_EXTEND_SIZE | SECTION_MAP_WRITE
                                : SECTION_QUERY | SECTION_MAP_READ | SECTION_EXTEND_SIZE,
                            /* ObjectAttributes */ NULL,
