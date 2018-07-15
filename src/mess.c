@@ -2023,6 +2023,7 @@ static int cursor_put(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data, unsigned 
         case MDBX_IUD_CURRENT:
           fp->mp_flags16 |= P_DIRTY;
           fp->mp_pgno = mp->mp_pgno;
+          assert(nested_or_null != nullptr && (nested_or_null->mc_state8 & C_INITIALIZED));
           nested_or_null->mc_pg[0] = fp;
           flags |= NODE_DUP;
           goto put_sub;
@@ -2222,6 +2223,10 @@ new_sub:
       xdata.iov_len = 0;
       xdata.iov_base = "";
       node_t *leaf = node_ptr(mc->mc_pg[mc->mc_top], mc->mc_ki[mc->mc_top]);
+      if (unlikely((leaf->node_flags8 & NODE_DUP) == 0)) {
+        rc = MDBX_CORRUPTED;
+        goto bad_sub;
+      }
       if (flags & MDBX_IUD_CURRENT) {
         xflags = (flags & MDBX_IUD_NODUP) ? MDBX_IUD_CURRENT | MDBX_IUD_NOOVERWRITE | MDBX_IUD_NOSPILL
                                           : MDBX_IUD_CURRENT | MDBX_IUD_NOSPILL;
@@ -2229,6 +2234,7 @@ new_sub:
         nested_setup(mc, leaf);
         xflags = (flags & MDBX_IUD_NODUP) ? MDBX_IUD_NOOVERWRITE | MDBX_IUD_NOSPILL : MDBX_IUD_NOSPILL;
       }
+      assert(nested_or_null != nullptr && (nested_or_null->mc_state8 & C_INITIALIZED));
       if (sub_root)
         nested_or_null->mc_pg[0] = sub_root;
       /* converted, write the original data first */

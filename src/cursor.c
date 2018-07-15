@@ -165,6 +165,7 @@ static int cursor_init(MDBX_cursor_t *bundle, MDBX_txn_t *txn, aht_t *aht) {
 static cursor_t *nested_setup(cursor_t *cursor, node_t *node) {
   subcur_t *subcursor = cursor_subcur(cursor);
 
+  assert(node->node_flags8 & NODE_DUP);
   assert(cursor->mc_txn->mt_txnid >= cursor->mc_txn->mt_env->me_oldest[0]);
   if (node->node_flags8 & NODE_SUBTREE) {
     aa_db2txn(cursor->mc_txn->mt_env, (aatree_t *)NODEDATA(node), &subcursor->mx_aht_body, af_nested);
@@ -1053,7 +1054,10 @@ static int cursor_sibling(cursor_t *mc, bool move_right) {
     return rc;
   }
 
-  cursor_push(mc, mp);
+  rc = cursor_push(mc, mp);
+  assert(rc == MDBX_SUCCESS);
+  (void)rc;
+
   if (!move_right)
     mc->mc_ki[mc->mc_top] = page_numkeys(mp) - 1;
 

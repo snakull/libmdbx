@@ -818,8 +818,11 @@ MDBX_error_t mdbx_commit(MDBX_txn_t *txn) {
   env->me_reclaimed_pglist = nullptr;
   mdbx_pnl_shrink(&txn->mt_befree_pages);
 
-  if (MDBX_AUDIT_ENABLED())
-    audit(txn);
+  if (MDBX_AUDIT_ENABLED()) {
+    rc = audit(txn);
+    if (unlikely(rc != MDBX_SUCCESS))
+      goto fail;
+  }
 
   rc = page_flush(txn, 0);
   if (likely(rc == MDBX_SUCCESS)) {

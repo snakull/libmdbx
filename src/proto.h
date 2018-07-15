@@ -117,37 +117,38 @@ enum {
 #define MDBX_END_FLAGS (MDBX_END_OPMASK | MDBX_END_FIXUPAAH | MDBX_END_FREE | MDBX_END_EOTDONE | MDBX_END_SLOT)
 static int txn_end(MDBX_txn_t *txn, const unsigned mode);
 
-static int page_get(MDBX_txn_t *const txn, pgno_t pgno, page_t **mp, int *lvl);
-static int page_search_root(cursor_t *mc, MDBX_iov_t *key, int modify);
+static int __must_check_result page_get(MDBX_txn_t *const txn, pgno_t pgno, page_t **mp, int *lvl);
+static int __must_check_result page_search_root(cursor_t *mc, MDBX_iov_t *key, int modify);
 
 #define MDBX_PS_MODIFY 1
 #define MDBX_PS_ROOTONLY 2
 #define MDBX_PS_FIRST 4
 #define MDBX_PS_LAST 8
 #define MDBX_PS_FLAGS (MDBX_PS_MODIFY | MDBX_PS_ROOTONLY | MDBX_PS_FIRST | MDBX_PS_LAST)
-static int page_search(cursor_t *mc, MDBX_iov_t *key, int flags);
-static int page_merge(cursor_t *csrc, cursor_t *cdst);
+static int __must_check_result page_search(cursor_t *mc, MDBX_iov_t *key, int flags);
+static int __must_check_result page_merge(cursor_t *csrc, cursor_t *cdst);
 
 #define MDBX_SPLIT_REPLACE MDBX_IUD_CURRENT /* newkey is not new, don't save current */
-static int page_split(cursor_t *mc, MDBX_iov_t *newkey, MDBX_iov_t *newdata, pgno_t newpgno, unsigned nflags);
+static int __must_check_result page_split(cursor_t *mc, MDBX_iov_t *newkey, MDBX_iov_t *newdata,
+                                          pgno_t newpgno, unsigned nflags);
 
-static int mdbx_read_header(MDBX_env_t *env, meta_t *meta);
+static int __must_check_result mdbx_read_header(MDBX_env_t *env, meta_t *meta);
 static void env_destroy(MDBX_env_t *env);
 static int env_shutdown(MDBX_env_t *env, MDBX_shutdown_mode_t mode);
 
 static node_rc_t node_search(cursor_t *mc, MDBX_iov_t key);
 static node_rc_t node_search_hilo(cursor_t *mc, MDBX_iov_t key, int low, int high);
-static int node_add(cursor_t *mc, unsigned indx, MDBX_iov_t *key, MDBX_iov_t *data, pgno_t pgno,
-                    unsigned flags);
+static int __must_check_result node_add(cursor_t *mc, unsigned indx, MDBX_iov_t *key, MDBX_iov_t *data,
+                                        pgno_t pgno, unsigned flags);
 static void node_del(cursor_t *mc, size_t keysize);
 static void node_shrink(page_t *mp, unsigned indx);
-static int node_move(cursor_t *csrc, cursor_t *cdst, int fromleft);
-static int node_read(cursor_t *mc, node_t *leaf, MDBX_iov_t *data);
+static int __must_check_result node_move(cursor_t *csrc, cursor_t *cdst, int fromleft);
+static int __must_check_result node_read(cursor_t *mc, node_t *leaf, MDBX_iov_t *data);
 static size_t leaf_size(MDBX_env_t *env, MDBX_iov_t *key, MDBX_iov_t *data);
 static size_t branch_size(MDBX_env_t *env, MDBX_iov_t *key);
 
-static int tree_rebalance(cursor_t *mc);
-static int update_key(cursor_t *mc, MDBX_iov_t *key);
+static int __must_check_result tree_rebalance(cursor_t *mc);
+static int __must_check_result update_key(cursor_t *mc, MDBX_iov_t *key);
 
 static meta_t *metapage(const MDBX_env_t *env, unsigned n);
 static txnid_t meta_txnid_stable(const MDBX_env_t *env, const meta_t *meta);
@@ -209,28 +210,32 @@ static int aa_return(MDBX_txn_t *txn, unsigned txn_end_flags);
 static MDBX_sequence_result_t aa_sequence(MDBX_txn_t *txn, aht_t *aht, uint64_t increment);
 ////////////////////
 
-static size_t cursor_size(aht_t *aht);
-static int cursor_open(MDBX_txn_t *txn, aht_t *aht, MDBX_cursor_t *bc);
+static size_t __must_check_result cursor_size(aht_t *aht);
+static int __must_check_result cursor_open(MDBX_txn_t *txn, aht_t *aht, MDBX_cursor_t *bc);
 static int cursor_close(MDBX_cursor_t *bc);
 static void cursor_untrack(MDBX_cursor_t *bundle);
 static void cursor_pop(cursor_t *mc);
-static int cursor_push(cursor_t *mc, page_t *mp);
+static int __must_check_result cursor_push(cursor_t *mc, page_t *mp);
 static int txn_shadow_cursors(MDBX_txn_t *src, MDBX_txn_t *dst);
 static void cursor_unshadow(MDBX_cursor_t *mc, unsigned commit);
 
 static void cursors_eot(MDBX_txn_t *txn, unsigned merge);
 
-static int cursor_put(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data, unsigned flags);
-static int cursor_delete(cursor_t *mc, unsigned flags);
+static int __must_check_result cursor_put(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data, unsigned flags);
+static int __must_check_result cursor_delete(cursor_t *mc, unsigned flags);
 
-static int cursor_sibling(cursor_t *mc, bool move_right);
-static int cursor_next(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data, MDBX_cursor_op_t op);
-static int cursor_prev(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data, MDBX_cursor_op_t op);
-static int cursor_set(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data, MDBX_cursor_op_t op, int *exactp);
-static int cursor_first(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data);
-static int cursor_last(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data);
-static int cursor_get(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data, MDBX_cursor_op_t op);
-static int cursor_init(MDBX_cursor_t *bundle, MDBX_txn_t *txn, aht_t *aht);
+static int __must_check_result cursor_sibling(cursor_t *mc, bool move_right);
+static int __must_check_result cursor_next(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data,
+                                           MDBX_cursor_op_t op);
+static int __must_check_result cursor_prev(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data,
+                                           MDBX_cursor_op_t op);
+static int __must_check_result cursor_set(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data, MDBX_cursor_op_t op,
+                                          int *exactp);
+static int __must_check_result cursor_first(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data);
+static int __must_check_result cursor_last(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data);
+static int __must_check_result cursor_get(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data,
+                                          MDBX_cursor_op_t op);
+static int __must_check_result cursor_init(MDBX_cursor_t *bundle, MDBX_txn_t *txn, aht_t *aht);
 static cursor_t *nested_setup(cursor_t *mc, node_t *node);
 static void subcursor_fixup(MDBX_cursor_t *mc, cursor_t *src_mx, bool new_dupdata);
 
@@ -239,7 +244,7 @@ static MDBX_comparer_t *default_keycmp(unsigned flags);
 static MDBX_comparer_t *default_datacmp(unsigned flags);
 
 static txnid_t rbr(MDBX_env_t *env, const txnid_t laggard);
-static int audit(MDBX_txn_t *txn);
+static int __must_check_result audit(MDBX_txn_t *txn);
 static page_t *page_malloc(MDBX_txn_t *txn, unsigned num);
 static void dpage_free(MDBX_env_t *env, page_t *mp);
 static void dlist_free(MDBX_txn_t *txn);
