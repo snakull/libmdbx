@@ -229,6 +229,15 @@ int main(int argc, char *argv[]) {
 #endif /* !WINDOWS */
 
   envname = argv[optind];
+
+#if MDXB_DEBUG == 0
+  mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_ERROR);
+#elif MDBX_DEBUG == 1
+  mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_NOTICE);
+#else
+  mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_EXTRA);
+#endif
+
   MDBX_env_t *env;
   err = mdbx_init(&env);
   if (err) {

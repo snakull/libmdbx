@@ -79,6 +79,14 @@ int main(int argc, char *argv[]) {
   signal(SIGTERM, signal_handler);
 #endif /* !WINDOWS */
 
+#if MDXB_DEBUG == 0
+  mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_ERROR);
+#elif MDBX_DEBUG == 1
+  mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_NOTICE);
+#else
+  mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_EXTRA);
+#endif
+
   act = "opening databook";
   rc = mdbx_init(&env);
   if (rc == MDBX_SUCCESS) {
