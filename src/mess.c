@@ -448,9 +448,14 @@ static int __cold mdbx_read_header(MDBX_env_t *env, meta_t *meta, uint64_t *file
     /* LY: check mapsize limits */
     const uint64_t mapsize_min = page.mp_meta.mm_dxb_geo.lower * (uint64_t)page.mp_meta.mm_psize32;
     STATIC_ASSERT(MAX_MAPSIZE < SSIZE_MAX - MAX_PAGESIZE);
-    if (mapsize_min < MIN_MAPSIZE || mapsize_min > MAX_MAPSIZE) {
+    if (mapsize_min < MIN_MAPSIZE) {
       meta_notice("meta[%u] has invalid min-mapsize (%" PRIu64 "), skip it", meta_number, mapsize_min);
-      rc = MDBX_VERSION_MISMATCH;
+      rc = MDBX_CORRUPTED;
+      continue;
+    }
+    if (mapsize_min > MAX_MAPSIZE) {
+      meta_notice("meta[%u] has invalid min-mapsize (%" PRIu64 "), skip it", meta_number, mapsize_min);
+      rc = MDBX_TOO_LARGE;
       continue;
     }
 
