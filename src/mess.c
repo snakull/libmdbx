@@ -555,6 +555,25 @@ static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pendi
   if (env->me_lck->li_autosync_threshold && env->me_lck->li_dirty_volume >= env->me_lck->li_autosync_threshold)
     flags &= MDBX_WRITEMAP | MDBX_SHRINK_ALLOWED;
 
+  /* LY: check conditions to shrink datafile */
+  pgno_t shrink = 0;
+  const pgno_t backlog_gap = pending->mm_aas[MDBX_GACO_AAH].aa_depth16 + backlog_extragap(env);
+  if ((flags & MDBX_SHRINK_ALLOWED) && pending->mm_dxb_geo.shrink16 &&
+      pending->mm_dxb_geo.now - pending->mm_dxb_geo.next > pending->mm_dxb_geo.shrink16 + backlog_gap) {
+    const pgno_t aligner =
+        pending->mm_dxb_geo.grow16 ? pending->mm_dxb_geo.grow16 : pending->mm_dxb_geo.shrink16;
+    const pgno_t with_backlog_gap = pending->mm_dxb_geo.next + backlog_gap;
+    const pgno_t aligned = pgno_align2os_pgno(env, with_backlog_gap + aligner - with_backlog_gap % aligner);
+    const pgno_t bottom = (aligned > pending->mm_dxb_geo.lower) ? aligned : pending->mm_dxb_geo.lower;
+    if (pending->mm_dxb_geo.now > bottom) {
+      flags &= MDBX_WRITEMAP | MDBX_SHRINK_ALLOWED; /* force steady */
+      shrink = pending->mm_dxb_geo.now - bottom;
+      pending->mm_dxb_geo.now = bottom;
+      if (meta_txnid_stable(env, head) == pending->mm_txnid_a)
+        meta_set_txnid(env, pending, pending->mm_txnid_a + 1);
+    }
+  }
+
   /* LY: step#1 - sync previously written/updated data-pages */
   int rc = MDBX_SIGN;
   if (env->me_lck->li_dirty_volume && (flags & MDBX_NOSYNC) == 0) {
@@ -578,24 +597,6 @@ static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pendi
       if (unlikely(rc != MDBX_SUCCESS))
         goto fail;
       env->me_lck->li_dirty_volume = 0;
-    }
-  }
-
-  /* LY: check conditions to shrink datafile */
-  pgno_t shrink = 0;
-  const pgno_t backlog_gap = pending->mm_aas[MDBX_GACO_AAH].aa_depth16 + backlog_extragap(env);
-  if ((flags & MDBX_SHRINK_ALLOWED) && pending->mm_dxb_geo.shrink16 &&
-      pending->mm_dxb_geo.now - pending->mm_dxb_geo.next > pending->mm_dxb_geo.shrink16 + backlog_gap) {
-    const pgno_t aligner =
-        pending->mm_dxb_geo.grow16 ? pending->mm_dxb_geo.grow16 : pending->mm_dxb_geo.shrink16;
-    const pgno_t with_backlog_gap = pending->mm_dxb_geo.next + backlog_gap;
-    const pgno_t aligned = pgno_align2os_pgno(env, with_backlog_gap + aligner - with_backlog_gap % aligner);
-    const pgno_t bottom = (aligned > pending->mm_dxb_geo.lower) ? aligned : pending->mm_dxb_geo.lower;
-    if (pending->mm_dxb_geo.now > bottom) {
-      shrink = pending->mm_dxb_geo.now - bottom;
-      pending->mm_dxb_geo.now = bottom;
-      if (meta_txnid_stable(env, head) == pending->mm_txnid_a)
-        meta_set_txnid(env, pending, pending->mm_txnid_a + 1);
     }
   }
 
