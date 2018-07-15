@@ -138,9 +138,9 @@
 #define MDBX_MAGIC UINT64_C(/* 56-bit prime */ 0x59659DBDEF4C11)
 
 /* The version number for a databook's datafile format. */
-#define MDBX_DATA_VERSION ((MDBX_DEVEL) ? 255 : 2)
+#define MDBX_DATA_VERSION 3
 /* The version number for a databook's lockfile format. */
-#define MDBX_LOCK_VERSION ((MDBX_DEVEL) ? 255 : 2)
+#define MDBX_LOCK_VERSION 3
 
 /* Number of AAs in metapage (gaco and main) - also hardcoded elsewhere */
 #define CORE_AAH 2

@@ -31,9 +31,7 @@
 #   undef NDEBUG
 #endif
 
-#ifndef MDBX_DEVEL
-#   define MDBX_DEVEL 1
-#endif
+#define MDBX_DEVEL 1
 
 #ifndef MDBX_OPT_TEND_LCK_RESET
 #   define MDBX_OPT_TEND_LCK_RESET 1
