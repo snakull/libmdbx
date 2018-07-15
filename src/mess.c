@@ -120,6 +120,11 @@ static int mdbx_mapresize(MDBX_env_t *env, const pgno_t size_pgno, const pgno_t 
 
 bailout:
   if (rc == MDBX_SUCCESS) {
+#if defined(_WIN32) || defined(_WIN64)
+    assert(size_bytes == env->me_dxb_mmap.current);
+    assert(size_bytes <= env->me_dxb_mmap.filesize);
+    assert(limit_bytes == env->me_dxb_mmap.length);
+#endif
     env->me_dxb_geo.now = size_bytes;
     env->me_dxb_geo.upper = limit_bytes;
     if (env->me_current_txn) {
