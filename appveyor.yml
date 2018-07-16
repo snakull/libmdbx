@@ -16,8 +16,8 @@ configuration:
 platform:
 - x86
 - x64
-- ARM
-- ARM64
+#- ARM
+#- ARM64
 
 build_script:
 - ps: >
