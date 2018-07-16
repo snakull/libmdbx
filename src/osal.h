@@ -463,7 +463,8 @@ static int mdbx_resume_threads_after_remap(mdbx_handle_array_t *array);
 static inline uint32_t mdbx_atomic_add32(volatile uint32_t *p, uint32_t v) {
 #if !defined(__cplusplus) && defined(ATOMIC_VAR_INIT)
   assert(atomic_is_lock_free(p));
-  return atomic_fetch_add((_Atomic uint32_t *)p, v);
+  STATIC_ASSERT(sizeof(atomic_uint) == 4);
+  return atomic_fetch_add((atomic_uint *)p, v);
 #elif defined(__GNUC__) || defined(__clang__)
   return __sync_fetch_and_add(p, v);
 #else
@@ -479,7 +480,8 @@ static inline uint32_t mdbx_atomic_add32(volatile uint32_t *p, uint32_t v) {
 static inline uint64_t mdbx_atomic_add64(volatile uint64_t *p, uint64_t v) {
 #if !defined(__cplusplus) && defined(ATOMIC_VAR_INIT)
   assert(atomic_is_lock_free(p));
-  return atomic_fetch_add((_Atomic uint64_t *)p, v);
+  STATIC_ASSERT(sizeof(atomic_ullong) == 8);
+  return atomic_fetch_add((atomic_ullong *)p, v);
 #elif defined(__GNUC__) || defined(__clang__)
   return __sync_fetch_and_add(p, v);
 #else
@@ -502,7 +504,9 @@ static inline uint64_t mdbx_atomic_add64(volatile uint64_t *p, uint64_t v) {
 static inline bool mdbx_atomic_compare_and_swap32(volatile uint32_t *p, uint32_t c, uint32_t v) {
 #if !defined(__cplusplus) && defined(ATOMIC_VAR_INIT)
   assert(atomic_is_lock_free(p));
-  return atomic_compare_exchange_strong((_Atomic uint32_t *)p, &c, v);
+  STATIC_ASSERT(sizeof(atomic_uint) == 4);
+  STATIC_ASSERT(sizeof(unsigned) == 4);
+  return atomic_compare_exchange_strong((atomic_uint *)p, (unsigned *)&c, v);
 #elif defined(__GNUC__) || defined(__clang__)
   return __sync_bool_compare_and_swap(p, c, v);
 #else
@@ -518,7 +522,9 @@ static inline bool mdbx_atomic_compare_and_swap32(volatile uint32_t *p, uint32_t
 static inline bool mdbx_atomic_compare_and_swap64(volatile uint64_t *p, uint64_t c, uint64_t v) {
 #if !defined(__cplusplus) && defined(ATOMIC_VAR_INIT)
   assert(atomic_is_lock_free(p));
-  return atomic_compare_exchange_strong((_Atomic uint64_t *)p, &c, v);
+  STATIC_ASSERT(sizeof(atomic_ullong) == 8);
+  STATIC_ASSERT(sizeof(unsigned long long) == 8);
+  return atomic_compare_exchange_strong((atomic_ullong *)p, (unsigned long long *)&c, v);
 #elif defined(__GNUC__) || defined(__clang__)
   return __sync_bool_compare_and_swap(p, c, v);
 #else
