@@ -71,13 +71,14 @@ matrix:
             - ubuntu-toolchain-r-test
             - llvm-toolchain-trusty-6.0
           packages:
+            - libclang-common-6.0-dev
+            - libstdc++-7-dev
             - clang-6.0
             - clang-format-6.0
-            - libstdc++-7-dev
             - cmake
             - libgtest-dev
       env:
-        - TOOLCHAIN_EVAL="CC=clang-6.0 && CXX=clang++-6.0"
+        - TOOLCHAIN_EVAL="CC=clang-6.0 && CXX=clang++-6.0 && sudo rm -rf /usr/lib/gcc/x86_64-linux-gnu/*/include"
 
     - os: linux
       addons:
