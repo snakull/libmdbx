@@ -678,7 +678,7 @@ typedef struct node_rc {
  * Every operation requires a transaction handle. */
 struct MDBX_txn {
 #define MDBX_MT_SIGNATURE UINT32_C(0x93D53A31)
-  MDXB_txn_base_t base;
+  MDBX_txn_base_t base;
 #define mt_signature base.signature
 #define mt_env base.env
 #define mt_txnid base.txnid
@@ -761,7 +761,7 @@ typedef struct nested_txn {
 struct cursor {
   aht_t *mc_aht /* The AA-handle for this cursor */;
   /* The transaction that owns this cursor */
-  MDBX_txn_t *mc_txn /* TODO: use txn field from MDXB_txn_base_t */;
+  MDBX_txn_t *mc_txn /* TODO: use txn field from MDBX_txn_base_t */;
   unsigned mc_snum /* number of pushed pages */;
   unsigned mc_top /* index of top page, normally mc_snum-1 */;
 
@@ -820,7 +820,7 @@ struct MDBX_cursor {
 /* The databook. */
 struct MDBX_env {
 #define MDBX_ME_SIGNATURE UINT32_C(0x9A899641)
-  MDXB_env_base_t me_base;
+  MDBX_env_base_t me_base;
 #define me_signature me_base.signature
 #define me_userctx me_base.userctx
 

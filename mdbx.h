@@ -252,7 +252,7 @@ typedef struct MDBX_env MDBX_env_t;
 typedef struct MDBX_env_base {
   const size_t signature;
   void *userctx; /* User-settable context */
-} MDXB_env_base_t;
+} MDBX_env_base_t;
 
 /* Opaque structure for a transaction handle.
  *
@@ -267,7 +267,7 @@ typedef struct MDBX_txn_base {
   MDBX_env_t *const env;
   const uint64_t txnid;
   /* TODO: mdbx_clock_t data_timestamp; */
-} MDXB_txn_base_t;
+} MDBX_txn_base_t;
 
 /* Opaque structure for navigating through an associative array */
 typedef struct MDBX_cursor MDBX_cursor_t;
@@ -451,7 +451,7 @@ typedef enum MDBX_debuglog_subsystem {
   MDBX_LOG_API,
   MDBX_LOG_CMP,
   MDBX_LOG_LIST,
-  MDXB_LOG_MAX
+  MDBX_LOG_MAX
 } MDBX_debuglog_subsystem_t;
 
 LIBMDBX_API MDBX_error_t mdbx_set_loglevel(MDBX_debuglog_subsystem_t subsystem, MDBX_debuglog_level_t level);
@@ -1341,8 +1341,8 @@ typedef struct MDBX_userctx_result {
 } MDBX_userctx_result_t;
 LIBMDBX_API MDBX_userctx_result_t mdbx_set_userctx(MDBX_env_t *env, void *ctx);
 LIBMDBX_API_INLINE void *mdbx_set_userctx_unsafe(const MDBX_env_t *env, void *ctx) {
-  void *prev_ctx = ((MDXB_env_base_t *)env)->userctx;
-  ((MDXB_env_base_t *)env)->userctx = ctx;
+  void *prev_ctx = ((MDBX_env_base_t *)env)->userctx;
+  ((MDBX_env_base_t *)env)->userctx = ctx;
   return prev_ctx;
 }
 
@@ -1352,7 +1352,7 @@ LIBMDBX_API_INLINE void *mdbx_set_userctx_unsafe(const MDBX_env_t *env, void *ct
  * Returns The pointer set by mdbx_set_userctx(). */
 LIBMDBX_API MDBX_userctx_result_t mdbx_get_userctx(MDBX_env_t *env);
 LIBMDBX_API_INLINE void *mdbx_get_userctx_unsafe(const MDBX_env_t *env) {
-  return ((MDXB_env_base_t *)env)->userctx;
+  return ((MDBX_env_base_t *)env)->userctx;
 }
 
 /* Set threshold to force flush the data buffers to disk,
@@ -1528,7 +1528,7 @@ typedef struct MDBX_env_result {
   MDBX_error_t err;
 } MDBX_env_result_t;
 LIBMDBX_API MDBX_env_result_t mdbx_txn_env(MDBX_txn_t *txn);
-LIBMDBX_API_INLINE MDBX_env_t *mdbx_txn_env_unsafe(MDBX_txn_t *txn) { return ((MDXB_txn_base_t *)txn)->env; }
+LIBMDBX_API_INLINE MDBX_env_t *mdbx_txn_env_unsafe(MDBX_txn_t *txn) { return ((MDBX_txn_base_t *)txn)->env; }
 
 /* Return the transaction's flags.
  *
@@ -1553,7 +1553,7 @@ typedef struct MDBX_txnid_result {
   MDBX_error_t err;
 } MDBX_txnid_result_t;
 LIBMDBX_API MDBX_txnid_result_t mdbx_txnid(MDBX_txn_t *txn);
-LIBMDBX_API_INLINE uint_fast64_t mdbx_txnid_unsafe(MDBX_txn_t *txn) { return ((MDXB_txn_base_t *)txn)->txnid; }
+LIBMDBX_API_INLINE uint_fast64_t mdbx_txnid_unsafe(MDBX_txn_t *txn) { return ((MDBX_txn_base_t *)txn)->txnid; }
 
 /* Commit all the operations of a transaction into the databook.
  *

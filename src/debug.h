@@ -110,7 +110,7 @@ MDBX_INTERNAL void mdbx_dbglog_end(MDBX_debug_cookie_t cookie, const char *optio
   while (0)
 
 #if MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_CONFIG_DBG_LOGGING
-MDBX_INTERNAL uint8_t mdbx_dbglog_levels[MDXB_LOG_MAX];
+MDBX_INTERNAL uint8_t mdbx_dbglog_levels[MDBX_LOG_MAX];
 MDBX_INTERNAL MDBX_debuglog_callback_t *mdbx_debug_logger;
 #define MDBX_DBGLOG_ENABLED(subsys, level) (level >= (MDBX_debuglog_level_t)mdbx_dbglog_levels[subsys])
 #else
@@ -119,7 +119,7 @@ MDBX_INTERNAL MDBX_debuglog_callback_t *mdbx_debug_logger;
 #endif /* MDBX_CONFIGURED_DEBUG_ABILITIES */
 
 static inline bool mdbx_dbglog_enabled(MDBX_debuglog_subsystem_t subsys, MDBX_debuglog_level_t level) {
-  assert(subsys >= MDBX_LOG_MISC && subsys < MDXB_LOG_MAX);
+  assert(subsys >= MDBX_LOG_MISC && subsys < MDBX_LOG_MAX);
   assert(level >= MDBX_LOGLEVEL_EXTRA && level < MDBX_LOGLEVEL_FATAL);
   return MDBX_DBGLOG_ENABLED(subsys, level);
 }

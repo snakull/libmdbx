@@ -1474,7 +1474,7 @@ MDBX_error_t __cold mdbx_init_ex(MDBX_env_t **pbk, void *user_ctx, MDBX_ops_t *o
       calloc4use = ops->memory.ops_calloc;
   }
 
-  MDXB_env_base_t fake_env;
+  MDBX_env_base_t fake_env;
   memset(&fake_env, 0, sizeof(fake_env));
   fake_env.userctx = user_ctx;
   MDBX_env_t *env = (MDBX_env_t *)calloc4use(1, sizeof(MDBX_env_t), (MDBX_env_t *)&fake_env);
@@ -1572,15 +1572,15 @@ MDBX_userctx_result_t __cold mdbx_get_userctx(MDBX_env_t *env) {
 }
 
 MDBX_error_t mdbx_set_loglevel(MDBX_debuglog_subsystem_t subsystem, MDBX_debuglog_level_t level) {
-  STATIC_ASSERT(MDBX_LOG_ALL < MDBX_LOG_MISC && MDXB_LOG_MAX > MDBX_LOG_ALL);
-  if (unlikely(subsystem < MDBX_LOG_ALL || subsystem >= MDXB_LOG_MAX))
+  STATIC_ASSERT(MDBX_LOG_ALL < MDBX_LOG_MISC && MDBX_LOG_MAX > MDBX_LOG_ALL);
+  if (unlikely(subsystem < MDBX_LOG_ALL || subsystem >= MDBX_LOG_MAX))
     return MDBX_EINVAL;
   if (unlikely(level < MDBX_LOGLEVEL_EXTRA || level > MDBX_LOGLEVEL_FATAL))
     return MDBX_EINVAL;
 
 #if MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_CONFIG_DBG_LOGGING
   if (subsystem < 0) {
-    for (MDBX_debuglog_subsystem_t i = 0; i < MDXB_LOG_MAX; ++i)
+    for (MDBX_debuglog_subsystem_t i = 0; i < MDBX_LOG_MAX; ++i)
       mdbx_dbglog_levels[i] = level;
   } else {
     mdbx_dbglog_levels[subsystem] = level;

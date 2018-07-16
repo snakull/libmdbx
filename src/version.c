@@ -21,13 +21,13 @@
 #define MDBX_VERSION_RELEASE 0
 #define MDBX_VERSION_REVISION 0
 
-/*LIBMDBX_EXPORTS*/ const mdbx_version_info_t mdbx_version = {
+/*LIBMDBX_API*/ const mdbx_version_info_t mdbx_version = {
     MDBX_VERSION_MAJOR,
     MDBX_VERSION_MINOR,
     MDBX_VERSION_RELEASE,
     MDBX_VERSION_REVISION,
     {"@MDBX_GIT_TIMESTAMP@", "@MDBX_GIT_TREE@", "@MDBX_GIT_COMMIT@", "@MDBX_GIT_DESCRIBE@"}};
 
-/*LIBMDBX_EXPORTS*/ const mdbx_build_info_t mdbx_build = {
+/*LIBMDBX_API*/ const mdbx_build_info_t mdbx_build = {
     "@MDBX_BUILD_TIMESTAMP@", "@MDBX_BUILD_TAGRET@", "@MDBX_BUILD_OPTIONS@",
     "@MDBX_BUILD_COMPILER@",  "@MDBX_BUILD_FLAGS@",  MDBX_CONFIGURED_DEBUG_ABILITIES};
