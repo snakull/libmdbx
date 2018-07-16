@@ -23,7 +23,6 @@ matrix:
             - cmake
             - libgtest-dev
 #            - valgrind
-#            - clang-format-3.8
       env:
         - TOOLCHAIN_EVAL="CC=gcc-5 && CXX=g++-5"
 
@@ -73,28 +72,27 @@ matrix:
             - llvm-toolchain-trusty-6.0
           packages:
             - clang-6.0
-            - libstdc++-5-dev
+            - clang-format-6.0
+            - libstdc++-7-dev
             - cmake
             - libgtest-dev
       env:
         - TOOLCHAIN_EVAL="CC=clang-6.0 && CXX=clang++-6.0"
 
-# GCC-8 BROKEN FOR NOW: /usr/lib/gcc/x86_64-linux-gnu/8/include/immintrin.h:113:10: fatal error: movdirintrin.h: No such file or directory
-#    - os: linux
-#      addons:
-#        apt:
-#          sources:
-#            - ubuntu-toolchain-r-test
-#          packages:
-#            - g++-8
-#            - cmake
-#            - libgtest-dev
-#      env:
-#        - TOOLCHAIN_EVAL="CC=gcc-8 && CXX=g++-8"
+    - os: linux
+      addons:
+        apt:
+          sources:
+            - ubuntu-toolchain-r-test
+          packages:
+            - g++-8
+            - cmake
+            - libgtest-dev
+      env:
+        - TOOLCHAIN_EVAL="CC=gcc-8 && CXX=g++-8"
 
 before_install:
   - eval "${TOOLCHAIN_EVAL}"
-
 
 before_script: >
   if [ "${TRAVIS_BRANCH}" = "coverity_scan" ]; then
