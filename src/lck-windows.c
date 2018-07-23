@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -128,7 +128,9 @@ static MDBX_error_t suspend_and_append_handle(mdbx_handle_array_t **array, const
         sizeof(mdbx_handle_array_t) + sizeof(HANDLE) * (limit * 2 - ARRAY_LENGTH((*array)->handles)));
     if (!ptr)
       goto bailout;
-    (*array) = (mdbx_handle_array_t *)ptr;
+    if (limit == ARRAY_LENGTH((*array)->handles))
+      memcpy(ptr, *array, sizeof(mdbx_handle_array_t));
+    *array = (mdbx_handle_array_t *)ptr;
     (*array)->limit = limit * 2;
   }
 
