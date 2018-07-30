@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -876,7 +876,7 @@ struct MDBX_env {
   } me_dxb_geo, me_sld_geo;
 
 #if defined(_WIN32) || defined(_WIN64)
-  SRWLOCK me_remap_guard;
+  MDBX_srwlock me_remap_guard;
   /* Workaround for LockFileEx and WriteFile multithread bug */
   CRITICAL_SECTION me_windowsbug_lock;
 #else

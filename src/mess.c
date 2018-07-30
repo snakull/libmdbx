@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -84,7 +84,7 @@ static int mdbx_mapresize(MDBX_env_t *env, const pgno_t size_pgno, const pgno_t 
   /* Acquire guard in exclusive mode for:
    *   - to avoid collision between read and write txns around env->me_dxb_geo;
    *   - to avoid attachment of new reading threads (see mdbx_rdt_lock); */
-  AcquireSRWLockExclusive(&env->me_remap_guard);
+  mdbx_srwlock_AcquireExclusive(&env->me_remap_guard);
   mdbx_handle_array_t *suspended = NULL;
   mdbx_handle_array_t array_onstack;
   int rc = MDBX_SUCCESS;
@@ -160,7 +160,7 @@ bailout:
 
 #if defined(_WIN32) || defined(_WIN64)
   int err = MDBX_SUCCESS;
-  ReleaseSRWLockExclusive(&env->me_remap_guard);
+  mdbx_srwlock_ReleaseExclusive(&env->me_remap_guard);
   if (suspended) {
     err = mdbx_resume_threads_after_remap(suspended);
     if (suspended != &array_onstack)

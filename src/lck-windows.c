@@ -27,6 +27,100 @@
  * LY
  */
 
+/*----------------------------------------------------------------------------*/
+// Stub for slim read-write lock
+// Copyright (C) 1995-2002 Brad Wilson
+
+static void WINAPI stub_srwlock_Init(MDBX_srwlock *srwl) { srwl->readerCount = srwl->writerCount = 0; }
+
+static void WINAPI stub_srwlock_AcquireShared(MDBX_srwlock *srwl) {
+  while (true) {
+    assert(srwl->writerCount >= 0 && srwl->readerCount >= 0);
+
+    //  If there's a writer already, spin without unnecessarily
+    //  interlocking the CPUs
+    if (srwl->writerCount != 0) {
+      YieldProcessor();
+      continue;
+    }
+
+    //  Add to the readers list
+    _InterlockedIncrement(&srwl->readerCount);
+
+    // Check for writers again (we may have been pre-empted). If
+    // there are no writers writing or waiting, then we're done.
+    if (srwl->writerCount == 0)
+      break;
+
+    // Remove from the readers list, spin, try again
+    _InterlockedDecrement(&srwl->readerCount);
+    YieldProcessor();
+  }
+}
+
+static void WINAPI stub_srwlock_ReleaseShared(MDBX_srwlock *srwl) {
+  assert(srwl->readerCount > 0);
+  _InterlockedDecrement(&srwl->readerCount);
+}
+
+static void WINAPI stub_srwlock_AcquireExclusive(MDBX_srwlock *srwl) {
+  while (true) {
+    assert(srwl->writerCount >= 0 && srwl->readerCount >= 0);
+
+    //  If there's a writer already, spin without unnecessarily
+    //  interlocking the CPUs
+    if (srwl->writerCount != 0) {
+      YieldProcessor();
+      continue;
+    }
+
+    // See if we can become the writer (expensive, because it inter-
+    // locks the CPUs, so writing should be an infrequent process)
+    if (_InterlockedExchange(&srwl->writerCount, 1) == 0)
+      break;
+  }
+
+  // Now we're the writer, but there may be outstanding readers.
+  // Spin until there aren't any more; new readers will wait now
+  // that we're the writer.
+  while (srwl->readerCount != 0) {
+    assert(srwl->writerCount >= 0 && srwl->readerCount >= 0);
+    YieldProcessor();
+  }
+}
+
+static void WINAPI stub_srwlock_ReleaseExclusive(MDBX_srwlock *srwl) {
+  assert(srwl->writerCount == 1 && srwl->readerCount >= 0);
+  srwl->writerCount = 0;
+}
+
+static void WINAPI srwlock_thunk_init(MDBX_srwlock *srwl) {
+  HINSTANCE hInst = GetModuleHandleA("kernel32.dll");
+  MDBX_srwlock_function init = (MDBX_srwlock_function)GetProcAddress(hInst, "InitializeSRWLock");
+  if (init != NULL) {
+    mdbx_srwlock_AcquireShared = (MDBX_srwlock_function)GetProcAddress(hInst, "AcquireSRWLockShared");
+    mdbx_srwlock_ReleaseShared = (MDBX_srwlock_function)GetProcAddress(hInst, "ReleaseSRWLockShared");
+    mdbx_srwlock_AcquireExclusive = (MDBX_srwlock_function)GetProcAddress(hInst, "AcquireSRWLockExclusive");
+    mdbx_srwlock_ReleaseExclusive = (MDBX_srwlock_function)GetProcAddress(hInst, "ReleaseSRWLockExclusive");
+  } else {
+    init = stub_srwlock_Init;
+    mdbx_srwlock_AcquireShared = stub_srwlock_AcquireShared;
+    mdbx_srwlock_ReleaseShared = stub_srwlock_ReleaseShared;
+    mdbx_srwlock_AcquireExclusive = stub_srwlock_AcquireExclusive;
+    mdbx_srwlock_ReleaseExclusive = stub_srwlock_ReleaseExclusive;
+  }
+  mdbx_compiler_barrier();
+  mdbx_srwlock_Init = init;
+  mdbx_srwlock_Init(srwl);
+}
+
+MDBX_srwlock_function mdbx_srwlock_Init = srwlock_thunk_init;
+MDBX_srwlock_function mdbx_srwlock_AcquireShared;
+MDBX_srwlock_function mdbx_srwlock_ReleaseShared;
+MDBX_srwlock_function mdbx_srwlock_AcquireExclusive;
+MDBX_srwlock_function mdbx_srwlock_ReleaseExclusive;
+
+/*----------------------------------------------------------------------------*/
 #define lck_transition_begin(from, to) lck_trace("now %s, going-down %s", from, to)
 #define lck_transition_end(from, to, err)                                                                     \
   do {                                                                                                        \
@@ -366,7 +460,7 @@ static void lck_exclusive2middle(MDBX_env_t *env) {
 MDBX_error_t mdbx_lck_reader_registration_lock(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
   lck_trace(">> flags 0x%x %s", flags, (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "");
 
-  AcquireSRWLockShared(&env->me_remap_guard);
+  mdbx_srwlock_AcquireShared(&env->me_remap_guard);
   if (env->me_lck_fd == INVALID_HANDLE_VALUE) {
     lck_trace("<< MDBX_SUCCESS, without-lck");
     return MDBX_SUCCESS /* readonly database in readonly filesystem */;
@@ -374,7 +468,7 @@ MDBX_error_t mdbx_lck_reader_registration_lock(MDBX_env_t *env, MDBX_flags_t fla
 
   const MDBX_error_t err = lck_shared2locked(env, flags);
   if (err != MDBX_SUCCESS) {
-    ReleaseSRWLockShared(&env->me_remap_guard);
+    mdbx_srwlock_ReleaseShared(&env->me_remap_guard);
     lck_trace("<< %s, error %d", lck_is_collision(err) ? "busy" : "failed", err);
   } else
     lck_trace("<< ok");
@@ -384,7 +478,7 @@ MDBX_error_t mdbx_lck_reader_registration_lock(MDBX_env_t *env, MDBX_flags_t fla
 void mdbx_lck_reader_registration_unlock(MDBX_env_t *env) {
   if (env->me_lck_fd != INVALID_HANDLE_VALUE)
     lck_locked2shared(env);
-  ReleaseSRWLockShared(&env->me_remap_guard);
+  mdbx_srwlock_ReleaseShared(&env->me_remap_guard);
   lck_trace("<< ok");
 }
 

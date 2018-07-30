@@ -1,4 +1,4 @@
-/* https://en.wikipedia.org/wiki/Operating_system_abstraction_layer */
+﻿/* https://en.wikipedia.org/wiki/Operating_system_abstraction_layer */
 
 /*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
@@ -434,6 +434,20 @@ typedef struct {
 } mdbx_handle_array_t;
 static int mdbx_suspend_threads_before_remap(struct MDBX_env *env, mdbx_handle_array_t **array);
 static int mdbx_resume_threads_after_remap(mdbx_handle_array_t *array);
+
+typedef struct MDBX_srwlock {
+  union {
+    struct {
+      long volatile readerCount;
+      long volatile writerCount;
+    };
+    RTL_SRWLOCK native;
+  };
+} MDBX_srwlock;
+
+typedef void(WINAPI *MDBX_srwlock_function)(MDBX_srwlock *);
+extern MDBX_srwlock_function mdbx_srwlock_Init, mdbx_srwlock_AcquireShared, mdbx_srwlock_ReleaseShared,
+    mdbx_srwlock_AcquireExclusive, mdbx_srwlock_ReleaseExclusive;
 #endif /* Windows */
 
 /*----------------------------------------------------------------------------*/

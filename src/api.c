@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -1519,7 +1519,7 @@ MDBX_error_t __cold mdbx_init_ex(MDBX_env_t **pbk, void *user_ctx, MDBX_ops_t *o
     goto bailout;
 
 #if defined(_WIN32) || defined(_WIN64)
-  InitializeSRWLock(&env->me_remap_guard);
+  mdbx_srwlock_Init(&env->me_remap_guard);
   InitializeCriticalSection(&env->me_windowsbug_lock);
 #else
   err = mdbx_fastmutex_init(&env->me_remap_guard);
