@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -358,7 +358,11 @@ __cold void rthc_release(const mdbx_thread_key_t key) {
 
 MDBX_INTERNAL void osal_ctor(void);
 
-static void NTAPI tls_callback(PVOID module, DWORD reason, PVOID reserved) {
+#if !MDBX_CONFIG_MANUAL_TLS_CALLBACK
+static
+#endif /* !MDBX_CONFIG_MANUAL_TLS_CALLBACK */
+    void NTAPI
+    mdbx_dll_callback(PVOID module, DWORD reason, PVOID reserved) {
   (void)reserved;
   switch (reason) {
   case DLL_PROCESS_ATTACH:
@@ -379,6 +383,7 @@ static void NTAPI tls_callback(PVOID module, DWORD reason, PVOID reserved) {
   }
 }
 
+#if !MDBX_CONFIG_MANUAL_TLS_CALLBACK
 /* *INDENT-OFF* */
 /* clang-format off */
 #if defined(_MSC_VER)
@@ -389,7 +394,7 @@ static void NTAPI tls_callback(PVOID module, DWORD reason, PVOID reserved) {
      /* kick a linker to create the TLS directory if not already done */
 #    pragma comment(linker, "/INCLUDE:_tls_used")
      /* Force some symbol references. */
-#    pragma comment(linker, "/INCLUDE:mdbx_tls_callback")
+#    pragma comment(linker, "/INCLUDE:mdbx_tls_anchor")
      /* specific const-segment for WIN64 */
 #    pragma const_seg(".CRT$XLB")
      const
@@ -397,12 +402,12 @@ static void NTAPI tls_callback(PVOID module, DWORD reason, PVOID reserved) {
      /* kick a linker to create the TLS directory if not already done */
 #    pragma comment(linker, "/INCLUDE:__tls_used")
      /* Force some symbol references. */
-#    pragma comment(linker, "/INCLUDE:_mdbx_tls_callback")
+#    pragma comment(linker, "/INCLUDE:_mdbx_tls_anchor")
      /* specific data-segment for WIN32 */
 #    pragma data_seg(".CRT$XLB")
 #  endif
 
-   PIMAGE_TLS_CALLBACK mdbx_tls_callback = tls_callback;
+   __declspec(allocate(".CRT$XLB")) PIMAGE_TLS_CALLBACK mdbx_tls_anchor = mdbx_dll_callback;
 #  pragma data_seg(pop)
 #  pragma const_seg(pop)
 
@@ -410,15 +415,15 @@ static void NTAPI tls_callback(PVOID module, DWORD reason, PVOID reserved) {
 #  ifdef _WIN64
      const
 #  endif
-   PIMAGE_TLS_CALLBACK mdbx_tls_callback __attribute__((section(".CRT$XLB"), used))
-     = tls_callback;
+   PIMAGE_TLS_CALLBACK mdbx_tls_anchor __attribute__((section(".CRT$XLB"), used)) = mdbx_dll_callback;
 #else
 #  error FIXME
 #endif
 /* *INDENT-ON* */
 /* clang-format on */
+#endif /* !MDBX_CONFIG_MANUAL_TLS_CALLBACK */
 
-#else
+#else /* Windows */
 
 static __cold __attribute__((constructor)) void mdbx_global_ctor(void) {
   osal_ctor();
@@ -427,4 +432,4 @@ static __cold __attribute__((constructor)) void mdbx_global_ctor(void) {
 
 static __cold __attribute__((destructor)) void mdbx_global_dtor(void) { rthc_global_dtor(); }
 
-#endif
+#endif /* ! Windows */

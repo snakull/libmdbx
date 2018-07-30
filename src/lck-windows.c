@@ -94,31 +94,8 @@ static void WINAPI stub_srwlock_ReleaseExclusive(MDBX_srwlock *srwl) {
   srwl->writerCount = 0;
 }
 
-static void WINAPI srwlock_thunk_init(MDBX_srwlock *srwl) {
-  HINSTANCE hInst = GetModuleHandleA("kernel32.dll");
-  MDBX_srwlock_function init = (MDBX_srwlock_function)GetProcAddress(hInst, "InitializeSRWLock");
-  if (init != NULL) {
-    mdbx_srwlock_AcquireShared = (MDBX_srwlock_function)GetProcAddress(hInst, "AcquireSRWLockShared");
-    mdbx_srwlock_ReleaseShared = (MDBX_srwlock_function)GetProcAddress(hInst, "ReleaseSRWLockShared");
-    mdbx_srwlock_AcquireExclusive = (MDBX_srwlock_function)GetProcAddress(hInst, "AcquireSRWLockExclusive");
-    mdbx_srwlock_ReleaseExclusive = (MDBX_srwlock_function)GetProcAddress(hInst, "ReleaseSRWLockExclusive");
-  } else {
-    init = stub_srwlock_Init;
-    mdbx_srwlock_AcquireShared = stub_srwlock_AcquireShared;
-    mdbx_srwlock_ReleaseShared = stub_srwlock_ReleaseShared;
-    mdbx_srwlock_AcquireExclusive = stub_srwlock_AcquireExclusive;
-    mdbx_srwlock_ReleaseExclusive = stub_srwlock_ReleaseExclusive;
-  }
-  mdbx_compiler_barrier();
-  mdbx_srwlock_Init = init;
-  mdbx_srwlock_Init(srwl);
-}
-
-MDBX_srwlock_function mdbx_srwlock_Init = srwlock_thunk_init;
-MDBX_srwlock_function mdbx_srwlock_AcquireShared;
-MDBX_srwlock_function mdbx_srwlock_ReleaseShared;
-MDBX_srwlock_function mdbx_srwlock_AcquireExclusive;
-MDBX_srwlock_function mdbx_srwlock_ReleaseExclusive;
+MDBX_srwlock_function mdbx_srwlock_Init, mdbx_srwlock_AcquireShared, mdbx_srwlock_ReleaseShared,
+    mdbx_srwlock_AcquireExclusive, mdbx_srwlock_ReleaseExclusive;
 
 /*----------------------------------------------------------------------------*/
 #define lck_transition_begin(from, to) lck_trace("now %s, going-down %s", from, to)

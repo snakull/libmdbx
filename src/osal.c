@@ -1,4 +1,4 @@
-/* https://en.wikipedia.org/wiki/Operating_system_abstraction_layer */
+﻿/* https://en.wikipedia.org/wiki/Operating_system_abstraction_layer */
 
 /*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
@@ -140,6 +140,24 @@ typedef struct _SYSTEM_BOOT_ENVIRONMENT_INFORMATION {
   FIRMWARE_TYPE FirmwareType;
   ULONGLONG BootFlags;
 } SYSTEM_BOOT_ENVIRONMENT_INFORMATION;
+
+static void mdbx_winnt_import(void) {
+  HINSTANCE hInst = GetModuleHandleA("kernel32.dll");
+  MDBX_srwlock_function init = (MDBX_srwlock_function)GetProcAddress(hInst, "InitializeSRWLock");
+  if (init != NULL) {
+    mdbx_srwlock_Init = init;
+    mdbx_srwlock_AcquireShared = (MDBX_srwlock_function)GetProcAddress(hInst, "AcquireSRWLockShared");
+    mdbx_srwlock_ReleaseShared = (MDBX_srwlock_function)GetProcAddress(hInst, "ReleaseSRWLockShared");
+    mdbx_srwlock_AcquireExclusive = (MDBX_srwlock_function)GetProcAddress(hInst, "AcquireSRWLockExclusive");
+    mdbx_srwlock_ReleaseExclusive = (MDBX_srwlock_function)GetProcAddress(hInst, "ReleaseSRWLockExclusive");
+  } else {
+    mdbx_srwlock_Init = stub_srwlock_Init;
+    mdbx_srwlock_AcquireShared = stub_srwlock_AcquireShared;
+    mdbx_srwlock_ReleaseShared = stub_srwlock_ReleaseShared;
+    mdbx_srwlock_AcquireExclusive = stub_srwlock_AcquireExclusive;
+    mdbx_srwlock_ReleaseExclusive = stub_srwlock_ReleaseExclusive;
+  }
+}
 
 #endif /* _WIN32 || _WIN64 */
 
@@ -652,6 +670,8 @@ MDBX_INTERNAL void osal_ctor(void) {
  * This is the basic size that the platform's memory manager uses, and is
  * fundamental to the use of memory-mapped files. */
 #if defined(_WIN32) || defined(_WIN64)
+  mdbx_winnt_import();
+
   SYSTEM_INFO si;
   GetSystemInfo(&si);
   osal_syspagesize = si.dwPageSize;
