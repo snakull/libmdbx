@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -304,6 +304,7 @@ static int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t must, size_t limit);
 static int mdbx_munmap(mdbx_mmap_t *map);
 static int mdbx_mresize(int flags, mdbx_mmap_t *map, size_t current, size_t wanna);
 static int mdbx_msync(mdbx_mmap_t *map, size_t offset, size_t length, int async);
+static int mdbx_is_file_local(MDBX_filehandle_t handle, int flags);
 
 /*----------------------------------------------------------------------------*/
 /* Internal prototypes and inlines */

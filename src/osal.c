@@ -825,20 +825,13 @@ static int mdbx_msync(mdbx_mmap_t *map, size_t offset, size_t length, int async)
 #endif
 }
 
-int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t size, size_t limit) {
-  assert(size <= limit);
+int mdbx_is_file_local(MDBX_filehandle_t handle, int flags) {
 #if defined(_WIN32) || defined(_WIN64)
-  NTSTATUS rc;
-  map->length = 0;
-  map->current = 0;
-  map->section = NULL;
-  map->address = nullptr;
-
-  if (GetFileType(map->fd) != FILE_TYPE_DISK)
+  if (GetFileType(handle) != FILE_TYPE_DISK)
     return ERROR_FILE_OFFLINE;
 
   FILE_REMOTE_PROTOCOL_INFO RemoteProtocolInfo;
-  if (GetFileInformationByHandleEx(map->fd, FileRemoteProtocolInfo, &RemoteProtocolInfo,
+  if (GetFileInformationByHandleEx(handle, FileRemoteProtocolInfo, &RemoteProtocolInfo,
                                    sizeof(RemoteProtocolInfo))) {
     if ((RemoteProtocolInfo.Flags & (REMOTE_PROTOCOL_INFO_FLAG_LOOPBACK |
                                      REMOTE_PROTOCOL_INFO_FLAG_OFFLINE)) != REMOTE_PROTOCOL_INFO_FLAG_LOOPBACK)
@@ -846,6 +839,7 @@ int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t size, size_t limit) {
   }
 
 #if defined(_WIN64) && defined(WOF_CURRENT_VERSION)
+  NTSTATUS rc;
   struct {
     WOF_EXTERNAL_INFO wof_info;
     union {
@@ -855,30 +849,30 @@ int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t size, size_t limit) {
     size_t reserved_for_microsoft_madness[42];
   } GetExternalBacking_OutputBuffer;
   IO_STATUS_BLOCK StatusBlock;
-  rc = NtFsControlFile(map->fd, NULL, NULL, NULL, &StatusBlock, FSCTL_GET_EXTERNAL_BACKING, NULL, 0,
+  rc = NtFsControlFile(handle, NULL, NULL, NULL, &StatusBlock, FSCTL_GET_EXTERNAL_BACKING, NULL, 0,
                        &GetExternalBacking_OutputBuffer, sizeof(GetExternalBacking_OutputBuffer));
   if (rc != STATUS_OBJECT_NOT_EXTERNALLY_BACKED && rc != STATUS_INVALID_DEVICE_REQUEST)
-    return NT_SUCCESS(rc) ? ERROR_FILE_OFFLINE : ntstatus2errcode(rc);
+    return NT_SUCCESS(rc) ? ERROR_REMOTE_STORAGE_MEDIA_ERROR : ntstatus2errcode(rc);
 #endif
 
   WCHAR PathBuffer[INT16_MAX];
   DWORD VolumeSerialNumber, FileSystemFlags;
-  if (!GetVolumeInformationByHandleW(map->fd, PathBuffer, INT16_MAX, &VolumeSerialNumber, NULL,
+  if (!GetVolumeInformationByHandleW(handle, PathBuffer, INT16_MAX, &VolumeSerialNumber, NULL,
                                      &FileSystemFlags, NULL, 0))
     return GetLastError();
 
   if ((flags & MDBX_RDONLY) == 0) {
     if (FileSystemFlags & (FILE_SEQUENTIAL_WRITE_ONCE | FILE_READ_ONLY_VOLUME | FILE_VOLUME_IS_COMPRESSED))
-      return ERROR_FILE_OFFLINE;
+      return ERROR_REMOTE_STORAGE_MEDIA_ERROR;
   }
 
-  if (!GetFinalPathNameByHandleW(map->fd, PathBuffer, INT16_MAX, FILE_NAME_NORMALIZED | VOLUME_NAME_NT))
+  if (!GetFinalPathNameByHandleW(handle, PathBuffer, INT16_MAX, FILE_NAME_NORMALIZED | VOLUME_NAME_NT))
     return GetLastError();
 
   if (_wcsnicmp(PathBuffer, L"\\Device\\Mup\\", 12) == 0)
-    return ERROR_FILE_OFFLINE;
+    return ERROR_REMOTE_STORAGE_MEDIA_ERROR;
 
-  if (GetFinalPathNameByHandleW(map->fd, PathBuffer, INT16_MAX, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)) {
+  if (GetFinalPathNameByHandleW(handle, PathBuffer, INT16_MAX, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)) {
     UINT DriveType = GetDriveTypeW(PathBuffer);
     if (DriveType == DRIVE_NO_ROOT_DIR && wcsncmp(PathBuffer, L"\\\\?\\", 4) == 0 &&
         wcsncmp(PathBuffer + 5, L":\\", 2) == 0) {
@@ -894,13 +888,32 @@ int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t size, size_t limit) {
     case DRIVE_NO_ROOT_DIR:
     case DRIVE_REMOTE:
     default:
-      return ERROR_FILE_OFFLINE;
+      return ERROR_REMOTE_STORAGE_MEDIA_ERROR;
     case DRIVE_REMOVABLE:
     case DRIVE_FIXED:
     case DRIVE_RAMDISK:
       break;
     }
   }
+#else
+  (void)handle;
+  /* TODO: check for NFS handle ? */
+  (void)flags;
+#endif
+  return MDBX_SUCCESS;
+}
+
+int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t size, size_t limit) {
+  assert(size <= limit);
+  map->length = 0;
+  map->address = nullptr;
+#if defined(_WIN32) || defined(_WIN64)
+  map->current = 0;
+  map->section = NULL;
+
+  NTSTATUS rc = mdbx_is_file_local(map->fd, flags);
+  if (rc != MDBX_SUCCESS)
+    return rc;
 
   rc = mdbx_filesize(map->fd, &map->filesize);
   if (rc != MDBX_SUCCESS)
@@ -947,15 +960,16 @@ int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t size, size_t limit) {
   return MDBX_SUCCESS;
 #else
   (void)size;
+  int err = mdbx_is_file_local(map->fd, flags);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
   map->address =
       mmap(NULL, limit, (flags & MDBX_WRITEMAP) ? PROT_READ | PROT_WRITE : PROT_READ, MAP_SHARED, map->fd, 0);
-  if (likely(map->address != MAP_FAILED)) {
-    map->length = limit;
-    return MDBX_SUCCESS;
-  }
-  map->length = 0;
-  map->address = nullptr;
-  return errno;
+  if (unlikely(map->address == MAP_FAILED))
+    return errno;
+  map->length = limit;
+  return MDBX_SUCCESS;
 #endif
 }
 
