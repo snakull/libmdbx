@@ -114,13 +114,31 @@ extern NTSTATUS NTAPI NtAllocateVirtualMemory(IN HANDLE ProcessHandle, IN OUT PV
 extern NTSTATUS NTAPI NtFreeVirtualMemory(IN HANDLE ProcessHandle, IN PVOID *BaseAddress,
                                           IN OUT PSIZE_T RegionSize, IN ULONG FreeType);
 
+#ifndef WOF_CURRENT_VERSION
+typedef struct _WOF_EXTERNAL_INFO {
+  DWORD Version;
+  DWORD Provider;
+} WOF_EXTERNAL_INFO, *PWOF_EXTERNAL_INFO;
+#endif /* WOF_CURRENT_VERSION */
+
+#ifndef WIM_PROVIDER_CURRENT_VERSION
+#define WIM_PROVIDER_HASH_SIZE 20
+
+typedef struct _WIM_PROVIDER_EXTERNAL_INFO {
+  DWORD Version;
+  DWORD Flags;
+  LARGE_INTEGER DataSourceId;
+  BYTE ResourceHash[WIM_PROVIDER_HASH_SIZE];
+} WIM_PROVIDER_EXTERNAL_INFO, *PWIM_PROVIDER_EXTERNAL_INFO;
+#endif /* WIM_PROVIDER_CURRENT_VERSION */
+
 #ifndef FILE_PROVIDER_CURRENT_VERSION
 typedef struct _FILE_PROVIDER_EXTERNAL_INFO_V1 {
   ULONG Version;
   ULONG Algorithm;
   ULONG Flags;
 } FILE_PROVIDER_EXTERNAL_INFO_V1, *PFILE_PROVIDER_EXTERNAL_INFO_V1;
-#endif
+#endif /* FILE_PROVIDER_CURRENT_VERSION */
 
 #ifndef STATUS_OBJECT_NOT_EXTERNALLY_BACKED
 #define STATUS_OBJECT_NOT_EXTERNALLY_BACKED ((NTSTATUS)0xC000046DL)
@@ -129,27 +147,47 @@ typedef struct _FILE_PROVIDER_EXTERNAL_INFO_V1 {
 #define STATUS_INVALID_DEVICE_REQUEST ((NTSTATUS)0xC0000010L)
 #endif
 
-extern NTSTATUS NTAPI NtFsControlFile(IN HANDLE FileHandle, IN OUT HANDLE Event,
-                                      IN OUT PVOID /* PIO_APC_ROUTINE */ ApcRoutine, IN OUT PVOID ApcContext,
-                                      OUT PIO_STATUS_BLOCK IoStatusBlock, IN ULONG FsControlCode,
-                                      IN OUT PVOID InputBuffer, IN ULONG InputBufferLength,
-                                      OUT OPTIONAL PVOID OutputBuffer, IN ULONG OutputBufferLength);
-
 typedef struct _SYSTEM_BOOT_ENVIRONMENT_INFORMATION {
   GUID BootIdentifier;
   FIRMWARE_TYPE FirmwareType;
   ULONGLONG BootFlags;
 } SYSTEM_BOOT_ENVIRONMENT_INFORMATION;
 
+typedef BOOL(WINAPI *MDBX_GetFileInformationByHandleEx)(_In_ HANDLE hFile,
+                                                        _In_ FILE_INFO_BY_HANDLE_CLASS FileInformationClass,
+                                                        _Out_ LPVOID lpFileInformation,
+                                                        _In_ DWORD dwBufferSize);
+static MDBX_GetFileInformationByHandleEx mdbx_GetFileInformationByHandleEx;
+
+typedef BOOL(WINAPI *MDBX_GetVolumeInformationByHandleW)(
+    _In_ HANDLE hFile, _Out_opt_ LPWSTR lpVolumeNameBuffer, _In_ DWORD nVolumeNameSize,
+    _Out_opt_ LPDWORD lpVolumeSerialNumber, _Out_opt_ LPDWORD lpMaximumComponentLength,
+    _Out_opt_ LPDWORD lpFileSystemFlags, _Out_opt_ LPWSTR lpFileSystemNameBuffer,
+    _In_ DWORD nFileSystemNameSize);
+static MDBX_GetVolumeInformationByHandleW mdbx_GetVolumeInformationByHandleW;
+
+typedef DWORD(WINAPI *MDBX_GetFinalPathNameByHandleW)(_In_ HANDLE hFile, _Out_ LPWSTR lpszFilePath,
+                                                      _In_ DWORD cchFilePath, _In_ DWORD dwFlags);
+static MDBX_GetFinalPathNameByHandleW mdbx_GetFinalPathNameByHandleW;
+typedef NTSTATUS(NTAPI *MDBX_NtFsControlFile)(IN HANDLE FileHandle, IN OUT HANDLE Event,
+                                              IN OUT PVOID /* PIO_APC_ROUTINE */ ApcRoutine,
+                                              IN OUT PVOID ApcContext, OUT PIO_STATUS_BLOCK IoStatusBlock,
+                                              IN ULONG FsControlCode, IN OUT PVOID InputBuffer,
+                                              IN ULONG InputBufferLength, OUT OPTIONAL PVOID OutputBuffer,
+                                              IN ULONG OutputBufferLength);
+static MDBX_NtFsControlFile mdbx_NtFsControlFile;
+
 static void mdbx_winnt_import(void) {
-  HINSTANCE hInst = GetModuleHandleA("kernel32.dll");
-  MDBX_srwlock_function init = (MDBX_srwlock_function)GetProcAddress(hInst, "InitializeSRWLock");
+  const HINSTANCE hKernel32dll = GetModuleHandleA("kernel32.dll");
+  const MDBX_srwlock_function init = (MDBX_srwlock_function)GetProcAddress(hKernel32dll, "InitializeSRWLock");
   if (init != NULL) {
     mdbx_srwlock_Init = init;
-    mdbx_srwlock_AcquireShared = (MDBX_srwlock_function)GetProcAddress(hInst, "AcquireSRWLockShared");
-    mdbx_srwlock_ReleaseShared = (MDBX_srwlock_function)GetProcAddress(hInst, "ReleaseSRWLockShared");
-    mdbx_srwlock_AcquireExclusive = (MDBX_srwlock_function)GetProcAddress(hInst, "AcquireSRWLockExclusive");
-    mdbx_srwlock_ReleaseExclusive = (MDBX_srwlock_function)GetProcAddress(hInst, "ReleaseSRWLockExclusive");
+    mdbx_srwlock_AcquireShared = (MDBX_srwlock_function)GetProcAddress(hKernel32dll, "AcquireSRWLockShared");
+    mdbx_srwlock_ReleaseShared = (MDBX_srwlock_function)GetProcAddress(hKernel32dll, "ReleaseSRWLockShared");
+    mdbx_srwlock_AcquireExclusive =
+        (MDBX_srwlock_function)GetProcAddress(hKernel32dll, "AcquireSRWLockExclusive");
+    mdbx_srwlock_ReleaseExclusive =
+        (MDBX_srwlock_function)GetProcAddress(hKernel32dll, "ReleaseSRWLockExclusive");
   } else {
     mdbx_srwlock_Init = stub_srwlock_Init;
     mdbx_srwlock_AcquireShared = stub_srwlock_AcquireShared;
@@ -157,6 +195,18 @@ static void mdbx_winnt_import(void) {
     mdbx_srwlock_AcquireExclusive = stub_srwlock_AcquireExclusive;
     mdbx_srwlock_ReleaseExclusive = stub_srwlock_ReleaseExclusive;
   }
+
+  mdbx_GetFileInformationByHandleEx =
+      (MDBX_GetFileInformationByHandleEx)GetProcAddress(hKernel32dll, "GetFileInformationByHandleEx");
+
+  mdbx_GetVolumeInformationByHandleW =
+      (MDBX_GetVolumeInformationByHandleW)GetProcAddress(hKernel32dll, "GetVolumeInformationByHandleW");
+
+  mdbx_GetFinalPathNameByHandleW =
+      (MDBX_GetFinalPathNameByHandleW)GetProcAddress(hKernel32dll, "GetFinalPathNameByHandleW");
+
+  const HINSTANCE hNtdll = GetModuleHandleA("ntdll.dll");
+  mdbx_NtFsControlFile = (MDBX_NtFsControlFile)GetProcAddress(hNtdll, "NtFsControlFile");
 }
 
 #endif /* _WIN32 || _WIN64 */
@@ -830,69 +880,75 @@ int mdbx_is_file_local(MDBX_filehandle_t handle, int flags) {
   if (GetFileType(handle) != FILE_TYPE_DISK)
     return ERROR_FILE_OFFLINE;
 
-  FILE_REMOTE_PROTOCOL_INFO RemoteProtocolInfo;
-  if (GetFileInformationByHandleEx(handle, FileRemoteProtocolInfo, &RemoteProtocolInfo,
-                                   sizeof(RemoteProtocolInfo))) {
-    if ((RemoteProtocolInfo.Flags & (REMOTE_PROTOCOL_INFO_FLAG_LOOPBACK |
-                                     REMOTE_PROTOCOL_INFO_FLAG_OFFLINE)) != REMOTE_PROTOCOL_INFO_FLAG_LOOPBACK)
-      return ERROR_FILE_OFFLINE;
-  }
-
-#if defined(_WIN64) && defined(WOF_CURRENT_VERSION)
-  NTSTATUS rc;
-  struct {
-    WOF_EXTERNAL_INFO wof_info;
-    union {
-      WIM_PROVIDER_EXTERNAL_INFO wim_info;
-      FILE_PROVIDER_EXTERNAL_INFO_V1 file_info;
-    };
-    size_t reserved_for_microsoft_madness[42];
-  } GetExternalBacking_OutputBuffer;
-  IO_STATUS_BLOCK StatusBlock;
-  rc = NtFsControlFile(handle, NULL, NULL, NULL, &StatusBlock, FSCTL_GET_EXTERNAL_BACKING, NULL, 0,
-                       &GetExternalBacking_OutputBuffer, sizeof(GetExternalBacking_OutputBuffer));
-  if (rc != STATUS_OBJECT_NOT_EXTERNALLY_BACKED && rc != STATUS_INVALID_DEVICE_REQUEST)
-    return NT_SUCCESS(rc) ? ERROR_REMOTE_STORAGE_MEDIA_ERROR : ntstatus2errcode(rc);
-#endif
-
-  WCHAR PathBuffer[INT16_MAX];
-  DWORD VolumeSerialNumber, FileSystemFlags;
-  if (!GetVolumeInformationByHandleW(handle, PathBuffer, INT16_MAX, &VolumeSerialNumber, NULL,
-                                     &FileSystemFlags, NULL, 0))
-    return GetLastError();
-
-  if ((flags & MDBX_RDONLY) == 0) {
-    if (FileSystemFlags & (FILE_SEQUENTIAL_WRITE_ONCE | FILE_READ_ONLY_VOLUME | FILE_VOLUME_IS_COMPRESSED))
-      return ERROR_REMOTE_STORAGE_MEDIA_ERROR;
-  }
-
-  if (!GetFinalPathNameByHandleW(handle, PathBuffer, INT16_MAX, FILE_NAME_NORMALIZED | VOLUME_NAME_NT))
-    return GetLastError();
-
-  if (_wcsnicmp(PathBuffer, L"\\Device\\Mup\\", 12) == 0)
-    return ERROR_REMOTE_STORAGE_MEDIA_ERROR;
-
-  if (GetFinalPathNameByHandleW(handle, PathBuffer, INT16_MAX, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)) {
-    UINT DriveType = GetDriveTypeW(PathBuffer);
-    if (DriveType == DRIVE_NO_ROOT_DIR && wcsncmp(PathBuffer, L"\\\\?\\", 4) == 0 &&
-        wcsncmp(PathBuffer + 5, L":\\", 2) == 0) {
-      PathBuffer[7] = 0;
-      DriveType = GetDriveTypeW(PathBuffer + 4);
+  if (mdbx_GetFileInformationByHandleEx) {
+    FILE_REMOTE_PROTOCOL_INFO RemoteProtocolInfo;
+    if (mdbx_GetFileInformationByHandleEx(handle, FileRemoteProtocolInfo, &RemoteProtocolInfo,
+                                          sizeof(RemoteProtocolInfo))) {
+      if ((RemoteProtocolInfo.Flags &
+           (REMOTE_PROTOCOL_INFO_FLAG_LOOPBACK | REMOTE_PROTOCOL_INFO_FLAG_OFFLINE)) !=
+          REMOTE_PROTOCOL_INFO_FLAG_LOOPBACK)
+        return ERROR_FILE_OFFLINE;
     }
-    switch (DriveType) {
-    case DRIVE_CDROM:
-      if (flags & MDBX_RDONLY)
-        break;
-    // fall through
-    case DRIVE_UNKNOWN:
-    case DRIVE_NO_ROOT_DIR:
-    case DRIVE_REMOTE:
-    default:
+  }
+
+  if (mdbx_NtFsControlFile) {
+    NTSTATUS rc;
+    struct {
+      WOF_EXTERNAL_INFO wof_info;
+      union {
+        WIM_PROVIDER_EXTERNAL_INFO wim_info;
+        FILE_PROVIDER_EXTERNAL_INFO_V1 file_info;
+      };
+      size_t reserved_for_microsoft_madness[42];
+    } GetExternalBacking_OutputBuffer;
+    IO_STATUS_BLOCK StatusBlock;
+    rc = mdbx_NtFsControlFile(handle, NULL, NULL, NULL, &StatusBlock, FSCTL_GET_EXTERNAL_BACKING, NULL, 0,
+                              &GetExternalBacking_OutputBuffer, sizeof(GetExternalBacking_OutputBuffer));
+    if (rc != STATUS_OBJECT_NOT_EXTERNALLY_BACKED && rc != STATUS_INVALID_DEVICE_REQUEST)
+      return NT_SUCCESS(rc) ? ERROR_REMOTE_STORAGE_MEDIA_ERROR : ntstatus2errcode(rc);
+  }
+
+  if (mdbx_GetVolumeInformationByHandleW && mdbx_GetFinalPathNameByHandleW) {
+    WCHAR PathBuffer[INT16_MAX];
+    DWORD VolumeSerialNumber, FileSystemFlags;
+    if (!mdbx_GetVolumeInformationByHandleW(handle, PathBuffer, INT16_MAX, &VolumeSerialNumber, NULL,
+                                            &FileSystemFlags, NULL, 0))
+      return GetLastError();
+
+    if ((flags & MDBX_RDONLY) == 0) {
+      if (FileSystemFlags & (FILE_SEQUENTIAL_WRITE_ONCE | FILE_READ_ONLY_VOLUME | FILE_VOLUME_IS_COMPRESSED))
+        return ERROR_REMOTE_STORAGE_MEDIA_ERROR;
+    }
+
+    if (!mdbx_GetFinalPathNameByHandleW(handle, PathBuffer, INT16_MAX, FILE_NAME_NORMALIZED | VOLUME_NAME_NT))
+      return GetLastError();
+
+    if (_wcsnicmp(PathBuffer, L"\\Device\\Mup\\", 12) == 0)
       return ERROR_REMOTE_STORAGE_MEDIA_ERROR;
-    case DRIVE_REMOVABLE:
-    case DRIVE_FIXED:
-    case DRIVE_RAMDISK:
-      break;
+
+    if (mdbx_GetFinalPathNameByHandleW(handle, PathBuffer, INT16_MAX,
+                                       FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)) {
+      UINT DriveType = GetDriveTypeW(PathBuffer);
+      if (DriveType == DRIVE_NO_ROOT_DIR && wcsncmp(PathBuffer, L"\\\\?\\", 4) == 0 &&
+          wcsncmp(PathBuffer + 5, L":\\", 2) == 0) {
+        PathBuffer[7] = 0;
+        DriveType = GetDriveTypeW(PathBuffer + 4);
+      }
+      switch (DriveType) {
+      case DRIVE_CDROM:
+        if (flags & MDBX_RDONLY)
+          break;
+      // fall through
+      case DRIVE_UNKNOWN:
+      case DRIVE_NO_ROOT_DIR:
+      case DRIVE_REMOTE:
+      default:
+        return ERROR_REMOTE_STORAGE_MEDIA_ERROR;
+      case DRIVE_REMOVABLE:
+      case DRIVE_FIXED:
+      case DRIVE_RAMDISK:
+        break;
+      }
     }
   }
 #else

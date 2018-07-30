@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -90,10 +90,6 @@
 #endif
 
 /*----------------------------------------------------------------------------*/
-
-#if !defined(__thread) && (defined(_MSC_VER) || defined(__DMC__))
-#   define __thread __declspec(thread)
-#endif /* __thread */
 
 #ifndef __always_inline
 #   if defined(__GNUC__) || __has_attribute(always_inline)

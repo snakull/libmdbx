@@ -65,6 +65,7 @@
 /* Systems includes */
 
 #if defined(_WIN32) || defined(_WIN64)
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winnt.h>
 #include <winternl.h>
@@ -83,7 +84,9 @@ typedef struct {
 } mdbx_condmutex_t;
 typedef CRITICAL_SECTION mdbx_fastmutex_t;
 #define MDBX_PATH_SEPARATOR "\\"
+
 #else
+
 #include <pthread.h>
 #include <signal.h>
 #include <sys/file.h>

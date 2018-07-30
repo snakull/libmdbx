@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -97,7 +97,7 @@ const char *__cold mdbx_strerror(MDBX_error_t errnum) {
   const char *msg = __mdbx_strerr(errnum);
   if (!msg) {
 #ifdef _MSC_VER
-    static __thread char buffer[1024];
+    static char buffer[1024];
     size_t size = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, errnum,
                                  MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), buffer, sizeof(buffer), nullptr);
     if (size)

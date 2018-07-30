@@ -2482,8 +2482,9 @@ extern LIBMDBX_API const mdbx_version_info_t mdbx_version;
 extern LIBMDBX_API const mdbx_build_info_t mdbx_build;
 
 #if defined(_WIN32) || defined(_WIN64)
-/* Dll initialization callback for old Windows NT versions. This function MUST
- * be called once from DllMain() for each reason (DLL_PROCESS_ATTACH,
+/* Dll initialization callback for ability to dynamically load MDBX DLL by
+ * LoadLibrary() on Windows versions before Windows Vista. This function MUST be
+ * called once from DllMain() for each reason (DLL_PROCESS_ATTACH,
  * DLL_PROCESS_DETACH, DLL_THREAD_ATTACH and DLL_THREAD_DETACH). Do this
  * carefully and ONLY when actual Windows version don't support initialization
  * via "TLS Directory" (e.g .CRT$XL[A-Z] sections in executable or dll file). */

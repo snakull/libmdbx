@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -79,6 +79,10 @@
 #include "../mdbx.h"
 #include "../src/defs.h"
 #include "../src/osal.h"
+
+#if !defined(__thread) && (defined(_MSC_VER) || defined(__DMC__))
+#define __thread __declspec(thread)
+#endif /* __thread */
 
 #if __has_include(<filesystem>)
 #include <filesystem>
