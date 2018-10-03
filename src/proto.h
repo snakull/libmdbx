@@ -218,7 +218,6 @@ static int aa_return(MDBX_txn_t *txn, unsigned txn_end_flags);
 static MDBX_sequence_result_t aa_sequence(MDBX_txn_t *txn, aht_t *aht, uint64_t increment);
 ////////////////////
 
-static MDBX_error_t __must_check_result cursor_check(cursor_t *mc, bool pending);
 static size_t __must_check_result cursor_size(aht_t *aht);
 static int __must_check_result cursor_open(MDBX_txn_t *txn, aht_t *aht, MDBX_cursor_t *bc);
 static int cursor_close(MDBX_cursor_t *bc);
@@ -253,7 +252,6 @@ static MDBX_comparer_t *default_keycmp(unsigned flags);
 static MDBX_comparer_t *default_datacmp(unsigned flags);
 
 static txnid_t rbr(MDBX_env_t *env, const txnid_t laggard);
-static int __must_check_result audit(MDBX_txn_t *txn, unsigned befree_stored);
 static page_t *page_malloc(MDBX_txn_t *txn, unsigned num);
 static void dpage_free(MDBX_env_t *env, page_t *mp);
 static void dlist_free(MDBX_txn_t *txn);
@@ -392,13 +390,25 @@ static inline MDBX_numeric_result_t numeric_result(MDBX_error_t err, uintptr_t v
   return result;
 }
 
+#if MDBX_AUDIT
+static MDBX_error_t __must_check_result cursor_check(cursor_t *mc, bool pending);
+static MDBX_error_t __must_check_result audit(MDBX_txn_t *txn, unsigned befree_stored);
+#else
+static inline MDBX_error_t __must_check_result cursor_check(cursor_t *mc, bool pending) {
+  (void)mc;
+  (void)pending;
+  return MDBX_SUCCESS;
+}
+static inline MDBX_error_t __must_check_result audit(MDBX_txn_t *txn, unsigned befree_stored) {
+  (void)txn;
+  (void)befree_stored;
+  return MDBX_SUCCESS;
+}
+#endif /* MDBX_AUDIT */
+
 static inline void mdbx_jitter4testing(bool tiny) {
-#ifndef NDEBUG
   if (unlikely(MDBX_DBG_JITTER & mdbx_debug_bits))
     mdbx_jitter(tiny);
-#else
-  (void)tiny;
-#endif
 }
 
 MDBX_INTERNAL MDBX_id128_t osal_bootid_value;

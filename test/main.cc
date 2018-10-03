@@ -12,6 +12,14 @@
  * <http://www.OpenLDAP.org/license.html>.
  */
 
+#ifndef DEFAULT_LOG_LEVEL
+#ifdef NDEBUG
+#define DEFAULT_LOG_LEVEL logging::info
+#else
+#define DEFAULT_LOG_LEVEL logging::trace
+#endif
+#endif /* DEFAULT_LOG_LEVEL */
+
 #include "test.h"
 
 void __noreturn usage(void) {
@@ -24,12 +32,7 @@ void __noreturn usage(void) {
 
 void actor_params::set_defaults(const std::string &tmpdir) {
   pathname_log = "";
-  loglevel =
-#ifdef NDEBUG
-      logging::info;
-#else
-      logging::trace;
-#endif
+  loglevel = DEFAULT_LOG_LEVEL;
 
   pathname_db = tmpdir + "mdbx-test.db";
   mode_flags = MDBX_WRITEMAP | MDBX_MAPASYNC | MDBX_NORDAHEAD | MDBX_NOMEMINIT | MDBX_COALESCE |

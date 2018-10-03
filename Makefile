@@ -22,7 +22,7 @@ mandir	?= $(prefix)/man
 suffix	?=
 CFLAGS	?= -O2 -g3 -Wall -Werror -Wextra -ffunction-sections -fPIC -fvisibility=hidden
 
-XCFLAGS	?= -D_DEBUG=1 -DMDBX_DEBUG=1 -DLIBMDBX_EXPORTS=1
+XCFLAGS	?= -DMDBX_CONFIGURED_DEBUG_ABILITIES=127 -DLIBMDBX_EXPORTS=1
 CFLAGS	+= -D_GNU_SOURCE=1 -std=gnu11 -pthread $(XCFLAGS)
 CXXFLAGS = -std=c++17 $(filter-out -std=gnu11,$(CFLAGS))
 TESTDB	?= $(shell [ -d /dev/shm ] && echo /dev/shm || echo /tmp)/mdbx-test.db

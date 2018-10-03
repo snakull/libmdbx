@@ -333,59 +333,6 @@
 
 /*----------------------------------------------------------------------------*/
 
-#if defined(USE_VALGRIND)
-#   include <valgrind/memcheck.h>
-#   ifndef VALGRIND_DISABLE_ADDR_ERROR_REPORTING_IN_RANGE
-        /* LY: available since Valgrind 3.10 */
-#       define VALGRIND_DISABLE_ADDR_ERROR_REPORTING_IN_RANGE(a,s)
-#       define VALGRIND_ENABLE_ADDR_ERROR_REPORTING_IN_RANGE(a,s)
-#   endif
-#elif !defined(RUNNING_ON_VALGRIND)
-#   define VALGRIND_CREATE_MEMPOOL(h,r,z)
-#   define VALGRIND_DESTROY_MEMPOOL(h)
-#   define VALGRIND_MEMPOOL_TRIM(h,a,s)
-#   define VALGRIND_MEMPOOL_ALLOC(h,a,s)
-#   define VALGRIND_MEMPOOL_FREE(h,a)
-#   define VALGRIND_MEMPOOL_CHANGE(h,a,b,s)
-#   define VALGRIND_MAKE_MEM_NOACCESS(a,s)
-#   define VALGRIND_MAKE_MEM_DEFINED(a,s)
-#   define VALGRIND_MAKE_MEM_UNDEFINED(a,s)
-#   define VALGRIND_DISABLE_ADDR_ERROR_REPORTING_IN_RANGE(a,s)
-#   define VALGRIND_ENABLE_ADDR_ERROR_REPORTING_IN_RANGE(a,s)
-#   define VALGRIND_CHECK_MEM_IS_ADDRESSABLE(a,s) (0)
-#   define VALGRIND_CHECK_MEM_IS_DEFINED(a,s) (0)
-#   define RUNNING_ON_VALGRIND (0)
-#endif /* USE_VALGRIND */
-
-#if !defined(NDEBUG) || defined(_DEBUG)
-#   define MEMSET4DEBUG(addr, value, size) memset(addr, value, size)
-#else
-#   define MEMSET4DEBUG(addr, value, size) __noop()
-#endif
-
-#define VALGRIND_MAKE_MEM_UNDEFINED_ERASE(a, s)                                \
-  do {                                                                         \
-    MEMSET4DEBUG(a, 0xCC, s);                                                  \
-    VALGRIND_MAKE_MEM_UNDEFINED(a, s);                                         \
-  } while (0)
-
-#define VALGRIND_MAKE_MEM_NOACCESS_ERASE(a, s)                                 \
-  do {                                                                         \
-    MEMSET4DEBUG(a, 0xDD, s);                                                  \
-    VALGRIND_MAKE_MEM_NOACCESS(a, s);                                          \
-  } while (0)
-
-#ifdef __SANITIZE_ADDRESS__
-#   include <sanitizer/asan_interface.h>
-#elif !defined(ASAN_POISON_MEMORY_REGION)
-#   define ASAN_POISON_MEMORY_REGION(addr, size) \
-        ((void)(addr), (void)(size))
-#   define ASAN_UNPOISON_MEMORY_REGION(addr, size) \
-        ((void)(addr), (void)(size))
-#endif /* __SANITIZE_ADDRESS__ */
-
-/*----------------------------------------------------------------------------*/
-
 #ifndef ARRAY_LENGTH
 #   ifdef __cplusplus
         template <typename T, size_t N>

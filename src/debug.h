@@ -21,29 +21,84 @@
 /*----------------------------------------------------------------------------*/
 /* Debug and Logging stuff */
 
+#undef NDEBUG
+#undef _NDEBUG
+#if MDBX_DEBUG
+#define _DEBUG 1
+#else
+#define NDEBUG 1
+#endif
+
 #if MDBX_CONFIGURED_DEBUG_ABILITIES
 MDBX_INTERNAL MDBX_debugbits_t mdbx_debug_bits =
     (MDBX_DBG_LOGGING | MDBX_DBG_ASSERT) & MDBX_CONFIGURED_DEBUG_ABILITIES;
 #define MDBX_DEBUG_BITS (MDBX_CONFIGURED_DEBUG_ABILITIES & mdbx_debug_bits)
 #else
 #define MDBX_DEBUG_BITS 0
+#define mdbx_debug_bits 0
 #endif /* MDBX_CONFIGURED_DEBUG_ABILITIES */
 
 #define MDBX_ASSERTIONS_ENABLED() (MDBX_DEBUG_BITS & MDBX_DBG_ASSERT)
 #define MDBX_AUDIT_ENABLED() (MDBX_DEBUG_BITS & MDBX_DBG_AUDIT)
 #define MDBX_JITTER_ENABLED() (MDBX_DEBUG_BITS & MDBX_DBG_JITTER)
 
-MDBX_INTERNAL void mdbx_panic(const MDBX_env_t *env, MDBX_debuglog_subsystem_t subsystem, const char *func,
-                              unsigned line, const char *fmt, ...)
-#if defined(__GNUC__) || __has_attribute(format)
-    __attribute__((format(printf, 5, 6)))
-#endif
-    ;
+MDBX_INTERNAL __printf_args(5, 6) void mdbx_panic(const MDBX_env_t *env, MDBX_debuglog_subsystem_t subsystem,
+                                                  const char *func, unsigned line, const char *fmt, ...);
 
 #define mdbx_fatal(env, subsys, fmt, ...) mdbx_panic(env, subsys, __func__, __LINE__, fmt, ##__VA_ARGS__)
 
 /*----------------------------------------------------------------------------*/
 
+#if MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_CONFIG_VALGRIND
+#include <valgrind/memcheck.h>
+#ifndef VALGRIND_DISABLE_ADDR_ERROR_REPORTING_IN_RANGE
+/* LY: available since Valgrind 3.10 */
+#define VALGRIND_DISABLE_ADDR_ERROR_REPORTING_IN_RANGE(a, s)
+#define VALGRIND_ENABLE_ADDR_ERROR_REPORTING_IN_RANGE(a, s)
+#endif
+#elif !defined(RUNNING_ON_VALGRIND)
+#define VALGRIND_CREATE_MEMPOOL(h, r, z)
+#define VALGRIND_DESTROY_MEMPOOL(h)
+#define VALGRIND_MEMPOOL_TRIM(h, a, s)
+#define VALGRIND_MEMPOOL_ALLOC(h, a, s)
+#define VALGRIND_MEMPOOL_FREE(h, a)
+#define VALGRIND_MEMPOOL_CHANGE(h, a, b, s)
+#define VALGRIND_MAKE_MEM_NOACCESS(a, s)
+#define VALGRIND_MAKE_MEM_DEFINED(a, s)
+#define VALGRIND_MAKE_MEM_UNDEFINED(a, s)
+#define VALGRIND_DISABLE_ADDR_ERROR_REPORTING_IN_RANGE(a, s)
+#define VALGRIND_ENABLE_ADDR_ERROR_REPORTING_IN_RANGE(a, s)
+#define VALGRIND_CHECK_MEM_IS_ADDRESSABLE(a, s) (0)
+#define VALGRIND_CHECK_MEM_IS_DEFINED(a, s) (0)
+#define RUNNING_ON_VALGRIND (0)
+#endif /* MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_CONFIG_VALGRIND */
+
+#if !defined(NDEBUG) || defined(_DEBUG)
+#define MEMSET4DEBUG(addr, value, size) memset(addr, value, size)
+#else
+#define MEMSET4DEBUG(addr, value, size) __noop()
+#endif
+
+#define VALGRIND_MAKE_MEM_UNDEFINED_ERASE(a, s)                                                               \
+  do {                                                                                                        \
+    MEMSET4DEBUG(a, 0xCC, s);                                                                                 \
+    VALGRIND_MAKE_MEM_UNDEFINED(a, s);                                                                        \
+  } while (0)
+
+#define VALGRIND_MAKE_MEM_NOACCESS_ERASE(a, s)                                                                \
+  do {                                                                                                        \
+    MEMSET4DEBUG(a, 0xDD, s);                                                                                 \
+    VALGRIND_MAKE_MEM_NOACCESS(a, s);                                                                         \
+  } while (0)
+
+#ifdef __SANITIZE_ADDRESS__
+#include <sanitizer/asan_interface.h>
+#elif !defined(ASAN_POISON_MEMORY_REGION)
+#define ASAN_POISON_MEMORY_REGION(addr, size) ((void)(addr), (void)(size))
+#define ASAN_UNPOISON_MEMORY_REGION(addr, size) ((void)(addr), (void)(size))
+#endif /* __SANITIZE_ADDRESS__ */
+
+/*----------------------------------------------------------------------------*/
 MDBX_INTERNAL void __cold mdbx_assert_fail(const MDBX_env_t *env, const char *msg, const char *func,
                                            unsigned line);
 
@@ -81,24 +136,44 @@ static inline debug_event_t debug_event(MDBX_debuglog_subsystem_t subsys, MDBX_d
   return result;
 }
 
-MDBX_INTERNAL void mdbx_dbglog(const debug_event_t event, const char *function, const char *fmt, ...)
-#if defined(__GNUC__) || __has_attribute(format)
-    __attribute__((format(printf, 3, 4)))
-#endif
-    ;
-
 typedef struct MDBX_debug_cookie {
   void *ptr;
 } MDBX_debug_cookie_t;
 
+#if MDBX_LOGGING
+MDBX_INTERNAL __printf_args(3, 4) void mdbx_dbglog(const debug_event_t event, const char *function,
+                                                   const char *fmt, ...);
 MDBX_INTERNAL MDBX_debug_cookie_t mdbx_dbglog_begin(const debug_event_t event, const char *function);
-MDBX_INTERNAL void mdbx_dbglog_continue(MDBX_debug_cookie_t cookie, const char *fmt, ...)
-#if defined(__GNUC__) || __has_attribute(format)
-    __attribute__((format(printf, 2, 3)))
-#endif
-    ;
+MDBX_INTERNAL __printf_args(2, 3) void mdbx_dbglog_continue(MDBX_debug_cookie_t cookie, const char *fmt, ...);
 MDBX_INTERNAL void mdbx_dbglog_continue_ap(MDBX_debug_cookie_t cookie, const char *fmt, va_list ap);
 MDBX_INTERNAL void mdbx_dbglog_end(MDBX_debug_cookie_t cookie, const char *optional_final_msg);
+#else
+static inline __printf_args(3, 4) void mdbx_dbglog(const debug_event_t event, const char *function,
+                                                   const char *fmt, ...) {
+  (void)event;
+  (void)function;
+  (void)fmt;
+}
+static inline __printf_args(2, 3) void mdbx_dbglog_continue(MDBX_debug_cookie_t cookie, const char *fmt, ...) {
+  (void)cookie;
+  (void)fmt;
+}
+static inline MDBX_debug_cookie_t mdbx_dbglog_begin(const debug_event_t event, const char *function) {
+  MDBX_debug_cookie_t cookie = {0};
+  (void)event;
+  (void)function;
+  return cookie;
+}
+static inline void mdbx_dbglog_continue_ap(MDBX_debug_cookie_t cookie, const char *fmt, va_list ap) {
+  (void)cookie;
+  (void)fmt;
+  (void)ap;
+}
+static inline void mdbx_dbglog_end(MDBX_debug_cookie_t cookie, const char *optional_final_msg) {
+  (void)cookie;
+  (void)optional_final_msg;
+}
+#endif /* ! MDBX_LOGGING */
 
 #define dbglog_begin(subsys, level)                                                                           \
   do {                                                                                                        \
@@ -111,7 +186,7 @@ MDBX_INTERNAL void mdbx_dbglog_end(MDBX_debug_cookie_t cookie, const char *optio
   }                                                                                                           \
   while (0)
 
-#if MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_CONFIG_DBG_LOGGING
+#if MDBX_LOGGING
 MDBX_INTERNAL uint8_t mdbx_dbglog_levels[MDBX_LOG_MAX];
 MDBX_INTERNAL MDBX_debuglog_callback_t *mdbx_debug_logger;
 #define MDBX_DBGLOG_ENABLED(subsys, level) (level >= (MDBX_debuglog_level_t)mdbx_dbglog_levels[subsys])

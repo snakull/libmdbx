@@ -913,10 +913,10 @@ struct MDBX_env {
   char *me_pathname_sld; /* optional pathname of the SLD file (Separate Large Data) */
   char *me_pathname_buf; /* buffer for all pathnames */
 
-#if MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_CONFIG_DBG_ASSERTIONS
+#if MDBX_ASSERTIONS
   MDBX_assert_callback_t *me_assert_func; /*  Callback for assertion failures */
 #endif
-#ifdef USE_VALGRIND
+#if MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_CONFIG_VALGRIND
   int me_valgrind_handle;
 #endif
 };
@@ -933,7 +933,7 @@ struct MDBX_env {
 /* Key size which fits in a DKBUF. */
 #define DKBUF_MAXKEYSIZE 511 /* FIXME */
 
-#if MDBX_DEBUG
+#if MDBX_DEBUG && MDBX_LOGGING
 #define DKBUF char _kbuf[DKBUF_MAXKEYSIZE * 4 + 2]
 #define DKEY(x) mdbx_dump_iov(x, _kbuf, DKBUF_MAXKEYSIZE * 2 + 1)
 #define DVAL(x) mdbx_dump_iov(x, _kbuf + DKBUF_MAXKEYSIZE * 2 + 1, DKBUF_MAXKEYSIZE * 2 + 1)

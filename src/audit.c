@@ -29,8 +29,7 @@
 
 /*----------------------------------------------------------------------------*/
 
-#if MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_CONFIG_DBG_AUDIT
-
+#if MDBX_AUDIT
 static const char *leafnode_type(node_t *n) {
   static char *const tp[2][2] = {{"", ": AA"}, {": sub-page", ": sub-AA"}};
   return unlikely(n->node_flags8 & NODE_BIG)
@@ -165,12 +164,11 @@ static __cold MDBX_error_t cursor_check(cursor_t *mc, bool pending) {
   }
   return MDBX_SUCCESS;
 }
-#endif /* MDBX_CONFIG_DBG_AUDIT */
 
 /* Count all the pages in each AA and in the GACO and make sure
  * it matches the actual number of pages being used.
  * All named AAs must be open for a correct count. */
-static int audit(MDBX_txn_t *txn, unsigned befree_stored) {
+static MDBX_error_t audit(MDBX_txn_t *txn, unsigned befree_stored) {
   MDBX_cursor_t mc;
   int rc = cursor_init(&mc, txn, aht_gaco(txn));
   if (unlikely(rc != MDBX_SUCCESS)) {
@@ -273,6 +271,7 @@ static int audit(MDBX_txn_t *txn, unsigned befree_stored) {
               txn->mt_next_pgno);
   return MDBX_PROBLEM;
 }
+#endif /* MDBX_AUDIT */
 
 __cold MDBX_error_t mdbx_get4testing(MDBX_txn_t *txn, MDBX_aah_t aah, MDBX_iov_t *key, MDBX_iov_t *data) {
   if (unlikely(!key || !data))

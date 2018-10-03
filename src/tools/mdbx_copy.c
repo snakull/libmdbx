@@ -1,4 +1,4 @@
-/* copy_ctx_.c - memory-mapped database backup tool */
+﻿/* copy_ctx_.c - memory-mapped database backup tool */
 
 /*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
@@ -79,12 +79,10 @@ int main(int argc, char *argv[]) {
   signal(SIGTERM, signal_handler);
 #endif /* !WINDOWS */
 
-#if MDBX_DEBUG == 0
-  mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_ERROR);
-#elif MDBX_DEBUG == 1
-  mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_NOTICE);
-#else
+#if MDBX_DEBUG
   mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_EXTRA);
+#else
+  mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_ERROR);
 #endif
 
   act = "opening databook";

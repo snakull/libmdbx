@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -15,7 +15,6 @@
 #include "./debug.h"
 #include "./bits.h"
 #include "./proto.h"
-#include "./ualb.h"
 
 /*----------------------------------------------------------------------------*/
 
@@ -29,16 +28,17 @@ __extern_C __declspec(dllimport) void __cdecl _assert(char const *message, char 
 #endif /* _MSC_VER */
 
 void __cold mdbx_assert_fail(const MDBX_env_t *env, const char *msg, const char *func, unsigned line) {
-#if MDBX_CONFIGURED_DEBUG_ABILITIES
+#if MDBX_ASSERTIONS
   if ((MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_DBG_ASSERT) && env && env->me_assert_func) {
     env->me_assert_func(env, msg, func, line);
     return;
   }
 #else
   (void)env;
-#endif /* MDBX_CONFIGURED_DEBUG_ABILITIES */
+#endif /* MDBX_ASSERTIONS */
 
   mdbx_dbglog(debug_event(MDBX_LOG_MISC, MDBX_LOGLEVEL_FATAL, line), func, "assert: %s\n", msg);
+
 #ifndef _MSC_VER
   __assert_fail(msg, "mdbx", line, func);
 #else
@@ -52,6 +52,14 @@ void __cold mdbx_panic(const MDBX_env_t *env, MDBX_debuglog_subsystem_t subsyste
   (void)env;
   (void)subsystem;
 
+  STATIC_ASSERT(MDBX_CONFIG_ASSERTIONS == MDBX_DBG_ASSERT);
+  STATIC_ASSERT(MDBX_CONFIG_LOGGING == MDBX_DBG_LOGGING);
+  STATIC_ASSERT(MDBX_CONFIG_DBDUMP == MDBX_DBG_DUMP);
+  STATIC_ASSERT(MDBX_CONFIG_DBG_JITTER == MDBX_DBG_JITTER);
+  STATIC_ASSERT(MDBX_CONFIG_DBG_AUDIT == MDBX_DBG_AUDIT);
+  // STATIC_ASSERT(MDBX_CONFIG_ASSERTIONS == );
+  // STATIC_ASSERT(MDBX_CONFIG_ASSERTIONS == );
+
   va_list ap;
   va_start(ap, fmt);
 
@@ -62,25 +70,24 @@ void __cold mdbx_panic(const MDBX_env_t *env, MDBX_debuglog_subsystem_t subsyste
   if (num < 1 || !message)
     message = "<troubles with message preparation>";
 
-#if defined(_WIN32) || defined(_WIN64)
-  if (IsDebuggerPresent()) {
-    OutputDebugStringA(message);
-    DebugBreak();
-  }
-  FatalExit(ERROR_UNHANDLED_ERROR);
-#endif
-
-#if MDBX_CONFIGURED_DEBUG_ABILITIES
   mdbx_dbglog(debug_event(subsystem, MDBX_LOGLEVEL_FATAL, line), func, "\n\rMDBX_PANIC: %s\n\r", message);
+
+#if defined(_WIN32) || defined(_WIN64)
+  OutputDebugStringA(message);
+  if (IsDebuggerPresent())
+    DebugBreak();
+  FatalExit(ERROR_UNHANDLED_ERROR);
 #else
+#if !MDBX_LOGGING
   dprintf(STDERR_FILENO, "\n\rMDBX_PANIC: %s (%s.%d)\n\r", message, func, line);
 #endif
-
   abort();
+#endif
 }
 
 /*----------------------------------------------------------------------------*/
 
+#if MDBX_LOGGING
 MDBX_INTERNAL void mdbx_dbglog(const debug_event_t event, const char *function, const char *fmt, ...) {
   STATIC_ASSERT(MDBX_LOGLEVEL_EXTRA == 0 && MDBX_LOGLEVEL_FATAL == 7);
   STATIC_ASSERT(MDBX_LOG_MISC == 0 && MDBX_LOG_ALL < 0);
@@ -140,3 +147,4 @@ MDBX_INTERNAL void mdbx_dbglog_end(MDBX_debug_cookie_t cookie, const char *optio
   (void)cookie;
   (void)optional_final_msg;
 }
+#endif /* MDBX_LOGGING */

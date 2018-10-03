@@ -255,5 +255,5 @@ static page_t *__cold init_metas(const MDBX_env_t *env, void *buffer) {
   mdbx_assert(env, !meta_eq(env, &page0->mp_meta, &page1->mp_meta));
   mdbx_assert(env, !meta_eq(env, &page1->mp_meta, &page2->mp_meta));
   mdbx_assert(env, !meta_eq(env, &page2->mp_meta, &page0->mp_meta));
-  return MDBX_DEVEL ? page1 : page2;
+  return (MDBX_DEVEL) ? page1 : page2;
 }

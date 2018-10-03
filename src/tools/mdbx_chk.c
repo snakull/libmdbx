@@ -99,11 +99,7 @@ struct problem {
 struct problem *problems_list;
 uint64_t total_problems;
 
-static void
-#ifdef __GNUC__
-    __attribute__((format(printf, 1, 2)))
-#endif
-    print(const char *msg, ...) {
+static __printf_args(1, 2) void print(const char *msg, ...) {
   if (!quiet) {
     va_list args;
 
@@ -114,11 +110,7 @@ static void
   }
 }
 
-static void
-#ifdef __GNUC__
-    __attribute__((format(printf, 1, 2)))
-#endif
-    error(const char *msg, ...) {
+static __printf_args(1, 2) void error(const char *msg, ...) {
   total_problems++;
 
   if (!quiet) {
@@ -177,10 +169,7 @@ static walk_dbi_t *pagemap_lookup_dbi(const MDBX_iov_t ident, bool silent) {
   return last = dbi;
 }
 
-static void
-#ifdef __GNUC__
-    __attribute__((format(printf, 4, 5)))
-#endif
+static void __printf_args(4, 5)
     problem_add(const char *object, uint64_t entry_number, const char *msg, const char *extra, ...) {
   total_problems++;
 
@@ -883,12 +872,10 @@ int main(int argc, char *argv[]) {
         (open_flags & MDBX_RDONLY) ? "only" : "write");
   fflush(NULL);
 
-#if MDBX_DEBUG == 0
-  mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_ERROR);
-#elif MDBX_DEBUG == 1
-  mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_NOTICE);
-#else
+#if MDBX_DEBUG
   mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_EXTRA);
+#else
+  mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_ERROR);
 #endif
 
   err = mdbx_init(&env);

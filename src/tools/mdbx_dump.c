@@ -1,4 +1,4 @@
-/* mdbx_dump.c - memory-mapped database dump tool */
+﻿/* mdbx_dump.c - memory-mapped database dump tool */
 
 /*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
@@ -230,12 +230,10 @@ int main(int argc, char *argv[]) {
 
   envname = argv[optind];
 
-#if MDBX_DEBUG == 0
-  mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_ERROR);
-#elif MDBX_DEBUG == 1
-  mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_NOTICE);
-#else
+#if MDBX_DEBUG
   mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_EXTRA);
+#else
+  mdbx_set_loglevel(MDBX_LOG_ALL, MDBX_LOGLEVEL_ERROR);
 #endif
 
   MDBX_env_t *env;

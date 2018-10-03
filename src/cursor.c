@@ -341,7 +341,7 @@ static int update_key(cursor_t *mc, const MDBX_iov_t *key) {
   mp = mc->mc_pg[mc->mc_top];
   node = node_ptr(mp, indx);
   ptr = mp->mp_ptrs[indx];
-  if (MDBX_DEBUG) {
+  if (MDBX_DEBUG && MDBX_LOGGING) {
     char kbuf2[DKBUF_MAXKEYSIZE * 2 + 1];
     MDBX_iov_t k2 = {NODEKEY(node), node->mn_ksize16};
     mdbx_debug("update key %u (ofs %u) [%s] to [%s] on page %" PRIaPGNO, indx, ptr,
@@ -593,7 +593,7 @@ static __hot node_rc_t node_search_hilo(cursor_t *mc, MDBX_iov_t key, int low, i
              IS_SUBP(mp) ? "sub-" : "", mp->mp_pgno);
 
   MDBX_comparer_t *comparer = cursor_key_comparer(mc);
-#if !UNALIGNED_OK || MDBX_DEBUG
+#if !UNALIGNED_OK || MDBX_DEVEL
   /* Branch pages have no data, so if using integer keys,
    * alignment is guaranteed. Use faster mdbx_cmp_int_ai. */
   if (comparer == cmp_int_aligned_to2 && IS_BRANCH(mp))

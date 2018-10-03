@@ -162,7 +162,7 @@ static void __cold env_release(MDBX_env_t *env) {
 
     if (env->me_map) {
       mdbx_munmap(&env->me_dxb_mmap);
-#ifdef USE_VALGRIND
+#if MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_CONFIG_VALGRIND
       VALGRIND_DISCARD(env->me_valgrind_handle);
       env->me_valgrind_handle = -1;
 #endif

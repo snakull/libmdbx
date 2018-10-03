@@ -234,7 +234,7 @@ __cold void rthc_global_dtor(void) {
     abstime.tv_nsec -= 1000000000l;
     abstime.tv_sec += 1;
   }
-#if MDBX_DEBUG > 0
+#if MDBX_DEBUG
   abstime.tv_sec += 600;
 #endif
 

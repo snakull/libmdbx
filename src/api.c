@@ -588,7 +588,7 @@ MDBX_error_t mdbx_info_ex(MDBX_env_t *env, MDBX_db_info_t *info, size_t info_siz
 // aux->ei_debug_bits = mdbx_debug_bits;
 // aux->ei_userctx = env->me_userctx;
 // aux->ei_debug_callback = mdbx_debug_logger;
-#if MDBX_DEBUG
+#if MDBX_ASSERTIONS
     aux->ei_assert_callback = env->me_assert_func;
 #else
     aux->ei_assert_callback = nullptr;
@@ -1514,7 +1514,7 @@ MDBX_error_t mdbx_set_loglevel(MDBX_debuglog_subsystem_t subsystem, MDBX_debuglo
   if (unlikely(level < MDBX_LOGLEVEL_EXTRA || level > MDBX_LOGLEVEL_FATAL))
     return MDBX_EINVAL;
 
-#if MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_CONFIG_DBG_LOGGING
+#if MDBX_LOGGING
   if (subsystem < 0) {
     for (MDBX_debuglog_subsystem_t i = 0; i < MDBX_LOG_MAX; ++i)
       mdbx_dbglog_levels[i] = level;
@@ -1529,8 +1529,12 @@ MDBX_error_t mdbx_set_loglevel(MDBX_debuglog_subsystem_t subsystem, MDBX_debuglo
 
 MDBX_debug_result_t __cold mdbx_set_debug(MDBX_debugbits_t bits, MDBX_debuglog_callback_t *logger) {
   const MDBX_debug_result_t result = {mdbx_debug_logger, mdbx_debug_bits};
+#if MDBX_LOGGING
   mdbx_debug_logger = logger;
-  bits = (bits | MDBX_CONFIG_DBG_LOGGING | MDBX_CONFIG_DBG_VALGRIND) & MDBX_CONFIGURED_DEBUG_ABILITIES;
+#else
+  (void)logger;
+#endif
+  bits = (bits | MDBX_CONFIG_LOGGING | MDBX_CONFIG_VALGRIND) & MDBX_CONFIGURED_DEBUG_ABILITIES;
 
 #ifdef __linux__
   if (bits & MDBX_DBG_DUMP) {
@@ -1560,7 +1564,9 @@ MDBX_debug_result_t __cold mdbx_set_debug(MDBX_debugbits_t bits, MDBX_debuglog_c
   bits &= ~MDBX_DBG_DUMP;
 #endif /* __linux__ */
 
+#if MDBX_CONFIGURED_DEBUG_ABILITIES
   mdbx_debug_bits = bits;
+#endif
   return result;
 }
 
@@ -1569,7 +1575,7 @@ MDBX_error_t __cold mdbx_set_assert(MDBX_env_t *env, MDBX_assert_callback_t *fun
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
-#if MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_CONFIG_DBG_ASSERTIONS
+#if MDBX_ASSERTIONS
   env->me_assert_func = func;
   return MDBX_SUCCESS;
 #else

@@ -67,7 +67,7 @@ static txnid_t find_oldest(MDBX_txn_t *txn) {
 }
 
 static int mdbx_mapresize(MDBX_env_t *env, const pgno_t size_pgno, const pgno_t limit_pgno) {
-#ifdef USE_VALGRIND
+#if MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_CONFIG_VALGRIND
   const size_t prev_mapsize = env->me_mapsize;
   void *const prev_mapaddr = env->me_map;
 #endif
@@ -136,7 +136,7 @@ bailout:
       mdbx_assert(env, size_pgno >= env->me_current_txn->mt_next_pgno);
       env->me_current_txn->mt_end_pgno = size_pgno;
     }
-#ifdef USE_VALGRIND
+#if MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_CONFIG_VALGRIND
     if (prev_mapsize != env->me_mapsize || prev_mapaddr != env->me_map) {
       VALGRIND_DISCARD(env->me_valgrind_handle);
       env->me_valgrind_handle = 0;
@@ -844,7 +844,7 @@ static int __cold mdbx_bk_map(MDBX_env_t *env, size_t usedsize) {
     return mdbx_get_errno();
 #endif
 
-#ifdef USE_VALGRIND
+#if MDBX_CONFIGURED_DEBUG_ABILITIES & MDBX_CONFIG_VALGRIND
   env->me_valgrind_handle = VALGRIND_CREATE_BLOCK(env->me_map, env->me_mapsize, "mdbx");
 #endif
 
@@ -1800,7 +1800,7 @@ bailout:
     env_release(env);
     env->me_flags32 = saved_me_flags | MDBX_ENV_TAINTED;
   } else {
-#if MDBX_DEBUG
+#if MDBX_DEBUG && MDBX_LOGGING
     meta_t *meta = meta_head(env);
     aatree_t *db = &meta->mm_aas[MDBX_MAIN_AAH];
 
