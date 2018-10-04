@@ -159,7 +159,6 @@ static inline BOOL lck_is_collision(MDBX_error_t err) {
 
 MDBX_error_t mdbx_lck_writer_lock(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
   lck_trace(">> flags 0x%x %s", flags, (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "");
-  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0 && env->me_lck);
   if (flags & MDBX_NONBLOCK) {
     if (!TryEnterCriticalSection(&env->me_windowsbug_lock)) {
       lck_trace("<< MDBX_EBUSY");
@@ -169,7 +168,8 @@ MDBX_error_t mdbx_lck_writer_lock(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NO
     EnterCriticalSection(&env->me_windowsbug_lock);
   }
 
-  const MDBX_error_t err = lck_exclusive(env->me_dxb_fd, flags, LCK_DXB_BODY);
+  const MDBX_error_t err =
+      (env->me_flags32 & MDBX_EXCLUSIVE) ? MDBX_SUCCESS : lck_exclusive(env->me_dxb_fd, flags, LCK_DXB_BODY);
   if (err == MDBX_SUCCESS) {
     lck_trace("<< MDBX_SUCCESS");
     return MDBX_SUCCESS;
@@ -181,10 +181,10 @@ MDBX_error_t mdbx_lck_writer_lock(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NO
 }
 
 void mdbx_lck_writer_unlock(MDBX_env_t *env) {
-  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0 && env->me_lck);
-  BOOL ok = lck_unlock(env->me_dxb_fd, LCK_DXB_BODY);
-  if (!ok)
-    lck_panic(env, "dxb-body.unlock", GetLastError());
+  if ((env->me_flags32 & MDBX_EXCLUSIVE) == 0) {
+    if (!lck_unlock(env->me_dxb_fd, LCK_DXB_BODY))
+      lck_panic(env, "dxb-body.unlock", GetLastError());
+  }
   LeaveCriticalSection(&env->me_windowsbug_lock);
   lck_trace("<<");
 }
