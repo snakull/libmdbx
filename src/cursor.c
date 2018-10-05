@@ -600,7 +600,6 @@ static __hot node_rc_t node_search_hilo(cursor_t *mc, MDBX_iov_t key, int low, i
     comparer = cmp_int_aligned;
 #endif
 
-  assert(low >= 0 && low < nkeys);
   int i = low;
   ptrdiff_t cmp = -1;
   if (likely(!IS_DFL(mp))) {
