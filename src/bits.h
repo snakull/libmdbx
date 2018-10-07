@@ -818,7 +818,7 @@ struct subcursor {
   ahe_t mx_ahe_body;
 };
 
-struct MDBX_cursor {
+struct MDBX_cursor_bundle {
 #define MDBX_MC_SIGNATURE UINT32_C(0xFE05D5B1)
 #define MDBX_MC_READY4CLOSE UINT32_C(0x2817A047)
 #define MDBX_MC_WAIT4EOT UINT32_C(0x90E297A7)

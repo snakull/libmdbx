@@ -100,7 +100,7 @@ static void dlist_free(MDBX_txn_t *txn) {
 static MDBX_error_t page_befree(cursor_t *mc, page_t *mp) {
   MDBX_txn_t *txn = mc->mc_txn;
 
-  assert((mc->mc_kind8 & S_SUBCURSOR) == 0);
+  assert((mc->mc_kind8 & (S_SUBCURSOR | S_STASH)) == 0);
   if (IS_BRANCH(mp)) {
     mc->mc_aht->aa.branch_pages -= 1;
   } else if (IS_LEAF(mp)) {
@@ -129,7 +129,7 @@ static int page_loose(cursor_t *mc, page_t *mp) {
   const pgno_t pgno = mp->mp_pgno;
   MDBX_txn_t *txn = mc->mc_txn;
 
-  if (mc->mc_kind8 & S_SUBCURSOR) {
+  if (mc->mc_kind8 & (S_SUBCURSOR | S_STASH)) {
     aht_t *primal = cursor_nested2primal_aht(mc);
     if (IS_BRANCH(mp))
       primal->aa.branch_pages--;

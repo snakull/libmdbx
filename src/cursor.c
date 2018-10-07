@@ -57,8 +57,12 @@ static inline cursor_t *cursor_nested(const cursor_t *cursor) {
 }
 
 static inline aht_t *cursor_nested2primal_aht(cursor_t *cursor) {
-  assert((cursor->mc_kind8 & S_SUBCURSOR) != 0);
-  return cursor_nested2bundle(cursor)->primal.mc_aht;
+  assert((cursor->mc_kind8 & (S_SUBCURSOR | S_STASH)) != 0);
+  MDBX_cursor_t *bundle = container_of(cursor->mc_aht, MDBX_cursor_t, subcursor.mx_aht_body);
+  assert(bundle->subcursor.mx_cursor.mc_aht == &bundle->subcursor.mx_aht_body);
+  assert(bundle->subcursor.mx_cursor.mc_aht->ahe == &bundle->subcursor.mx_ahe_body);
+  assert(bundle->subcursor.mx_cursor.mc_aht == cursor->mc_aht);
+  return bundle->primal.mc_aht;
 }
 
 static inline cursor_t *cursor_nested_or_null(const cursor_t *cursor) {
@@ -74,6 +78,7 @@ static inline MDBX_cursor_t **cursor_tracking_head(const MDBX_cursor_t *bundle) 
   MDBX_txn_t *txn = bundle->primal.mc_txn;
   assert(txn->mt_cursors != nullptr /* must be not rdonly txt */);
   aht_t *aht = bundle->primal.mc_aht;
+  assert(aht->ahe->ax_ord16 >= 0 && aht->ahe->ax_ord16 < txn->mt_env->env_ah_max);
   return &txn->mt_cursors[aht->ahe->ax_ord16];
 }
 
@@ -138,7 +143,7 @@ static int cursor_init(MDBX_cursor_t *bundle, MDBX_txn_t *txn, aht_t *aht) {
         (aht->aa.flags16 & MDBX_DUPFIXED) ? S_SUBCURSOR | S_SUBDUPFIXED : S_SUBCURSOR;
     bundle->subcursor.mx_ahe_body.ax_refcounter16 = 1;
     bundle->subcursor.mx_ahe_body.ax_flags16 = 0;
-    bundle->subcursor.mx_ahe_body.ax_aah = UINT32_MAX;
+    bundle->subcursor.mx_ahe_body.ax_aah = aht->ahe->ax_aah;
     bundle->subcursor.mx_ahe_body.ax_kcmp = bundle->primal.mc_aht->ahe->ax_dcmp;
     bundle->subcursor.mx_ahe_body.ax_dcmp = nullptr;
     bundle->subcursor.mx_ahe_body.ax_since = 0;
@@ -182,6 +187,7 @@ static cursor_t *nested_setup(cursor_t *cursor, node_t *node) {
     subcursor->mx_cursor.mc_state8 = 0;
   } else {
     page_t *fp = (page_t *)NODEDATA(node);
+    assert(IS_LEAF(fp) && IS_SUBP(fp));
     subcursor->mx_aht_body.aa.flags16 = 0;
     subcursor->mx_aht_body.aa.depth16 = 1;
     subcursor->mx_aht_body.aa.xsize32 = 0;
@@ -196,10 +202,14 @@ static cursor_t *nested_setup(cursor_t *cursor, node_t *node) {
     subcursor->mx_cursor.mc_pg[0] = fp;
     subcursor->mx_cursor.mc_ki[0] = 0;
     subcursor->mx_cursor.mc_state8 = subcursor->mx_aht_body.aa.entries ? C_INITIALIZED : C_INITIALIZED | C_EOF;
-    if (cursor->mc_aht->aa.flags16 & MDBX_DUPFIXED) {
+    if (cursor->mc_aht->aa.flags16 & (MDBX_DUPFIXED | MDBX_INTEGERDUP)) {
+      assert(IS_DFL(fp));
       subcursor->mx_aht_body.aa.flags16 =
           (cursor->mc_aht->aa.flags16 & MDBX_INTEGERDUP) ? MDBX_FIXEDKEY | MDBX_INTEGERKEY : MDBX_FIXEDKEY;
       subcursor->mx_aht_body.aa.xsize32 = fp->mp_leaf2_ksize16;
+      assert(fp->mp_leaf2_ksize16 > 0);
+    } else {
+      assert(!IS_DFL(fp));
     }
     if (cursor->mc_aht->aa.flags16 & MDBX_REVERSEDUP)
       subcursor->mx_aht_body.aa.flags16 |= MDBX_REVERSEKEY;
@@ -216,6 +226,7 @@ static cursor_t *nested_setup(cursor_t *cursor, node_t *node) {
                   mx->mx_dbx.aa_cmp = mdbx_cmp_clong;
   #endif */
   assert(((cursor->mc_aht->aa.flags16 & MDBX_DUPSORT) != 0) == ((cursor->mc_kind8 & S_HAVESUB) != 0));
+  assert(((cursor->mc_aht->aa.flags16 & (MDBX_DUPFIXED | MDBX_INTEGERDUP)) != 0) == (subcursor->mx_cursor.mc_aht->aa.xsize32 > 0));
   return &subcursor->mx_cursor;
 }
 
@@ -246,26 +257,35 @@ static void subcursor_fixup(MDBX_cursor_t *dst, cursor_t *src, bool new_dupdata)
              dst_sub->mx_aht_body.aa.root);
 }
 
-/* Copy the contents of a cursor.
- * [in] csrc The cursor to copy from.
- * [out] cdst The cursor to copy to. */
-static void cursor_copy(enum cursor_copy_mode copy_mode, const cursor_t *src, cursor_t *dst) {
-  dst->mc_txn = src->mc_txn;
-  dst->mc_aht = src->mc_aht;
-  dst->mc_snum = src->mc_snum;
-  dst->mc_top = src->mc_top;
-  dst->mc_state8 = src->mc_state8;
-  if (copy_mode == copy_origin2stash /* copy state, but strip S_HAVESUB from kind */)
-    dst->mc_kind8 = (src->mc_kind8 & ~(S_HAVESUB | S_SUBCURSOR)) | S_STASH;
-  else {
-    assert(copy_mode == copy_stash2origin /* copy state, but leave dst->mc_kind */);
-  }
-  if ((src->mc_kind8 & S_STASH) == 0)
-    assert(((src->mc_aht->aa.flags16 & MDBX_DUPSORT) != 0) == ((src->mc_kind8 & S_HAVESUB) != 0));
+static void cursor_clone(const cursor_t *src_master, MDBX_cursor_t *dst_clone) {
+  dst_clone->mc_next = nullptr;
+  dst_clone->mc_backup = nullptr;
+  *(MDBX_txn_t **)&dst_clone->mc_base.txn = dst_clone->primal.mc_txn = src_master->mc_txn;
+  dst_clone->primal.mc_aht = src_master->mc_aht;
+  dst_clone->primal.mc_snum = src_master->mc_snum;
+  dst_clone->primal.mc_top = src_master->mc_top;
+  dst_clone->primal.mc_state8 = src_master->mc_state8;
+  dst_clone->subcursor.mx_cursor.mc_kind_and_state = 0;
+  /* copy state, but strip S_HAVESUB from kind */
+  dst_clone->primal.mc_kind8 = src_master->mc_kind8 & ~(S_HAVESUB | S_SUBCURSOR);
+  if (src_master->mc_kind8 & S_SUBCURSOR)
+    dst_clone->primal.mc_kind8 |= S_STASH;
 
-  for (size_t i = 0; i < src->mc_snum; ++i) {
-    dst->mc_pg[i] = src->mc_pg[i];
-    dst->mc_ki[i] = src->mc_ki[i];
+  for (size_t i = 0; i < src_master->mc_snum; ++i) {
+    dst_clone->primal.mc_pg[i] = src_master->mc_pg[i];
+    dst_clone->primal.mc_ki[i] = src_master->mc_ki[i];
+  }
+}
+
+static void cursor_unclone(const MDBX_cursor_t *src_clone, cursor_t *dst_master) {
+  /* don't full clone, but just copy state */
+  assert(dst_master->mc_txn == src_clone->primal.mc_txn);
+  dst_master->mc_snum = src_clone->primal.mc_snum;
+  dst_master->mc_top = src_clone->primal.mc_top;
+  dst_master->mc_state8 = src_clone->primal.mc_state8;
+  for (size_t i = 0; i < src_clone->primal.mc_snum; ++i) {
+    dst_master->mc_pg[i] = src_clone->primal.mc_pg[i];
+    dst_master->mc_ki[i] = src_clone->primal.mc_ki[i];
   }
 }
 
@@ -1011,7 +1031,7 @@ static int ovpage_free(cursor_t *mc, page_t *mp) {
   }
 
   mc->mc_aht->aa.overflow_pages -= npages;
-  if (mc->mc_kind8 & S_SUBCURSOR)
+  if (mc->mc_kind8 & (S_SUBCURSOR | S_STASH))
     cursor_nested2primal_aht(mc)->aa.overflow_pages -= npages;
   ;
   return MDBX_SUCCESS;

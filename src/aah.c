@@ -502,6 +502,8 @@ static ahe_rc_t __cold aa_open(MDBX_env_t *env, MDBX_txn_t *txn, const MDBX_iov_
   if (flags & MDBX_INTERIM)
     assert(txn != nullptr);
 
+  if (flags & MDBX_INTEGERKEY)
+    flags |= MDBX_FIXEDKEY;
   if (flags & MDBX_INTEGERDUP)
     flags |= MDBX_DUPFIXED;
   if (flags & (MDBX_DUPFIXED | MDBX_REVERSEDUP))
@@ -684,14 +686,14 @@ static int tree_drop(cursor_t *mc, int subs) {
   if (likely(rc == MDBX_SUCCESS)) {
     MDBX_txn_t *txn = mc->mc_txn;
     node_t *ni;
-    cursor_t stash;
+    MDBX_cursor_t stash;
     unsigned i;
 
     /* DUPSORT sub-DBs have no ovpages/DBs. Omit scanning leaves.
      * This also avoids any P_DFL pages, which have no nodes.
      * Also if the AA doesn't have sub-DBs and has no overflow
      * pages, omit scanning leaves. */
-    if (mc->mc_kind8 & S_SUBCURSOR) {
+    if (mc->mc_kind8 & (S_SUBCURSOR | S_STASH)) {
       aht_t *primal = cursor_nested2primal_aht(mc);
       primal->aa.branch_pages -= mc->mc_aht->aa.branch_pages;
       primal->aa.leaf_pages -= mc->mc_aht->aa.leaf_pages;
@@ -700,7 +702,7 @@ static int tree_drop(cursor_t *mc, int subs) {
     } else if (!subs && !mc->mc_aht->aa.overflow_pages)
       cursor_pop(mc);
 
-    cursor_copy(copy_origin2stash, mc, &stash);
+    cursor_clone(mc, &stash);
     while (mc->mc_snum > 0) {
       page_t *mp = mc->mc_pg[mc->mc_top];
       unsigned n = page_numkeys(mp);
@@ -753,7 +755,7 @@ static int tree_drop(cursor_t *mc, int subs) {
         mc->mc_ki[0] = 0;
         for (i = 1; i < mc->mc_snum; i++) {
           mc->mc_ki[i] = 0;
-          mc->mc_pg[i] = stash.mc_pg[i];
+          mc->mc_pg[i] = stash.primal.mc_pg[i];
         }
       }
     }

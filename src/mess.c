@@ -1384,7 +1384,7 @@ static MDBX_error_t __cold mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t se
         env_info("datafile resized by system to %" PRIu64 " bytes", filesize_after_mmap);
       if (filesize_after_mmap % osal_syspagesize || filesize_after_mmap > env->me_dxb_geo.upper ||
           filesize_after_mmap < used_bytes) {
-        env_info("unacceptable/unexpected  datafile size %" PRIu64, filesize_after_mmap);
+        env_error("unacceptable/unexpected  datafile size %" PRIu64, filesize_after_mmap);
         return MDBX_PROBLEM;
       }
       if ((env->me_flags32 & MDBX_RDONLY) == 0) {
@@ -1508,7 +1508,7 @@ static MDBX_seize_result_t __cold setup_lck(MDBX_env_t *env, const char *lck_pat
     if (env->me_flags32 & MDBX_EXCLUSIVE)
       return seize_failed(MDBX_EBUSY);
     if (size > SSIZE_MAX || (size & (osal_syspagesize - 1)) || size < osal_syspagesize) {
-      mdbx_notice("lck-file has invalid size %" PRIu64 " bytes", size);
+      mdbx_error("lck-file has invalid size %" PRIu64 " bytes", size);
       return seize_failed(MDBX_PROBLEM);
     }
   }
@@ -1961,12 +1961,9 @@ static int cursor_put(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data, unsigned 
     mc->mc_aht->aa.root = np->mp_pgno;
     mc->mc_aht->aa.depth16++;
     mc->mc_aht->ah.state8 |= MDBX_AAH_DIRTY;
-    if (mc->mc_kind8 & S_SUBDUPFIXED) {
-      assert((mc->mc_aht->aa.flags16 & (MDBX_DUPSORT | MDBX_DUPFIXED)) == MDBX_DUPFIXED);
+    if (mc->mc_kind8 & S_SUBDUPFIXED)
       np->mp_flags16 |= P_DFL;
-    } else {
-      assert((mc->mc_aht->aa.flags16 & (MDBX_DUPSORT | MDBX_DUPFIXED)) != MDBX_DUPFIXED);
-    }
+
     mc->mc_state8 |= C_INITIALIZED;
   } else {
     /* make sure all cursor pages are writable */
@@ -2068,8 +2065,7 @@ static int cursor_put(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data, unsigned 
         fp->mp_flags16 = P_LEAF | P_DIRTY | P_SUBP;
         fp->mp_lower = 0;
         xdata.iov_len = PAGEHDRSZ + dkey.iov_len + data->iov_len;
-        if (mc->mc_kind8 & S_SUBDUPFIXED) {
-          assert(mc->mc_aht->aa.flags16 & MDBX_DUPFIXED);
+        if (mc->mc_kind8 & (S_SUBDUPFIXED | S_DUPFIXED)) {
           fp->mp_flags16 |= P_DFL;
           fp->mp_leaf2_ksize16 = (uint16_t)data->iov_len;
           xdata.iov_len += 2 * data->iov_len; /* leave space for 2 more */
@@ -2087,7 +2083,7 @@ static int cursor_put(cursor_t *mc, MDBX_iov_t *key, MDBX_iov_t *data, unsigned 
         fp = olddata.iov_base;
         switch (flags) {
         default:
-          if ((mc->mc_kind8 & S_SUBDUPFIXED) == 0) {
+          if ((mc->mc_kind8 & (S_SUBDUPFIXED | S_DUPFIXED)) == 0) {
             offset = EVEN(NODESIZE + sizeof(indx_t) + data->iov_len);
             break;
           } else {
@@ -2702,7 +2698,7 @@ static int page_new(cursor_t *mc, unsigned flags, unsigned num, page_t **mp) {
   }
   *mp = np;
 
-  if (mc->mc_kind8 & S_SUBCURSOR) {
+  if (mc->mc_kind8 & (S_SUBCURSOR | S_STASH)) {
     aht_t *primal = cursor_nested2primal_aht(mc);
     if (IS_BRANCH(np))
       primal->aa.branch_pages += 1;
@@ -3004,29 +3000,29 @@ static int node_move(cursor_t *csrc, cursor_t *cdst, bool fromleft) {
     if (cdst->mc_ki[cdst->mc_top] == 0) {
       const unsigned snum = cdst->mc_snum;
       assert(snum > 0);
-      cursor_t stash;
-      cursor_copy(copy_origin2stash, cdst, &stash);
+      MDBX_cursor_t stash;
+      cursor_clone(cdst, &stash);
       /* must find the lowest key below dst */
-      rc = page_search_lowest(&stash);
+      rc = page_search_lowest(&stash.primal);
       if (unlikely(rc))
         return rc;
-      page_t *const pdst2 = stash.mc_pg[stash.mc_top];
+      page_t *const pdst2 = stash.primal.mc_pg[stash.primal.mc_top];
       assert(IS_LEAF(pdst2));
       if (unlikely(!IS_LEAF(pdst2)))
         goto bailout;
       MDBX_iov_t key;
       if (IS_DFL(pdst2)) {
-        key.iov_len = stash.mc_aht->aa.xsize32;
+        key.iov_len = stash.primal.mc_aht->aa.xsize32;
         key.iov_base = DFLKEY(pdst2, 0, key.iov_len);
       } else {
         node_t *s2 = node_ptr(pdst2, 0);
         key.iov_len = node_get_keysize(s2);
         key.iov_base = NODEKEY(s2);
       }
-      stash.mc_snum = snum;
-      stash.mc_top = snum - 1;
-      stash.mc_ki[stash.mc_top] = 0;
-      rc = update_key(&stash, &key);
+      stash.primal.mc_snum = snum;
+      stash.primal.mc_top = snum - 1;
+      stash.primal.mc_ki[stash.primal.mc_top] = 0;
+      rc = update_key(&stash.primal, &key);
       if (unlikely(rc))
         return rc;
     }
@@ -3137,7 +3133,7 @@ static int node_move(cursor_t *csrc, cursor_t *cdst, bool fromleft) {
       }
       mdbx_debug("update separator for source page %" PRIaPGNO " to [%s]", psrc->mp_pgno, DKEY(&key));
       MDBX_cursor_t stash;
-      cursor_copy(copy_origin2stash, csrc, &stash.primal);
+      cursor_clone(csrc, &stash);
       assert(stash.primal.mc_snum > 0);
       stash.primal.mc_snum--;
       stash.primal.mc_top--;
@@ -3170,7 +3166,7 @@ static int node_move(cursor_t *csrc, cursor_t *cdst, bool fromleft) {
       }
       mdbx_debug("update separator for destination page %" PRIaPGNO " to [%s]", pdst->mp_pgno, DKEY(&key));
       MDBX_cursor_t stash;
-      cursor_copy(copy_origin2stash, cdst, &stash.primal);
+      cursor_clone(cdst, &stash);
       assert(stash.primal.mc_snum > 0);
       stash.primal.mc_snum--;
       stash.primal.mc_top--;
@@ -3241,17 +3237,17 @@ static int page_merge(cursor_t *csrc, cursor_t *cdst) {
     for (unsigned i = 0; i < page_numkeys(psrc); i++, j++) {
       srcnode = node_ptr(psrc, i);
       if (i == 0 && (pagetype & P_BRANCH) != 0) {
-        cursor_t stash;
-        cursor_copy(copy_origin2stash, csrc, &stash);
+        MDBX_cursor_t stash;
+        cursor_clone(csrc, &stash);
         /* must find the lowest key below src */
-        rc = page_search_lowest(&stash);
+        rc = page_search_lowest(&stash.primal);
         if (unlikely(rc != MDBX_SUCCESS))
           return rc;
-        if (IS_DFL(stash.mc_pg[stash.mc_top])) {
-          key.iov_len = stash.mc_aht->aa.xsize32;
-          key.iov_base = DFLKEY(stash.mc_pg[stash.mc_top], 0, key.iov_len);
+        if (IS_DFL(stash.primal.mc_pg[stash.primal.mc_top])) {
+          key.iov_len = stash.primal.mc_aht->aa.xsize32;
+          key.iov_base = DFLKEY(stash.primal.mc_pg[stash.primal.mc_top], 0, key.iov_len);
         } else {
-          node_t *s2 = node_ptr(stash.mc_pg[stash.mc_top], 0);
+          node_t *s2 = node_ptr(stash.primal.mc_pg[stash.primal.mc_top], 0);
           key.iov_len = node_get_keysize(s2);
           key.iov_base = NODEKEY(s2);
         }
@@ -3435,7 +3431,7 @@ static int tree_rebalance(cursor_t *mc) {
       assert(mc->mc_aht->aa.branch_pages == 0 && mc->mc_aht->aa.overflow_pages == 0 &&
              mc->mc_aht->aa.leaf_pages == 1);
       mc->mc_aht->aa.leaf_pages = 0;
-      if (mc->mc_kind8 & S_SUBCURSOR)
+      if (mc->mc_kind8 & (S_SUBCURSOR | S_STASH))
         cursor_nested2primal_aht(mc)->aa.leaf_pages -= 1;
       rc = mdbx_pnl_append(&mc->mc_txn->mt_befree_pages, mp->mp_pgno);
       if (unlikely(rc != MDBX_SUCCESS))
@@ -3467,7 +3463,7 @@ static int tree_rebalance(cursor_t *mc) {
         return rc;
       mc->mc_aht->aa.depth16--;
       mc->mc_aht->aa.branch_pages--;
-      if (mc->mc_kind8 & S_SUBCURSOR)
+      if (mc->mc_kind8 & (S_SUBCURSOR | S_STASH))
         cursor_nested2primal_aht(mc)->aa.branch_pages -= 1;
       mc->mc_ki[0] = mc->mc_ki[1];
       for (int i = 1; i < mc->mc_aht->aa.depth16; i++) {
@@ -3513,7 +3509,7 @@ static int tree_rebalance(cursor_t *mc) {
 
   /* Find neighbors. */
   MDBX_cursor_t stash;
-  cursor_copy(copy_origin2stash, mc, &stash.primal);
+  cursor_clone(mc, &stash);
 
   indx_t oldki = mc->mc_ki[mc->mc_top];
   bool fromleft;
@@ -3573,7 +3569,7 @@ static int tree_rebalance(cursor_t *mc) {
       WITH_CURSOR_TRACKING(stash, rc = page_merge(mc, &stash.primal));
       if (unlikely(rc != MDBX_SUCCESS))
         return rc;
-      cursor_copy(copy_stash2origin, &stash.primal, mc);
+      cursor_unclone(&stash, mc);
       assert(IS_LEAF(mc->mc_pg[mc->mc_top]) || PAGETYPE(mc->mc_pg[mc->mc_top]) == pagetype);
       assert(mc->mc_snum < mc->mc_aht->aa.depth16 || IS_LEAF(mc->mc_pg[mc->mc_aht->aa.depth16 - 1]));
     }
@@ -3664,7 +3660,7 @@ static int page_split(cursor_t *mc, const MDBX_iov_t *newkey, MDBX_iov_t *newdat
   }
 
   MDBX_cursor_t stash;
-  cursor_copy(copy_origin2stash, mc, &stash.primal);
+  cursor_clone(mc, &stash);
   stash.primal.mc_pg[stash.primal.mc_top] = rp;
   stash.primal.mc_ki[stash.primal.mc_top] = 0;
   stash.primal.mc_ki[ptop] = mc->mc_ki[ptop] + 1;

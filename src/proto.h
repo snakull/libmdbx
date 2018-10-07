@@ -95,8 +95,8 @@ static int page_touch(cursor_t *mc);
 static int cursor_touch(cursor_t *mc);
 static MDBX_numeric_result_t cursor_count(MDBX_cursor_t *bundle);
 
-enum cursor_copy_mode { copy_origin2stash, copy_stash2origin };
-static void cursor_copy(enum cursor_copy_mode copy_mode, const cursor_t *src, cursor_t *dst);
+static void cursor_clone(const cursor_t *src_master, MDBX_cursor_t *dst_clone);
+static void cursor_unclone(const MDBX_cursor_t *src_clone, cursor_t *dst_master);
 static bool cursor_is_nested_inited(const MDBX_cursor_t *bundle);
 
 #define MDBX_END_NAMES                                                                                        \

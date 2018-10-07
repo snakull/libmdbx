@@ -270,7 +270,7 @@ typedef struct MDBX_txn_base {
 } MDBX_txn_base_t;
 
 /* Opaque structure for navigating through an associative array */
-typedef struct MDBX_cursor MDBX_cursor_t;
+typedef struct MDBX_cursor_bundle MDBX_cursor_t;
 
 /* Fixed known beginning part of MDBX_cursor_t.
  * Pointer to MDBX_cursor_t could be safely casted to MDBX_cursor_base_t and back. */
@@ -568,10 +568,10 @@ typedef enum MDBX_flags {
   MDBX_FIXEDKEY = 0 /* TODO */,
   MDBX_INTEGERKEY /* numeric keys in native byte order, either uint32_t or uint64_t.
                    * The keys must all be of the same size. */
-  = 1u << 2,
-  MDBX_REVERSEKEY /* use reverse string keys */ = 1u << 0,
+  = 1u << 0,
+  MDBX_REVERSEKEY /* use reverse string keys */ = 1u << 1,
 
-  MDBX_DUPSORT /* use sorted duplicates */ = 1u << 1,
+  MDBX_DUPSORT /* use sorted duplicates */ = 1u << 2,
 
   MDBX_DUPFIXED /* with MDBX_DUPSORT, sorted dup items have fixed size */ = 1u << 3,
 

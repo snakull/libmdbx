@@ -111,11 +111,6 @@ __maybe_unused static void page_list(const MDBX_env_t *env, page_t *mp) {
 static __cold MDBX_error_t cursor_check(cursor_t *mc, bool pending) {
   if (unlikely((mc->mc_state8 & C_INITIALIZED) == 0))
     return MDBX_SUCCESS;
-  if (likely((mc->mc_kind8 & S_STASH) == 0)) {
-    assert(((mc->mc_aht->aa.flags16 & MDBX_DUPSORT) != 0) == ((mc->mc_kind8 & S_HAVESUB) != 0));
-    if (((mc->mc_aht->aa.flags16 & MDBX_DUPSORT) != 0) != ((mc->mc_kind8 & S_HAVESUB) != 0))
-      return MDBX_CURSOR_FULL;
-  }
   assert(mc->mc_top == mc->mc_snum - 1);
   if (unlikely(mc->mc_top != mc->mc_snum - 1))
     return MDBX_CURSOR_FULL;
