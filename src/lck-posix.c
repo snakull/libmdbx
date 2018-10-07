@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -31,7 +31,7 @@
 
 #define LCK_DXB_WHOLE MAX_MAPSIZE
 
-static int fcntl_op(const MDBX_filehandle_t fd, const int op, const int lck, const size_t offset,
+static int fcntl_op(const MDBX_filehandle_t fd, const int op, const short lck, const size_t offset,
                     const size_t len) {
   STATIC_ASSERT(sizeof(off_t) >= sizeof(size_t));
   for (;;) {
@@ -61,7 +61,7 @@ static int fcntl_op(const MDBX_filehandle_t fd, const int op, const int lck, con
   }
 }
 
-static inline int lck_exclusive(int fd, const MDBX_flags_t flags) {
+static inline int lck_exclusive(int fd, const MDBX_flags_t flags, bool fallback2shared) {
   assert(fd != MDBX_INVALID_FD);
   mdbx_jitter4testing(true);
   while (flock(fd, (flags & MDBX_NONBLOCK) ? LOCK_EX | LOCK_NB : LOCK_EX)) {
@@ -75,7 +75,19 @@ static inline int lck_exclusive(int fd, const MDBX_flags_t flags) {
   }
 
   /* exlusive lock first byte */
-  return fcntl_op(fd, (flags & MDBX_NONBLOCK) ? F_SETLK : F_SETLKW, F_WRLCK, 0, 1);
+  int rc = fcntl_op(fd, (flags & MDBX_NONBLOCK) ? F_SETLK : F_SETLKW, F_WRLCK, 0, 1);
+  if (rc != 0 && fallback2shared) {
+    while (flock(fd, (flags & MDBX_NONBLOCK) ? LOCK_SH | LOCK_NB : LOCK_SH)) {
+      int rc = errno;
+      if (rc != EINTR) {
+        if (rc != EWOULDBLOCK)
+          lck_error("flock(fd %d, LOCK_SH%s), error %d", fd, (flags & MDBX_NONBLOCK) ? "|LOCK_NB" : "", rc);
+        return rc /* EWOULDBLOCK */;
+      }
+      mdbx_jitter4testing(true);
+    }
+  }
+  return rc;
 }
 
 static inline int lck_shared(int fd, const MDBX_flags_t flags) {
@@ -103,6 +115,7 @@ static inline bool lck_is_collision(int err) {
 
 MDBX_error_t mdbx_lck_downgrade(MDBX_env_t *env) {
   lck_trace(">>");
+  assert(env->me_lck_fd != MDBX_INVALID_FD);
   int err = lck_shared(env->me_lck_fd, MDBX_NONBLOCK);
   if (env->me_wpa_txn)
     mdbx_lck_writer_unlock(env);
@@ -115,8 +128,9 @@ MDBX_error_t mdbx_lck_downgrade(MDBX_env_t *env) {
   return err;
 }
 
-MDBX_error_t mdbx_lck_upgrade(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
+__cold MDBX_error_t mdbx_lck_upgrade(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
   lck_trace(">> flags 0x%x%s", flags, (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "");
+  assert(env->me_lck_fd != MDBX_INVALID_FD);
   /* lck_upgrade MUST returns:
    *   MDBX_SUCCESS - exclusive lock acquired,
    *                  NO other processes use DB.
@@ -135,7 +149,7 @@ MDBX_error_t mdbx_lck_upgrade(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLO
     return err;
   }
 
-  err = lck_exclusive(env->me_lck_fd, flags);
+  err = lck_exclusive(env->me_lck_fd, flags, true);
   mdbx_jitter4testing(true);
   if (err != MDBX_SUCCESS) {
     mdbx_lck_writer_unlock(env);
@@ -153,12 +167,14 @@ MDBX_error_t mdbx_lck_upgrade(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLO
 }
 
 MDBX_error_t mdbx_lck_reader_alive_set(MDBX_env_t *env, MDBX_pid_t pid) {
+  assert(env->me_lck_fd != MDBX_INVALID_FD);
   int err = fcntl_op(env->me_lck_fd, F_SETLK, F_WRLCK, pid, 1);
   lck_trace("pid %ld, err %d", (long)pid, err);
   return err;
 }
 
 MDBX_error_t mdbx_lck_reader_alive_clear(MDBX_env_t *env, MDBX_pid_t pid) {
+  assert(env->me_lck_fd != MDBX_INVALID_FD);
   int err = fcntl_op(env->me_lck_fd, F_SETLKW, F_UNLCK, pid, 1);
   lck_trace("pid %ld, err %d", (long)pid, err);
   return err;
@@ -170,6 +186,7 @@ MDBX_error_t mdbx_lck_reader_alive_clear(MDBX_env_t *env, MDBX_pid_t pid) {
  *   MDBX_SIGN, if pid is dead (lock acquired) or otherwise the errcode. */
 MDBX_error_t mdbx_lck_reader_alive_check(MDBX_env_t *env, MDBX_pid_t pid) {
   lck_trace(">> pid %ld", (long)pid);
+  assert(env->me_lck_fd != MDBX_INVALID_FD);
   int rc = fcntl_op(env->me_lck_fd, F_GETLK, F_WRLCK, pid, 1);
   if (rc == 0) {
     lck_trace("<< pid %ld, %s", (long)pid, "MDBX_SIGN (seem invalid)");
@@ -185,7 +202,7 @@ MDBX_error_t mdbx_lck_reader_alive_check(MDBX_env_t *env, MDBX_pid_t pid) {
 
 /*----------------------------------------------------------------------------*/
 
-MDBX_error_t mdbx_lck_init(MDBX_env_t *env) {
+__cold MDBX_error_t mdbx_lck_init(MDBX_env_t *env) {
   pthread_mutexattr_t ma;
   int err = pthread_mutexattr_init(&ma);
   if (err)
@@ -201,7 +218,7 @@ MDBX_error_t mdbx_lck_init(MDBX_env_t *env) {
 #else
   err = pthread_mutexattr_setrobust_np(&ma, PTHREAD_MUTEX_ROBUST_NP);
 #endif
-  if (err)
+  if (err && err != ENOTSUP)
     goto bailout;
 #endif /* MDBX_USE_ROBUST */
 
@@ -213,6 +230,10 @@ MDBX_error_t mdbx_lck_init(MDBX_env_t *env) {
     goto bailout;
 #endif /* PTHREAD_PRIO_INHERIT */
 
+  err = pthread_mutexattr_settype(&ma, PTHREAD_MUTEX_ERRORCHECK);
+  if (err && err != ENOTSUP)
+    goto bailout;
+
   err = pthread_mutex_init(&env->me_lck->li_rmutex, &ma);
   if (err)
     goto bailout;
@@ -223,10 +244,10 @@ bailout:
   return err;
 }
 
-void mdbx_lck_detach(MDBX_env_t *env) {
+__cold void mdbx_lck_detach(MDBX_env_t *env) {
   if (env->me_lck_fd != MDBX_INVALID_FD) {
     /* try get exclusive access */
-    if (env->me_lck && lck_exclusive(env->me_lck_fd, MDBX_NONBLOCK) == 0) {
+    if (env->me_lck && lck_exclusive(env->me_lck_fd, MDBX_NONBLOCK, false) == 0) {
       lck_info("%s: got exclusive, drown mutexes", __func__);
       int rc = pthread_mutex_destroy(&env->me_lck->li_rmutex);
       assert(rc == 0);
@@ -238,13 +259,15 @@ void mdbx_lck_detach(MDBX_env_t *env) {
   }
 }
 
-MDBX_seize_result_t mdbx_lck_seize(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_EXCLUSIVE, MDBX_NONBLOCK */) {
+__cold MDBX_seize_result_t mdbx_lck_seize(MDBX_env_t *env,
+                                          MDBX_flags_t flags /* MDBX_EXCLUSIVE, MDBX_NONBLOCK */) {
   lck_trace(">> flags 0x%x%s", flags, (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "");
   assert(env->me_dxb_fd != MDBX_INVALID_FD);
 
   if (env->me_lck_fd == MDBX_INVALID_FD) {
-    /* LY: without-lck mode (e.g. on read-only filesystem) */
-    int err = fcntl_op(env->me_dxb_fd, F_SETLK, F_RDLCK, 0, LCK_DXB_WHOLE);
+    /* LY: without-lck mode (e.g. exclusive or on read-only filesystem) */
+    int err = fcntl_op(env->me_dxb_fd, F_SETLK, (env->me_flags32 & MDBX_RDONLY) ? F_RDLCK : F_WRLCK, 0,
+                       LCK_DXB_WHOLE);
     if (err != 0) {
       lck_trace("<< without-lck.lock %s, %d", lck_is_collision(err) ? "busy" : "error", err);
       return seize_failed(err);
@@ -264,9 +287,11 @@ MDBX_seize_result_t mdbx_lck_seize(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_E
 
   assert(env->me_lck_fd != MDBX_INVALID_FD);
   /* try exclusive access for first-time initialization */
-  int err = lck_exclusive(env->me_lck_fd, ((flags & (MDBX_EXCLUSIVE | MDBX_NONBLOCK)) == MDBX_EXCLUSIVE)
-                                              ? flags /* wait for exclusive if requested */
-                                              : MDBX_NONBLOCK /* avoid non-necessary blocking */);
+  int err = lck_exclusive(env->me_lck_fd,
+                          ((flags & (MDBX_EXCLUSIVE | MDBX_NONBLOCK)) == MDBX_EXCLUSIVE)
+                              ? flags /* wait for exclusive if requested */
+                              : MDBX_NONBLOCK /* avoid non-necessary blocking */,
+                          false);
   if (err == 0) {
     /* got exclusive */
     lck_trace("<< %s", "MDBX_SEIZE_EXCLUSIVE_FIRST");
@@ -284,7 +309,7 @@ MDBX_seize_result_t mdbx_lck_seize(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_E
       }
 
       lck_trace("got shared, try exclusive again");
-      err = lck_exclusive(env->me_lck_fd, MDBX_NONBLOCK /* avoid non-necessary blocking */);
+      err = lck_exclusive(env->me_lck_fd, MDBX_NONBLOCK /* avoid non-necessary blocking */, true);
       if (err == 0) {
         /* now got exclusive */
         lck_trace("<< %s", "MDBX_SEIZE_EXCLUSIVE_LIVE");
@@ -325,6 +350,7 @@ static inline int mdbx_robust_unlock(MDBX_env_t *env, pthread_mutex_t *mutex) {
 
 MDBX_error_t mdbx_lck_reader_registration_lock(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
   lck_trace(">> flags 0x%x%s", flags, (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "");
+  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0 && env->me_lck);
   int rc = mdbx_robust_lock(env, &env->me_lck->li_rmutex, flags);
   if (unlikely(MDBX_IS_ERROR(rc))) {
     lck_trace("<< %s, %d", (rc == MDBX_EBUSY) ? "busy" : "error", rc);
@@ -336,6 +362,7 @@ MDBX_error_t mdbx_lck_reader_registration_lock(MDBX_env_t *env, MDBX_flags_t fla
 
 void mdbx_lck_reader_registration_unlock(MDBX_env_t *env) {
   lck_trace(">>");
+  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0 && env->me_lck);
   int rc = mdbx_robust_unlock(env, &env->me_lck->li_rmutex);
   if (unlikely(MDBX_IS_ERROR(rc)))
     lck_panic(env, "robust-r.unlock", rc);
@@ -344,8 +371,9 @@ void mdbx_lck_reader_registration_unlock(MDBX_env_t *env) {
 
 MDBX_error_t mdbx_lck_writer_lock(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
   lck_trace(">> flags 0x%x%s", flags, (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "");
+  mdbx_assert(env, env->me_lck);
   assert(env->me_wpa_txn->mt_owner != mdbx_thread_self());
-  int rc = mdbx_robust_lock(env, &env->me_lck->li_wmutex, flags);
+  int rc = mdbx_robust_lock(env, env->me_wmutex, flags);
   if (unlikely(MDBX_IS_ERROR(rc))) {
     lck_trace("<< %s, %d", (rc == MDBX_EBUSY) ? "busy" : "error", rc);
     return rc;
@@ -357,7 +385,8 @@ MDBX_error_t mdbx_lck_writer_lock(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NO
 
 void mdbx_lck_writer_unlock(MDBX_env_t *env) {
   lck_trace(">>");
-  int rc = mdbx_robust_unlock(env, &env->me_lck->li_wmutex);
+  mdbx_assert(env, env->me_lck);
+  int rc = mdbx_robust_unlock(env, env->me_wmutex);
   if (unlikely(MDBX_IS_ERROR(rc)))
     lck_panic(env, "robust-w.unlock", rc);
   lck_trace("<<");
@@ -367,11 +396,11 @@ void mdbx_lck_writer_unlock(MDBX_env_t *env) {
 #define pthread_mutex_consistent(mutex) pthread_mutex_consistent_np(mutex)
 #endif
 
-static int __cold mdbx_robust_mutex_failed(MDBX_env_t *env, pthread_mutex_t *mutex, int err) {
+__cold static int mdbx_robust_mutex_failed(MDBX_env_t *env, pthread_mutex_t *mutex, int err) {
   assert(err != EBUSY);
 #if MDBX_USE_ROBUST
   if (err == EOWNERDEAD /* We own the mutex. Clean up after dead previous owner */) {
-    const bool rlocked = (mutex == &env->me_lck->li_rmutex);
+    const bool rlocked = (env->me_lck && mutex == &env->me_lck->li_rmutex);
     err = MDBX_SUCCESS;
     if (!rlocked) {
       if (unlikely(env->me_current_txn)) {

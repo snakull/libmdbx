@@ -467,13 +467,12 @@ MDBX_error_t mdbx_bk_copy(MDBX_env_t *env, const char *pathname, MDBX_copy_flags
       rc = mdbx_get_errno();
       goto bailout;
     }
-    pathname = molded_dxb_filename;
   }
 
   /* The destination path must exist, but the destination file must not.
    * We don't want the OS to cache the writes, since the source data is
    * already in the OS cache. */
-  rc = mdbx_openfile(pathname, O_WRONLY | O_CREAT | O_EXCL, 0666, &newfd);
+  rc = mdbx_openfile(molded_dxb_filename, O_WRONLY | O_CREAT | O_EXCL, 0640, &newfd, true);
   if (rc == MDBX_SUCCESS) {
     if (env->me_psize >= osal_syspagesize) {
 #ifdef F_NOCACHE /* __APPLE__ */
@@ -488,35 +487,21 @@ MDBX_error_t mdbx_bk_copy(MDBX_env_t *env, const char *pathname, MDBX_copy_flags
   }
 
 bailout:
-  free(molded_dxb_filename);
-
   if (newfd != MDBX_INVALID_FD) {
     MDBX_error_t err = mdbx_closefile(newfd);
     if (rc == MDBX_SUCCESS && rc != err)
       rc = err;
+    if (rc != MDBX_SUCCESS)
+      (void)mdbx_removefile(molded_dxb_filename);
   }
+
+  if (pathname != molded_dxb_filename)
+    free(molded_dxb_filename);
 
   return rc;
 }
 
 //-----------------------------------------------------------------------------
-
-MDBX_numeric_result_t __cold mdbx_pagesize2maxkeylen(size_t pagesize) {
-  if (pagesize == 0)
-    pagesize = osal_syspagesize;
-
-  MDBX_numeric_result_t result;
-  result.value = 0;
-  result.err = MDBX_EINVAL;
-
-  const intptr_t nodemax = mdbx_nodemax(pagesize);
-  if (likely(nodemax > 0)) {
-    const intptr_t maxkey = mdbx_maxkey(nodemax);
-    if (likely(maxkey > 0 && maxkey < INT_MAX))
-      result.value = (int)maxkey;
-  }
-  return result;
-}
 
 MDBX_error_t mdbx_info_ex(MDBX_env_t *env, MDBX_db_info_t *info, size_t info_size, MDBX_aux_info_t *aux,
                           size_t aux_size) {
@@ -591,8 +576,8 @@ MDBX_error_t mdbx_info_ex(MDBX_env_t *env, MDBX_db_info_t *info, size_t info_siz
     } else {
       info->bi_readers_num = INT32_MAX;
       info->bi_latter_reader_txnid = info->bi_self_latter_reader_txnid = 0;
-      info->bi_autosync_threshold = 0;
-      info->bi_dirty_volume = 0;
+      info->bi_autosync_threshold = env->me_lckless_autosync_threshold;
+      info->bi_dirty_volume = env->me_dirty_volume_stub;
       info->bi_regime = MDBX_RDONLY;
     }
   }
@@ -674,15 +659,17 @@ MDBX_error_t __cold mdbx_walk(MDBX_txn_t *txn, MDBX_walk_func_t *visitor, void *
   ctx.mw_user = user;
   ctx.mw_visitor = visitor;
 
-  err = visitor(0, MDBX_NUM_METAS, user, mdbx_str2iov("meta"), "meta", MDBX_NUM_METAS,
-                sizeof(meta_t) * MDBX_NUM_METAS, PAGEHDRSZ * MDBX_NUM_METAS,
+  err = visitor(0, MDBX_NUM_METAS, user, -2, mdbx_str2iov("@META"), pgno2bytes(txn->mt_env, MDBX_NUM_METAS),
+                MDBX_page_meta, MDBX_NUM_METAS, sizeof(meta_t) * MDBX_NUM_METAS, PAGEHDRSZ * MDBX_NUM_METAS,
                 (txn->mt_env->me_psize - sizeof(meta_t) - PAGEHDRSZ) * MDBX_NUM_METAS);
-  if (!err)
-    err = do_walk(&ctx, mdbx_str2iov("gaco"), txn->txn_aht_array[MDBX_GACO_AAH].aa.root, 0);
-  if (!err)
-    err = do_walk(&ctx, mdbx_str2iov("main"), txn->txn_aht_array[MDBX_MAIN_AAH].aa.root, 0);
-  if (!err)
-    err = visitor(P_INVALID, 0, user, mdbx_str2iov(nullptr), nullptr, 0, 0, 0, 0);
+
+  if (err == MDBX_SUCCESS)
+    err = do_walk(&ctx, mdbx_str2iov("@GC"), txn->txn_aht_array[MDBX_GACO_AAH].aa.root, -1);
+  if (err == MDBX_SUCCESS)
+    err = do_walk(&ctx, mdbx_str2iov("@MAIN"), txn->txn_aht_array[MDBX_MAIN_AAH].aa.root, 0);
+  if (err == MDBX_SUCCESS)
+    err = visitor(P_INVALID, 0, user, INT_MIN, mdbx_str2iov(nullptr), 0, MDBX_page_void, 0, 0, 0, 0);
+
   return err;
 }
 
@@ -895,9 +882,8 @@ MDBX_error_t mdbx_del_ex(MDBX_txn_t *txn, MDBX_aah_t aah, MDBX_iov_t *key, MDBX_
  *
  * Для не-уникальных ключей также возможен второй сценарий использования,
  * когда посредством old_data из записей с одинаковым ключом для
- * удаления/обновления выбирается конкретная. Для выбора этого сценария
- * во flags следует одновременно указать MDBX_IUD_CURRENT и
- * MDBX_IUD_NOOVERWRITE.
+ * удаления/обновления выбирается конкретная. Для выбора этого сценария во
+ * flags следует одновременно указать MDBX_IUD_CURRENT и MDBX_IUD_NOOVERWRITE.
  * Именно эта комбинация выбрана, так как она лишена смысла, и этим позволяет
  * идентифицировать запрос такого сценария.
  *
@@ -966,7 +952,7 @@ MDBX_error_t mdbx_replace(MDBX_txn_t *txn, MDBX_aah_t aah, MDBX_iov_t *key, MDBX
     err = mdbx_cursor_get(&mc, &present_key, &present_data, MDBX_SET_KEY);
     if (unlikely(err != MDBX_SUCCESS)) {
       old_data->iov_base = nullptr;
-      old_data->iov_len = err;
+      old_data->iov_len = 0;
       if (err != MDBX_NOTFOUND || (flags & MDBX_IUD_CURRENT))
         goto bailout;
     } else if (flags & MDBX_IUD_NOOVERWRITE) {
@@ -977,8 +963,7 @@ MDBX_error_t mdbx_replace(MDBX_txn_t *txn, MDBX_aah_t aah, MDBX_iov_t *key, MDBX
       page_t *page = mc.primal.mc_pg[mc.primal.mc_top];
       if (rp.aht->aa.flags16 & MDBX_DUPSORT) {
         if (flags & MDBX_IUD_CURRENT) {
-          /* для не-уникальных ключей позволяем update/delete только если ключ
-           * один */
+          /* для не-уникальных ключей позволяем update/delete только если ключ один */
           node_t *leaf = node_ptr(page, mc.primal.mc_ki[mc.primal.mc_top]);
           if (F_ISSET(leaf->node_flags8, NODE_DUP)) {
             assert((mc.subcursor.mx_cursor.mc_state8 & C_INITIALIZED) &&
@@ -993,7 +978,7 @@ MDBX_error_t mdbx_replace(MDBX_txn_t *txn, MDBX_aah_t aah, MDBX_iov_t *key, MDBX
             *old_data = *new_data;
             goto bailout;
           }
-          /* В оригинальной LMDB фладок MDBX_IUD_CURRENT здесь приведет
+          /* В оригинальной LMDB флажок MDBX_IUD_CURRENT здесь приведет
            * к замене данных без учета MDBX_DUPSORT сортировки,
            * но здесь это в любом случае допустимо, так как мы
            * проверили что для ключа есть только одно значение. */
@@ -1037,7 +1022,6 @@ bailout:
 }
 
 MDBX_error_t mdbx_get(MDBX_txn_t *txn, MDBX_aah_t aah, MDBX_iov_t *key, MDBX_iov_t *data) {
-
   if (unlikely(!key || !data))
     return MDBX_EINVAL;
 
@@ -1344,20 +1328,6 @@ MDBX_error_t mdbx_set_attr(MDBX_txn_t *txn, MDBX_aah_t aah, MDBX_iov_t *key, MDB
 
 /*----------------------------------------------------------------------------*/
 
-MDBX_error_t __cold mdbx_shutdown(MDBX_env_t *env) { return mdbx_shutdown_ex(env, MDBX_shutdown_default); }
-
-MDBX_error_t mdbx_shutdown_ex(MDBX_env_t *env, MDBX_shutdown_mode_t mode) {
-  MDBX_error_t err = validate_env(env, true);
-  if (likely(err == MDBX_SUCCESS)) {
-    err = env_shutdown(env, mode);
-    env_destroy(env);
-    set_signature(&env->me_signature, ~0u);
-    env->me_pid = 0;
-    free(env);
-  }
-  return err;
-}
-
 MDBX_error_t __cold mdbx_set_rbr(MDBX_env_t *env, MDBX_rbr_callback_t *cb) {
   MDBX_error_t err = validate_env(env, true);
   if (unlikely(err != MDBX_SUCCESS))
@@ -1372,11 +1342,10 @@ MDBX_error_t __cold mdbx_set_syncbytes(MDBX_env_t *env, size_t bytes) {
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  if (unlikely(!env->me_lck))
-    return MDBX_EPERM;
+  bytes = (bytes < UINT32_MAX) ? bytes : UINT32_MAX;
+  *(env->me_lck ? &env->me_lck->li_autosync_threshold : &env->me_lckless_autosync_threshold) = (uint32_t)bytes;
 
-  env->me_lck->li_autosync_threshold = (bytes < UINT32_MAX) ? (uint32_t)bytes : UINT32_MAX;
-  if (env->me_lck->li_dirty_volume >= env->me_lck->li_autosync_threshold)
+  if (*env->me_dirty_volume >= bytes)
     return mdbx_sync(env);
 
   return MDBX_SUCCESS;
@@ -1396,13 +1365,13 @@ MDBX_error_t __cold mdbx_readers_enum(MDBX_env_t *env, MDBX_readers_enum_func_t 
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 
-  if (unlikely(!env->me_lck))
-    return MDBX_EPERM;
-
   if (unlikely(!func))
     return MDBX_EINVAL;
 
   const MDBX_lockinfo_t *const lck = env->me_lck;
+  if (unlikely(!lck))
+    return MDBX_EOF;
+
   for (unsigned i = 0; likely(err == MDBX_SUCCESS) && i < lck->li_numreaders; ++i) {
     const MDBX_reader_t *const slot = &lck->li_readers[i];
     while (1) {
@@ -1440,7 +1409,8 @@ MDBX_error_t __cold mdbx_init_ex(MDBX_env_t **pbk, void *user_ctx, MDBX_ops_t *o
     return MDBX_INCOMPATIBLE;
   }
 
-  static void *(*calloc4use)(size_t nmemb, size_t size, MDBX_env_t * env) = mdbx_calloc;
+  void *(*calloc4use)(size_t nmemb, size_t size, MDBX_env_t * env) = mdbx_calloc;
+  void (*free4use)(void *ptr, MDBX_env_t *env) = mdbx_free;
   if (ops) {
     const bool all_mem_ops_null = !ops->memory.ops_malloc && !ops->memory.ops_free &&
                                   !ops->memory.ops_calloc && !ops->memory.ops_realloc &&
@@ -1470,8 +1440,10 @@ MDBX_error_t __cold mdbx_init_ex(MDBX_env_t **pbk, void *user_ctx, MDBX_ops_t *o
     if (unlikely(!(all_lck_ops_null || all_lck_ops_NOTnull)))
       return MDBX_EINVAL;
 
-    if (ops->memory.ops_calloc)
+    if (ops->memory.ops_calloc) {
       calloc4use = ops->memory.ops_calloc;
+      free4use = ops->memory.ops_free;
+    }
   }
 
   MDBX_env_base_t fake_env;
@@ -1481,61 +1453,25 @@ MDBX_error_t __cold mdbx_init_ex(MDBX_env_t **pbk, void *user_ctx, MDBX_ops_t *o
   if (unlikely(!env))
     return MDBX_ENOMEM;
 
-  env->me_userctx = user_ctx;
-  env->me_pid = mdbx_getpid();
-
-  env->ops.memory.ops_malloc = mdbx_malloc;
-  env->ops.memory.ops_free = mdbx_free;
-  env->ops.memory.ops_calloc = mdbx_calloc;
-  env->ops.memory.ops_realloc = mdbx_realloc;
-  env->ops.memory.ops_aligned_alloc = mdbx_aligned_alloc;
-  env->ops.memory.ops_aligned_free = mdbx_aligned_free;
-  if (ops && ops->memory.ops_malloc)
-    env->ops.memory = ops->memory;
-
-  env->ops.locking.ops_init = mdbx_lck_init;
-  env->ops.locking.ops_seize = mdbx_lck_seize;
-  env->ops.locking.ops_downgrade = mdbx_lck_downgrade;
-  env->ops.locking.ops_upgrade = mdbx_lck_upgrade;
-  env->ops.locking.ops_detach = mdbx_lck_detach;
-  env->ops.locking.ops_reader_registration_lock = mdbx_lck_reader_registration_lock;
-  env->ops.locking.ops_reader_registration_unlock = mdbx_lck_reader_registration_unlock;
-  env->ops.locking.ops_reader_alive_set = mdbx_lck_reader_alive_set;
-  env->ops.locking.ops_reader_alive_clear = mdbx_lck_reader_alive_clear;
-  env->ops.locking.ops_reader_alive_check = mdbx_lck_reader_alive_check;
-  env->ops.locking.ops_writer_lock = mdbx_lck_writer_lock;
-  env->ops.locking.ops_writer_unlock = mdbx_lck_writer_unlock;
-  if (ops && ops->locking.ops_init)
-    env->ops.locking = ops->locking;
-
-  env->me_maxreaders = DEFAULT_READERS;
-  env->env_ah_max = env->env_ah_num = CORE_AAH;
-  env->me_dxb_fd = MDBX_INVALID_FD;
-  env->me_lck_fd = MDBX_INVALID_FD;
-  setup_pagesize(env, osal_syspagesize);
-
-  MDBX_error_t err = mdbx_fastmutex_init(&env->me_aah_lock);
-  if (unlikely(err != MDBX_SUCCESS))
-    goto bailout;
-
-#if defined(_WIN32) || defined(_WIN64)
-  mdbx_srwlock_Init(&env->me_remap_guard);
-  InitializeCriticalSection(&env->me_windowsbug_lock);
-#else
-  err = mdbx_fastmutex_init(&env->me_remap_guard);
+  MDBX_error_t err = env_init(env, user_ctx, ops);
   if (unlikely(err != MDBX_SUCCESS)) {
-    mdbx_fastmutex_destroy(&env->me_aah_lock);
-    goto bailout;
+    free4use(env, (MDBX_env_t *)&fake_env);
+    return err;
   }
-#endif /* Windows */
 
-  VALGRIND_CREATE_MEMPOOL(env, 0, 0);
-  set_signature(&env->me_signature, MDBX_ME_SIGNATURE);
   *pbk = env;
   return MDBX_SUCCESS;
+}
 
-bailout:
-  env->ops.memory.ops_free(env, env);
+MDBX_error_t __cold mdbx_shutdown(MDBX_env_t *env) { return mdbx_shutdown_ex(env, MDBX_shutdown_default); }
+
+MDBX_error_t mdbx_shutdown_ex(MDBX_env_t *env, MDBX_shutdown_mode_t mode) {
+  MDBX_error_t err = validate_env(env, true);
+  if (likely(err == MDBX_SUCCESS)) {
+    err = env_shutdown(env, mode);
+    env_release(env);
+    env_destroy(env);
+  }
   return err;
 }
 
@@ -1640,4 +1576,80 @@ MDBX_error_t __cold mdbx_set_assert(MDBX_env_t *env, MDBX_assert_callback_t *fun
   (void)func;
   return MDBX_ENOSYS;
 #endif
+}
+
+/*----------------------------------------------------------------------------*/
+
+__cold int mdbx_limits_pgsize_min(void) { return MIN_PAGESIZE; }
+
+__cold int mdbx_limits_pgsize_max(void) { return MAX_PAGESIZE; }
+
+MDBX_numeric_result_t __cold mdbx_env_get_maxkeysize(MDBX_env_t *env) {
+  MDBX_numeric_result_t result;
+  result.value = 0;
+  result.err = validate_env(env, true);
+  if (likely(result.err == MDBX_SUCCESS))
+    result.value = env->me_keymax;
+  return result;
+}
+
+__cold MDBX_numeric_result_t mdbx_limits_keysize_max(intptr_t pagesize) {
+  if (pagesize <= 0)
+    pagesize = (intptr_t)osal_syspagesize;
+
+  MDBX_numeric_result_t result;
+  result.value = 0;
+  result.err = MDBX_EINVAL;
+  if (likely(pagesize >= (intptr_t)MIN_PAGESIZE && pagesize <= (intptr_t)MAX_PAGESIZE &&
+             is_power_of_2((size_t)pagesize))) {
+    result.value = mdbx_maxkey(mdbx_nodemax(pagesize));
+    result.err = MDBX_SUCCESS;
+  }
+  return result;
+}
+
+__cold MDBX_numeric_result_t mdbx_limits_dbsize_min(intptr_t pagesize) {
+  if (pagesize <= 0)
+    pagesize = (intptr_t)osal_syspagesize;
+
+  MDBX_numeric_result_t result;
+  result.value = 0;
+  result.err = MDBX_EINVAL;
+  if (likely(pagesize >= (intptr_t)MIN_PAGESIZE && pagesize <= (intptr_t)MAX_PAGESIZE &&
+             is_power_of_2((size_t)pagesize))) {
+    result.value = MIN_PAGENO * pagesize;
+    result.err = MDBX_SUCCESS;
+  }
+  return result;
+}
+
+__cold MDBX_numeric_result_t mdbx_limits_dbsize_max(intptr_t pagesize) {
+  if (pagesize <= 0)
+    pagesize = (intptr_t)osal_syspagesize;
+
+  MDBX_numeric_result_t result;
+  result.value = 0;
+  result.err = MDBX_EINVAL;
+  if (likely(pagesize >= (intptr_t)MIN_PAGESIZE && pagesize <= (intptr_t)MAX_PAGESIZE &&
+             is_power_of_2((size_t)pagesize))) {
+    const uintptr_t limit = MAX_PAGENO * (uintptr_t)pagesize;
+    result.value = (limit < MAX_MAPSIZE) ? limit : MAX_PAGESIZE;
+    result.err = MDBX_SUCCESS;
+  }
+  return result;
+}
+
+__cold MDBX_numeric_result_t mdbx_limits_txnsize_max(intptr_t pagesize) {
+  if (pagesize <= 0)
+    pagesize = (intptr_t)osal_syspagesize;
+
+  MDBX_numeric_result_t result;
+  result.value = 0;
+  result.err = MDBX_EINVAL;
+  if (likely(pagesize >= (intptr_t)MIN_PAGESIZE && pagesize <= (intptr_t)MAX_PAGESIZE &&
+             is_power_of_2((size_t)pagesize))) {
+    result.value = (uintptr_t)pagesize * (MDBX_DPL_TXNFULL - 42);
+    result.err = MDBX_SUCCESS;
+  }
+  return result;
 }

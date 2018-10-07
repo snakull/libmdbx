@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -68,24 +68,8 @@ const char *keygencase2str(const keygen_case keycase) {
 
 //-----------------------------------------------------------------------------
 
-static void mdbx_logger(MDBX_debuglog_subsystem_t subsys, MDBX_debuglog_level_t level, const char *function,
-                        int line, const char *msg, va_list args) {
-  (void)subsys;
-  if (!function)
-    function = "unknown";
-  if (level >= MDBX_LOGLEVEL_FATAL)
-    log_error("mdbx: assertion failure: %s, %d", function, line);
-
-  if (logging::output((logging::loglevel)level,
-                      strncmp(function, "mdbx_", 5) == 0 ? "%s: " : "mdbx: %s: ", function))
-    logging::feed(msg, args);
-  if (level >= MDBX_LOGLEVEL_FATAL)
-    abort();
-}
-
 MDBX_rbr_t testcase::RBR_callback(MDBX_env_t *env, MDBX_pid_t pid, MDBX_tid_t tid, uint64_t txn, unsigned gap,
                                   int retry) {
-
   testcase *self = (testcase *)mdbx_get_userctx(env).userctx;
 
   if (retry == 0)
@@ -105,12 +89,6 @@ MDBX_rbr_t testcase::RBR_callback(MDBX_env_t *env, MDBX_pid_t pid, MDBX_tid_t ti
 void testcase::db_prepare() {
   log_trace(">> db_prepare");
   assert(!db_guard);
-
-  mdbx_set_loglevel(MDBX_LOG_ALL, (MDBX_debuglog_level_t)config.params.loglevel);
-
-  MDBX_debugbits_t mdbx_dbg_opts = MDBX_DBG_ASSERT | MDBX_DBG_JITTER | MDBX_DBG_DUMP;
-  MDBX_debug_result_t prev_dbg = mdbx_set_debug(mdbx_dbg_opts, mdbx_logger);
-  log_trace("prev mdbx-debug-bits 0x%02x", prev_dbg.bits);
 
   MDBX_env_t *env = nullptr;
   MDBX_error_t err = mdbx_init_ex(&env, this, nullptr);
@@ -132,9 +110,10 @@ void testcase::db_prepare() {
   if (unlikely(err != MDBX_SUCCESS))
     failure_perror("mdbx_set_rbr()", err);
 
-  err = mdbx_set_mapsize(env, (size_t)config.params.size);
+  err = mdbx_set_geometry(env, config.params.size_lower, config.params.size_now, config.params.size_upper,
+                          config.params.growth_step, config.params.shrink_threshold, config.params.pagesize);
   if (unlikely(err != MDBX_SUCCESS))
-    failure_perror("mdbx_set_mapsize()", err);
+    failure_perror("mdbx_set_geometry()", err);
 
   log_trace("<< db_prepare");
 }
@@ -408,6 +387,16 @@ void testcase::db_table_close(MDBX_aah_t handle) {
   if (unlikely(rc != MDBX_SUCCESS))
     failure_perror("mdbx_aa_close()", rc);
   log_trace("<< testcase::db_table_close");
+}
+
+void testcase::checkdata(const char *step, MDBX_aah_t handle, MDBX_iov_t key2check,
+                         MDBX_iov_t expected_value) {
+  MDBX_iov_t value = expected_value;
+  int rc = mdbx_get4testing(txn_guard.get(), handle, &key2check, &value);
+  if (unlikely(rc != MDBX_SUCCESS))
+    failure_perror(step, rc);
+  if (!is_samedata(value, expected_value))
+    failure("%s data mismatch", step);
 }
 
 //-----------------------------------------------------------------------------

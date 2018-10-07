@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -122,11 +122,11 @@ static inline int aa_db2txn(const MDBX_env_t *env, const aatree_t *src, aht_t *a
     aht->aa.creation_time.fixedpoint = get_le64_unaligned(&src->aa_creation_time.fixedpoint);
     aht->aa.modification_txnid = get_le64_unaligned(&src->aa_modification_txnid);
     aht->aa.modification_time.fixedpoint = get_le64_unaligned(&src->aa_modification_time.fixedpoint);
-    assert(aht->ahe);
     if (likely(aht->ahe)) {
       aht->ahe->ax_since = aht->aa.creation_txnid;
       aht->ah.seq16 = aht->ahe->ax_seqaah16;
     } else {
+      assert(format == af_nested);
       aht->ah.seq16 = UINT16_MAX;
     }
   }
@@ -255,24 +255,12 @@ static ahe_rc_t __cold aa_lookup(MDBX_env_t *env, MDBX_txn_t *txn, const MDBX_io
     return rp;
   }
 
-  if (!rp.ahe) {
-    rp.ahe = free;
-    if (!rp.ahe) {
-      rp.ahe = end;
-      if (unlikely(rp.ahe >= &env->env_ahe_array[env->env_ah_max])) {
-        rp.err = MDBX_DBS_FULL;
-        return rp;
-      }
-      VALGRIND_MAKE_MEM_UNDEFINED_ERASE(rp.ahe, sizeof(*rp.ahe));
-      rp.ahe->ax_ord16 = (uint16_t)env->env_ah_num;
-      rp.ahe->ax_refcounter16 = 0;
-      env->env_ah_num++;
-    }
-
-    assert(rp.ahe->ax_refcounter16 < 1);
-  }
-
   rp.err = MDBX_SUCCESS;
+  if (!rp.ahe) {
+    rp.ahe = free ? free : end;
+    assert(rp.ahe->ax_refcounter16 < 1);
+    rp.err = MDBX_EOF;
+  }
   return rp;
 }
 
@@ -326,7 +314,7 @@ static void aht_bind(aht_t *aht, ahe_t *ahe) {
   aht->ahe = ahe;
   aht->ah.seq16 = ahe->ax_seqaah16;
   aht->ah.kind_and_state16 =
-      (aht->ahe->ax_flags16 & MDBX_DUPSORT) ? MDBX_AAH_STALE : MDBX_AAH_STALE | MDBX_AAH_DUPS;
+      (aht->ahe->ax_flags16 & MDBX_DUPSORT) ? MDBX_AAH_STALE : MDBX_AAH_STALE | MDBX_AAH_WITHDUPS;
   paranoia_barrier();
 }
 
@@ -364,7 +352,7 @@ static int __cold aa_create(MDBX_txn_t *txn, aht_t *aht) {
 
   aht->ah.kind_and_state16 = (aht->ahe->ax_flags16 & MDBX_DUPSORT)
                                  ? MDBX_AAH_VALID | MDBX_AAH_CREATED
-                                 : MDBX_AAH_VALID | MDBX_AAH_CREATED | MDBX_AAH_DUPS;
+                                 : MDBX_AAH_VALID | MDBX_AAH_CREATED | MDBX_AAH_WITHDUPS;
   return MDBX_SUCCESS;
 }
 
@@ -516,7 +504,7 @@ static ahe_rc_t __cold aa_open(MDBX_env_t *env, MDBX_txn_t *txn, const MDBX_iov_
 
   if (flags & MDBX_INTEGERDUP)
     flags |= MDBX_DUPFIXED;
-  if (flags & MDBX_DUPFIXED)
+  if (flags & (MDBX_DUPFIXED | MDBX_REVERSEDUP))
     flags |= MDBX_DUPSORT;
 
   flags |= MDBX_ALIEN_KCMP;
@@ -535,8 +523,19 @@ static ahe_rc_t __cold aa_open(MDBX_env_t *env, MDBX_txn_t *txn, const MDBX_iov_
   ahe_rc_t rp = env_rh(MDBX_SUCCESS, ax_main);
   if (aa_ident.iov_len) {
     rp = aa_lookup(env, txn, aa_ident);
-    if (unlikely(rp.err != MDBX_SUCCESS))
+    if (unlikely(MDBX_IS_ERROR(rp.err)))
       return rp;
+    if (rp.err == MDBX_EOF) {
+      if (unlikely(rp.ahe >= &env->env_ahe_array[env->env_ah_max])) {
+        rp.err = MDBX_DBS_FULL;
+        return rp;
+      }
+      VALGRIND_MAKE_MEM_UNDEFINED_ERASE(rp.ahe, sizeof(*rp.ahe));
+      rp.ahe->ax_ord16 = (uint16_t)env->env_ah_num;
+      rp.ahe->ax_refcounter16 = 0;
+      env->env_ah_num++;
+      assert(rp.ahe->ax_refcounter16 < 1);
+    }
   }
 
   assert(rp.ahe->ax_ord16 < env->env_ah_num);
@@ -685,17 +684,23 @@ static int tree_drop(cursor_t *mc, int subs) {
   if (likely(rc == MDBX_SUCCESS)) {
     MDBX_txn_t *txn = mc->mc_txn;
     node_t *ni;
-    cursor_t clone;
+    cursor_t stash;
     unsigned i;
 
     /* DUPSORT sub-DBs have no ovpages/DBs. Omit scanning leaves.
      * This also avoids any P_DFL pages, which have no nodes.
      * Also if the AA doesn't have sub-DBs and has no overflow
      * pages, omit scanning leaves. */
-    if ((mc->mc_state8 & S_SUBCURSOR) || (!subs && !mc->mc_aht->aa.overflow_pages))
+    if (mc->mc_kind8 & S_SUBCURSOR) {
+      aht_t *primal = cursor_nested2primal_aht(mc);
+      primal->aa.branch_pages -= mc->mc_aht->aa.branch_pages;
+      primal->aa.leaf_pages -= mc->mc_aht->aa.leaf_pages;
+      primal->aa.overflow_pages -= mc->mc_aht->aa.overflow_pages;
+      cursor_pop(mc);
+    } else if (!subs && !mc->mc_aht->aa.overflow_pages)
       cursor_pop(mc);
 
-    cursor_copy(mc, &clone);
+    cursor_copy(copy_origin2stash, mc, &stash);
     while (mc->mc_snum > 0) {
       page_t *mp = mc->mc_pg[mc->mc_top];
       unsigned n = page_numkeys(mp);
@@ -704,15 +709,14 @@ static int tree_drop(cursor_t *mc, int subs) {
           ni = node_ptr(mp, i);
           if (ni->node_flags8 & NODE_BIG) {
             page_t *omp;
-            pgno_t pg = get_pgno_aligned2(NODEDATA(ni));
+            pgno_t pg = get_pgno(NODEDATA(ni));
             rc = page_get(txn, pg, &omp, nullptr);
             if (unlikely(rc != MDBX_SUCCESS))
               goto done;
             assert(IS_OVERFLOW(omp));
-            rc = mdbx_pnl_append_range(&txn->mt_befree_pages, pg, omp->mp_pages);
+            rc = page_befree(mc, omp);
             if (unlikely(rc != MDBX_SUCCESS))
               goto done;
-            mc->mc_aht->aa.overflow_pages -= omp->mp_pages;
             if (!mc->mc_aht->aa.overflow_pages && !subs)
               break;
           } else if (subs && (ni->node_flags8 & NODE_SUBTREE)) {
@@ -738,7 +742,7 @@ static int tree_drop(cursor_t *mc, int subs) {
         break;
       assert(i <= UINT16_MAX);
       mc->mc_ki[mc->mc_top] = (indx_t)i;
-      rc = cursor_sibling(mc, 1);
+      rc = cursor_sibling(mc, true);
       if (rc) {
         if (unlikely(rc != MDBX_NOTFOUND))
           goto done;
@@ -749,7 +753,7 @@ static int tree_drop(cursor_t *mc, int subs) {
         mc->mc_ki[0] = 0;
         for (i = 1; i < mc->mc_snum; i++) {
           mc->mc_ki[i] = 0;
-          mc->mc_pg[i] = clone.mc_pg[i];
+          mc->mc_pg[i] = stash.mc_pg[i];
         }
       }
     }

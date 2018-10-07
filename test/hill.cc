@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -53,7 +53,7 @@ bool testcase_hill::run() {
    */
 
   /* TODO: работа в несколько потоков */
-  keyvalue_maker.setup(config.params, 0 /* thread_number */);
+  keyvalue_maker.setup(config.params, config.actor_id, 0 /* thread_number */);
 
   keygen::buffer a_key = keygen::alloc(config.params.keylen_max);
   keygen::buffer a_data_0 = keygen::alloc(config.params.datalen_max);
@@ -65,7 +65,9 @@ bool testcase_hill::run() {
                                             ? MDBX_IUD_NODUP
                                             : (mdbx_iud_flags_t)(MDBX_IUD_NODUP | MDBX_IUD_NOOVERWRITE);
   const mdbx_iud_flags_t update_flags =
-      (mdbx_iud_flags_t)(MDBX_IUD_CURRENT | MDBX_IUD_NODUP | MDBX_IUD_NOOVERWRITE);
+      (config.params.table_flags & MDBX_DUPSORT)
+          ? (mdbx_iud_flags_t)(MDBX_IUD_CURRENT | MDBX_IUD_NODUP | MDBX_IUD_NOOVERWRITE)
+          : MDBX_IUD_NODUP;
 
   uint64_t serial_count = 0;
   unsigned txn_nops = 0;
@@ -108,9 +110,10 @@ bool testcase_hill::run() {
     // обновляем данные в первой записи
     log_trace("uphill: update-a (age %" PRIu64 "->0) %" PRIu64, age_shift, a_serial);
     generate_pair(a_serial, a_key, a_data_0, 0);
+    checkdata("uphill: update-a", aah, a_key->value, a_data_1->value);
     rc = mdbx_replace(txn_guard.get(), aah, &a_key->value, &a_data_0->value, &a_data_1->value, update_flags);
     if (unlikely(rc != MDBX_SUCCESS))
-      failure_perror("mdbx_put(update-a: 1->0)", rc);
+      failure_perror("mdbx_replace(update-a: 1->0)", rc);
 
     if (++txn_nops >= config.params.batch_write) {
       txn_restart(false, false);
@@ -119,6 +122,7 @@ bool testcase_hill::run() {
 
     // удаляем вторую запись
     log_trace("uphill: delete-b %" PRIu64, b_serial);
+    checkdata("uphill: delete-b", aah, b_key->value, b_data->value);
     rc = mdbx_del(txn_guard.get(), aah, &b_key->value, &b_data->value);
     if (unlikely(rc != MDBX_SUCCESS))
       failure_perror("mdbx_del(b)", rc);
@@ -150,8 +154,7 @@ bool testcase_hill::run() {
     log_trace("downhill: update-a (age 0->%" PRIu64 ") %" PRIu64, age_shift, a_serial);
     generate_pair(a_serial, a_key, a_data_0, 0);
     generate_pair(a_serial, a_key, a_data_1, age_shift);
-    if (a_serial == 808)
-      log_trace("!!!");
+    checkdata("downhill: update-a", aah, a_key->value, a_data_0->value);
     int rc =
         mdbx_replace(txn_guard.get(), aah, &a_key->value, &a_data_1->value, &a_data_0->value, update_flags);
     if (unlikely(rc != MDBX_SUCCESS))
@@ -176,6 +179,7 @@ bool testcase_hill::run() {
 
     // удаляем первую запись
     log_trace("downhill: delete-a (age %" PRIu64 ") %" PRIu64, age_shift, a_serial);
+    checkdata("downhill: delete-a", aah, a_key->value, a_data_1->value);
     rc = mdbx_del(txn_guard.get(), aah, &a_key->value, &a_data_1->value);
     if (unlikely(rc != MDBX_SUCCESS))
       failure_perror("mdbx_del(a)", rc);
@@ -187,6 +191,7 @@ bool testcase_hill::run() {
 
     // удаляем вторую запись
     log_trace("downhill: delete-b %" PRIu64, b_serial);
+    checkdata("downhill: delete-b", aah, b_key->value, b_data->value);
     rc = mdbx_del(txn_guard.get(), aah, &b_key->value, &b_data->value);
     if (unlikely(rc != MDBX_SUCCESS))
       failure_perror("mdbx_del(b)", rc);

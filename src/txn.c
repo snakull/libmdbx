@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -77,7 +77,7 @@ static inline bool txn_stable4read(MDBX_txn_t *txn, meta_t *const meta) {
     return false;
   if (unlikely(txn->mt_txnid != meta_txnid_fluid(env, meta)))
     return false;
-  if (unlikely(txn->mt_txnid < env->me_oldest[0]))
+  if (unlikely(txn->mt_txnid < *env->me_oldest))
     return false;
 
   jitter4testing(false);
@@ -200,6 +200,7 @@ static int txn_renew(MDBX_txn_t *txn, unsigned flags) {
       if (likely(env->me_flags32 & MDBX_ENV_TXKEY)) {
         log_trace(MDBX_LOG_LCK, "store tls[%u].reader-slot %p, #%u, pid %d", env->me_txkey, r, slot,
                   r->mr_pid);
+        mdbx_assert(env, env->me_live_reader == env->me_pid);
         tls_set(env->me_txkey, r);
       }
       mdbx_assert(env, r->mr_pid == mdbx_getpid());
@@ -249,13 +250,11 @@ static int txn_renew(MDBX_txn_t *txn, unsigned flags) {
     txn->mt_ro_reader = r;
   } else {
     /* Not yet touching txn == env->me_txn0, it may be active */
-    if (likely((env->me_flags32 & MDBX_EXCLUSIVE) == 0)) {
-      jitter4testing(false);
-      rc = lck_writer_acquire(env, (env->me_flags32 | flags) & MDBX_NONBLOCK);
-      if (unlikely(rc != MDBX_SUCCESS)) {
-        txn_trace("<< (txn = %p, flags = 0x%x): lck_writer_acquire(), rc = %d", txn, flags, rc);
-        return rc;
-      }
+    jitter4testing(false);
+    rc = lck_writer_acquire(env, (env->me_flags32 | flags) & MDBX_NONBLOCK);
+    if (unlikely(rc != MDBX_SUCCESS)) {
+      txn_trace("<< (txn = %p, flags = 0x%x): lck_writer_acquire(), rc = %d", txn, flags, rc);
+      return rc;
     }
 
     jitter4testing(false);
@@ -274,14 +273,14 @@ static int txn_renew(MDBX_txn_t *txn, unsigned flags) {
     txn->mt_child = nullptr;
     txn->mt_loose_pages = nullptr;
     txn->mt_loose_count = 0;
-    txn->mt_dirtyroom = MDBX_PNL_UM_MAX;
+    txn->mt_dirtyroom = MDBX_DPL_TXNFULL;
     txn->mt_rw_dirtylist = env->me_dirtylist;
-    txn->mt_rw_dirtylist[0].mid = 0;
+    txn->mt_rw_dirtylist->length = 0;
     txn->mt_befree_pages = env->me_free_pgs;
-    txn->mt_befree_pages[0] = 0;
+    MDBX_PNL_SIZE(txn->mt_befree_pages) = 0;
     txn->mt_spill_pages = nullptr;
     if (txn->mt_lifo_reclaimed)
-      txn->mt_lifo_reclaimed[0] = 0;
+      MDBX_PNL_SIZE(txn->mt_lifo_reclaimed) = 0;
     env->me_current_txn = txn;
 
     /* Snap core AA records */
@@ -434,8 +433,8 @@ MDBX_txn_result_t mdbx_begin(MDBX_env_t *env, MDBX_txn_t *parent, MDBX_flags_t f
 
   if (parent) {
     result.txn->mt_cursors = (MDBX_cursor_t **)(result.txn->txn_aht_array + env->env_ah_max);
-    result.txn->mt_rw_dirtylist = (MDBX_ID2 *)malloc(sizeof(MDBX_ID2) * MDBX_PNL_UM_SIZE);
-    result.txn->mt_befree_pages = mdbx_pnl_alloc(MDBX_PNL_UM_MAX);
+    result.txn->mt_rw_dirtylist = (MDBX_DPL)malloc(sizeof(MDBX_DP) * (MDBX_DPL_TXNFULL + 1));
+    result.txn->mt_befree_pages = mdbx_pnl_alloc(MDBX_PNL_INITIAL);
     if (unlikely(!result.txn->mt_rw_dirtylist || !result.txn->mt_befree_pages)) {
       free(result.txn->mt_rw_dirtylist);
       free(result.txn);
@@ -446,7 +445,8 @@ MDBX_txn_result_t mdbx_begin(MDBX_env_t *env, MDBX_txn_t *parent, MDBX_flags_t f
 
     txn_set_txnid(result.txn, parent->mt_txnid);
     result.txn->mt_dirtyroom = parent->mt_dirtyroom;
-    result.txn->mt_rw_dirtylist[0].mid = 0;
+    result.txn->mt_rw_dirtylist->limit = MDBX_DPL_TXNFULL;
+    result.txn->mt_rw_dirtylist->length = 0;
     result.txn->mt_spill_pages = nullptr;
     result.txn->mt_next_pgno = parent->mt_next_pgno;
     result.txn->mt_end_pgno = parent->mt_end_pgno;
@@ -463,7 +463,7 @@ MDBX_txn_result_t mdbx_begin(MDBX_env_t *env, MDBX_txn_t *parent, MDBX_flags_t f
     ntxn->mnt_pgstate = env->me_pgstate /* save parent reclaimed state */;
     result.err = MDBX_SUCCESS;
     if (env->me_reclaimed_pglist) {
-      MDBX_PNL list_copy = mdbx_pnl_alloc(env->me_reclaimed_pglist[0]);
+      MDBX_PNL list_copy = mdbx_pnl_alloc(MDBX_PNL_SIZE(env->me_reclaimed_pglist));
       if (unlikely(!list_copy))
         result.err = MDBX_ENOMEM;
       else {
@@ -544,7 +544,7 @@ static int txn_end(MDBX_txn_t *txn, const unsigned mode) {
     }
 
     if (txn->mt_lifo_reclaimed) {
-      txn->mt_lifo_reclaimed[0] = 0;
+      MDBX_PNL_SIZE(txn->mt_lifo_reclaimed) = 0;
       if (txn != env->me_wpa_txn) {
         mdbx_txl_free(txn->mt_lifo_reclaimed);
         txn->mt_lifo_reclaimed = nullptr;
@@ -561,10 +561,8 @@ static int txn_end(MDBX_txn_t *txn, const unsigned mode) {
       env->me_reclaimed_pglist = nullptr;
       env->me_last_reclaimed = 0;
       env->me_current_txn = nullptr;
-      if (likely((env->me_flags32 & MDBX_EXCLUSIVE) == 0)) {
-        /* The writer mutex was locked in mdbx_begin. */
-        lck_writer_release(env);
-      }
+      /* The writer mutex was locked in mdbx_begin. */
+      lck_writer_release(env);
     } else {
       txn->mt_parent->mt_child = nullptr;
       txn->mt_parent->mt_flags &= ~MDBX_TXN_HAS_CHILD;
@@ -626,8 +624,7 @@ MDBX_error_t mdbx_commit(MDBX_txn_t *txn) {
 
   if (txn->mt_parent) {
     MDBX_txn_t *parent = txn->mt_parent;
-    page_t **lp;
-    MDBX_ID2L dst, src;
+    MDBX_DPL dst, src;
     unsigned i, x, y, len;
 
     /* Append our reclaim list to parent's */
@@ -672,14 +669,14 @@ MDBX_error_t mdbx_commit(MDBX_txn_t *txn) {
     dst = parent->mt_rw_dirtylist;
     src = txn->mt_rw_dirtylist;
     /* Remove anything in our dirty list from parent's spill list */
-    if (parent->mt_spill_pages && parent->mt_spill_pages[0]) {
+    if (parent->mt_spill_pages && MDBX_PNL_SIZE(parent->mt_spill_pages)) {
       MDBX_PNL const pspill = parent->mt_spill_pages;
-      const unsigned ps_len = pspill[0];
+      const unsigned ps_len = MDBX_PNL_SIZE(pspill);
       x = y = ps_len;
-      pspill[0] = (pgno_t)-1;
+      MDBX_PNL_SIZE(pspill) = (pgno_t)-1;
       /* Mark our dirty pages as deleted in parent spill list */
-      for (i = 0, len = src[0].mid; ++i <= len;) {
-        const pgno_t pgno2 = src[i].mid << 1;
+      for (i = 0, len = src->length; ++i <= len;) {
+        const pgno_t pgno2 = src[i].pgno << 1;
         while (pgno2 > pspill[x])
           x--;
         if (pgno2 == pspill[x]) {
@@ -689,59 +686,59 @@ MDBX_error_t mdbx_commit(MDBX_txn_t *txn) {
       }
       /* Squash deleted pagenums if we deleted any */
       for (x = y; ++x <= ps_len;)
-        if (!(pspill[x] & 1))
+        if ((pspill[x] & 1) == 0)
           pspill[++y] = pspill[x];
-      pspill[0] = y;
+      MDBX_PNL_SIZE(pspill) = y;
     }
 
     /* Remove anything in our spill list from parent's dirty list */
-    if (txn->mt_spill_pages && txn->mt_spill_pages[0]) {
-      for (i = 1; i <= txn->mt_spill_pages[0]; i++) {
+    if (txn->mt_spill_pages && MDBX_PNL_SIZE(txn->mt_spill_pages)) {
+      for (i = 1; i <= MDBX_PNL_SIZE(txn->mt_spill_pages); i++) {
         const pgno_t pgno2 = txn->mt_spill_pages[i];
         if (pgno2 & 1)
-          continue; /* deleted spillpg */
+          continue; /* deleted spill-page */
         pgno_t pgno = pgno2 >> 1;
-        y = mdbx_mid2l_search(dst, pgno);
-        if (y <= dst[0].mid && dst[y].mid == pgno) {
-          free(dst[y].mptr);
-          while (y < dst[0].mid) {
+        y = mdbx_dpl_search(dst, pgno);
+        if (y <= dst->length && dst[y].pgno == pgno) {
+          free(dst[y].ptr);
+          while (y < dst->length) {
             dst[y] = dst[y + 1];
             y++;
           }
-          dst[0].mid--;
+          dst->length--;
         }
       }
     }
 
     /* Find len = length of merging our dirty list with parent's */
-    x = dst[0].mid;
-    dst[0].mid = 0; /* simplify loops */
+    x = dst->length;
+    dst->length = 0; /* simplify loops */
     if (parent->mt_parent) {
-      len = x + src[0].mid;
-      y = mdbx_mid2l_search(src, dst[x].mid + 1) - 1;
+      len = x + src->length;
+      y = mdbx_dpl_search(src, dst[x].pgno + 1) - 1;
       for (i = x; y && i; y--) {
-        pgno_t yp = src[y].mid;
-        while (yp < dst[i].mid)
+        pgno_t yp = src[y].pgno;
+        while (yp < dst[i].pgno)
           i--;
-        if (yp == dst[i].mid) {
+        if (yp == dst[i].pgno) {
           i--;
           len--;
         }
       }
     } else { /* Simplify the above for single-ancestor case */
-      len = MDBX_PNL_UM_MAX - txn->mt_dirtyroom;
+      len = MDBX_DPL_TXNFULL - txn->mt_dirtyroom;
     }
     /* Merge our dirty list with parent's */
-    y = src[0].mid;
+    y = src->length;
     for (i = len; y; dst[i--] = src[y--]) {
-      pgno_t yp = src[y].mid;
-      while (yp < dst[x].mid)
+      pgno_t yp = src[y].pgno;
+      while (yp < dst[x].pgno)
         dst[i--] = dst[x--];
-      if (yp == dst[x].mid)
-        free(dst[x--].mptr);
+      if (yp == dst[x].pgno)
+        free(dst[x--].ptr);
     }
     assert(i == x);
-    dst[0].mid = len;
+    dst->length = len;
     free(txn->mt_rw_dirtylist);
     parent->mt_dirtyroom = txn->mt_dirtyroom;
     if (txn->mt_spill_pages) {
@@ -758,7 +755,8 @@ MDBX_error_t mdbx_commit(MDBX_txn_t *txn) {
     }
 
     /* Append our loose page list to parent's */
-    for (lp = &parent->mt_loose_pages; *lp; lp = &NEXT_LOOSE_PAGE(*lp))
+    page_t **lp;
+    for (lp = &parent->mt_loose_pages; *lp; lp = &(*lp)->mp_next)
       ;
     *lp = txn->mt_loose_pages;
     parent->mt_loose_count += txn->mt_loose_count;
@@ -779,7 +777,7 @@ MDBX_error_t mdbx_commit(MDBX_txn_t *txn) {
   cursors_eot(txn, 0);
   end_mode |= MDBX_END_EOTDONE | MDBX_END_FIXUPAAH;
 
-  if (!txn->mt_rw_dirtylist[0].mid && !(txn->mt_flags & (MDBX_TXN_DIRTY | MDBX_TXN_SPILLS)))
+  if (txn->mt_rw_dirtylist->length == 0 && !(txn->mt_flags & (MDBX_TXN_DIRTY | MDBX_TXN_SPILLS)))
     goto done;
 
   mdbx_debug("committing txn %" PRIaTXN " %p on mdbenv %p, root page %" PRIaPGNO "/%" PRIaPGNO, txn->mt_txnid,
@@ -794,23 +792,31 @@ MDBX_error_t mdbx_commit(MDBX_txn_t *txn) {
 
     aht_t *const end = &txn->txn_aht_array[txn->txn_ah_num];
     for (aht_t *aht = &txn->txn_aht_array[CORE_AAH]; aht < end; ++aht) {
+      ahe_t *ahe = aht->ahe;
       if (aht->ah.state8 & MDBX_AAH_DIRTY) {
-        ahe_t *ahe = aht->ahe;
+        mdbx_debug("update dirty-aa %.*s root %" PRIaPGNO,
+                   (ahe->ax_ident.iov_len > 64) ? 64 : (int)ahe->ax_ident.iov_len,
+                   (const char *)ahe->ax_ident.iov_base, aht->aa.root);
         if (unlikely(ahe->ax_seqaah16 != aht->ah.seq16 || ahe->ax_refcounter16 < 1)) {
           rc = MDBX_BAD_AAH;
           goto fail;
         }
 
         MDBX_iov_t data = {nullptr, sizeof(aatree_t)};
-        rc = cursor_put(&mc.primal, &ahe->ax_ident, &data, MDBX_IUD_RESERVE | NODE_SUBTREE);
+        WITH_CURSOR_TRACKING(
+            mc, rc = cursor_put(&mc.primal, &ahe->ax_ident, &data, MDBX_IUD_RESERVE | NODE_SUBTREE));
         if (unlikely(rc != MDBX_SUCCESS))
           goto fail;
         aa_txn2db(env, aht, (aatree_t *)data.iov_base, af_user);
+      } else {
+        mdbx_debug("skip non-dirty-aa %.*s root %" PRIaPGNO,
+                   (ahe->ax_ident.iov_len > 64) ? 64 : (int)ahe->ax_ident.iov_len,
+                   (const char *)ahe->ax_ident.iov_base, aht->aa.root);
       }
     }
   }
 
-  rc = freelist_save(txn);
+  rc = update_gc(txn);
   if (unlikely(rc != MDBX_SUCCESS))
     goto fail;
 
@@ -819,7 +825,7 @@ MDBX_error_t mdbx_commit(MDBX_txn_t *txn) {
   mdbx_pnl_shrink(&txn->mt_befree_pages);
 
   if (MDBX_AUDIT_ENABLED()) {
-    rc = audit(txn);
+    rc = audit(txn, 0);
     if (unlikely(rc != MDBX_SUCCESS))
       goto fail;
   }
@@ -844,7 +850,8 @@ MDBX_error_t mdbx_commit(MDBX_txn_t *txn) {
   }
   if (unlikely(rc != MDBX_SUCCESS))
     goto fail;
-  env->me_lck->li_readers_refresh_flag = false;
+  if (likely(env->me_lck))
+    env->me_lck->li_readers_refresh_flag = false;
   end_mode = MDBX_END_COMMITTED | MDBX_END_FIXUPAAH | MDBX_END_EOTDONE;
 
 done:

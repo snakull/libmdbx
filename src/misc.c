@@ -103,6 +103,13 @@ const char *__cold mdbx_strerror(MDBX_error_t errnum) {
     if (size)
       msg = buffer;
 #else
+    static char buffer[32];
+    if (errnum < 0) {
+      int rc = snprintf(buffer, sizeof(buffer) - 1, "unknown error %d", errnum);
+      assert(rc > 0);
+      (void)rc;
+      return buffer;
+    }
     msg = strerror(errnum);
 #endif
   }

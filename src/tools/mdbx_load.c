@@ -1,4 +1,4 @@
-/* mdbx_load.c - memory-mapped database load tool */
+﻿/* mdbx_load.c - memory-mapped database load tool */
 
 /*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
@@ -132,7 +132,7 @@ static void readhdr(void) {
       ptr = memchr(dbuf.iov_base, '\n', dbuf.iov_len);
       if (ptr)
         *ptr = '\0';
-      i = sscanf((char *)dbuf.iov_base + STRLENOF("mapsize="), "%" PRIu64 "", &bk_info.bi_mapsize);
+      i = sscanf((char *)dbuf.iov_base + STRLENOF("mapsize="), "%" PRIu64, &bk_info.bi_mapsize);
       if (i != 1) {
         fprintf(stderr, "%s: line %" PRIiSIZE ": invalid mapsize %s\n", prog, lineno,
                 (char *)dbuf.iov_base + STRLENOF("mapsize="));

@@ -65,12 +65,12 @@ static MDBX_TXL mdbx_txl_alloc(void);
 static MDBX_PNL mdbx_pnl_alloc(size_t size);
 static void mdbx_pnl_free(MDBX_PNL pl);
 static void mdbx_txl_free(MDBX_TXL list);
+static void mdbx_txl_sort(MDBX_TXL list);
 static void mdbx_pnl_xappend(MDBX_PNL pl, pgno_t id);
-static bool mdbx_pnl_check(MDBX_PNL pl);
+static bool mdbx_pnl_check(MDBX_PNL pl, bool allocated);
 static void mdbx_pnl_sort(MDBX_PNL pnl);
-static size_t mdbx_pnl_search(MDBX_PNL pnl, pgno_t id);
+static unsigned mdbx_pnl_search(MDBX_PNL pnl, pgno_t id);
 static void mdbx_pnl_shrink(MDBX_PNL *ppl);
-static int mdbx_txl_grow(MDBX_TXL *ptr, size_t num);
 static int mdbx_pnl_need(MDBX_PNL *ppl, size_t num);
 static int mdbx_pnl_append(MDBX_PNL *ppl, pgno_t id);
 static int mdbx_txl_append(MDBX_TXL *ptr, txnid_t id);
@@ -78,9 +78,10 @@ static int mdbx_pnl_append_list(MDBX_PNL *ppl, MDBX_PNL app);
 static int mdbx_txl_append_list(MDBX_TXL *ptr, MDBX_TXL append);
 static int mdbx_pnl_append_range(MDBX_PNL *ppl, pgno_t id, size_t n);
 static void mdbx_pnl_xmerge(MDBX_PNL pnl, MDBX_PNL merge);
-static unsigned mdbx_mid2l_search(MDBX_ID2L pnl, pgno_t id);
-static int mdbx_mid2l_insert(MDBX_ID2L pnl, MDBX_ID2 *id);
-static int mdbx_mid2l_append(MDBX_ID2L pnl, MDBX_ID2 *id);
+static unsigned mdbx_dpl_search(MDBX_DPL pnl, pgno_t id);
+static int mdbx_dpl_insert(MDBX_DPL pnl, pgno_t pgno, page_t *page);
+static int mdbx_dpl_append(MDBX_DPL pnl, pgno_t pgno, page_t *page);
+static void mdbx_dpl_sort(MDBX_DPL dl);
 
 #define MDBX_ALLOC_CACHE 1
 #define MDBX_ALLOC_GC 2
@@ -93,8 +94,9 @@ static int page_new(cursor_t *mc, uint32_t flags, unsigned num, page_t **mp);
 static int page_touch(cursor_t *mc);
 static int cursor_touch(cursor_t *mc);
 static MDBX_numeric_result_t cursor_count(MDBX_cursor_t *bundle);
-static void cursor_copy(const cursor_t *src, cursor_t *dst);
-static void cursor_copy_clearsub(const cursor_t *src, cursor_t *dst);
+
+enum cursor_copy_mode { copy_origin2stash, copy_stash2origin };
+static void cursor_copy(enum cursor_copy_mode copy_mode, const cursor_t *src, cursor_t *dst);
 static bool cursor_is_nested_inited(const MDBX_cursor_t *bundle);
 
 #define MDBX_END_NAMES                                                                                        \
@@ -129,26 +131,33 @@ static int __must_check_result page_search(cursor_t *mc, MDBX_iov_t *key, int fl
 static int __must_check_result page_merge(cursor_t *csrc, cursor_t *cdst);
 
 #define MDBX_SPLIT_REPLACE MDBX_IUD_CURRENT /* newkey is not new, don't save current */
-static int __must_check_result page_split(cursor_t *mc, MDBX_iov_t *newkey, MDBX_iov_t *newdata,
+static int __must_check_result page_split(cursor_t *mc, const MDBX_iov_t *newkey, MDBX_iov_t *newdata,
                                           pgno_t newpgno, unsigned nflags);
 
 static int __must_check_result mdbx_read_header(MDBX_env_t *env, meta_t *meta, uint64_t *filesize);
+
+static MDBX_error_t __must_check_result env_init(MDBX_env_t *env, void *user_ctx, MDBX_ops_t *ops);
 static void env_destroy(MDBX_env_t *env);
+static void env_release(MDBX_env_t *env);
 static int env_shutdown(MDBX_env_t *env, MDBX_shutdown_mode_t mode);
 
 static node_rc_t node_search(cursor_t *mc, MDBX_iov_t key);
 static node_rc_t node_search_hilo(cursor_t *mc, MDBX_iov_t key, int low, int high);
-static int __must_check_result node_add(cursor_t *mc, unsigned indx, MDBX_iov_t *key, MDBX_iov_t *data,
-                                        pgno_t pgno, unsigned flags);
+static int __must_check_result node_add_branch(cursor_t *mc, unsigned indx, const MDBX_iov_t *key,
+                                               pgno_t pgno);
+static int __must_check_result node_add_leaf(cursor_t *mc, unsigned indx, const MDBX_iov_t *key,
+                                             MDBX_iov_t *data, unsigned flags);
+static int __must_check_result node_add_leaf2(cursor_t *mc, unsigned indx, const MDBX_iov_t *key);
+
 static void node_del(cursor_t *mc, size_t keysize);
 static void node_shrink(page_t *mp, unsigned indx);
-static int __must_check_result node_move(cursor_t *csrc, cursor_t *cdst, int fromleft);
+static int __must_check_result node_move(cursor_t *csrc, cursor_t *cdst, bool fromleft);
 static int __must_check_result node_read(cursor_t *mc, node_t *leaf, MDBX_iov_t *data);
-static size_t leaf_size(MDBX_env_t *env, MDBX_iov_t *key, MDBX_iov_t *data);
-static size_t branch_size(MDBX_env_t *env, MDBX_iov_t *key);
+static size_t leaf_size(const MDBX_env_t *env, const MDBX_iov_t *key, const MDBX_iov_t *data);
+static size_t branch_size(const MDBX_env_t *env, const MDBX_iov_t *key);
 
 static int __must_check_result tree_rebalance(cursor_t *mc);
-static int __must_check_result update_key(cursor_t *mc, MDBX_iov_t *key);
+static int __must_check_result update_key(cursor_t *mc, const MDBX_iov_t *key);
 
 static meta_t *metapage(const MDBX_env_t *env, unsigned n);
 static txnid_t meta_txnid_stable(const MDBX_env_t *env, const meta_t *meta);
@@ -179,7 +188,7 @@ static const char *durable_str(const meta_t *const meta);
 static int txn_renew(MDBX_txn_t *txn, unsigned flags);
 static int txn_end(MDBX_txn_t *txn, unsigned mode);
 static int prep_backlog(MDBX_txn_t *txn, cursor_t *mc);
-static MDBX_error_t freelist_save(MDBX_txn_t *txn);
+static MDBX_error_t update_gc(MDBX_txn_t *txn);
 static page_t *meta_model(const MDBX_env_t *env, page_t *model, unsigned num);
 static page_t *init_metas(const MDBX_env_t *env, void *buffer);
 static int mdbx_sync_locked(MDBX_env_t *env, unsigned flags, meta_t *const pending);
@@ -187,7 +196,7 @@ static void setup_pagesize(MDBX_env_t *env, const size_t pagesize);
 static int mdbx_bk_map(MDBX_env_t *env, size_t usedsize);
 static MDBX_error_t mdbx_setup_dxb(MDBX_env_t *env, const MDBX_seize_t seize);
 static MDBX_seize_result_t setup_lck(MDBX_env_t *env, const char *lck_pathname, mode_t mode);
-static void env_destroy(MDBX_env_t *env);
+static void env_release(MDBX_env_t *env);
 static int tree_drop(cursor_t *mc, int subs);
 
 enum aat_format { af_gaco, af_main, af_user, af_nested };
@@ -209,6 +218,7 @@ static int aa_return(MDBX_txn_t *txn, unsigned txn_end_flags);
 static MDBX_sequence_result_t aa_sequence(MDBX_txn_t *txn, aht_t *aht, uint64_t increment);
 ////////////////////
 
+static MDBX_error_t __must_check_result cursor_check(cursor_t *mc, bool pending);
 static size_t __must_check_result cursor_size(aht_t *aht);
 static int __must_check_result cursor_open(MDBX_txn_t *txn, aht_t *aht, MDBX_cursor_t *bc);
 static int cursor_close(MDBX_cursor_t *bc);
@@ -243,19 +253,19 @@ static MDBX_comparer_t *default_keycmp(unsigned flags);
 static MDBX_comparer_t *default_datacmp(unsigned flags);
 
 static txnid_t rbr(MDBX_env_t *env, const txnid_t laggard);
-static int __must_check_result audit(MDBX_txn_t *txn);
+static int __must_check_result audit(MDBX_txn_t *txn, unsigned befree_stored);
 static page_t *page_malloc(MDBX_txn_t *txn, unsigned num);
 static void dpage_free(MDBX_env_t *env, page_t *mp);
 static void dlist_free(MDBX_txn_t *txn);
-static void kill_page(MDBX_env_t *env, pgno_t pgno);
 static int page_loose(cursor_t *mc, page_t *mp);
 static int page_flush(MDBX_txn_t *txn, pgno_t keep);
 static int page_spill(cursor_t *curor, MDBX_iov_t *key, MDBX_iov_t *data);
-static void mdbx_page_dirty(MDBX_txn_t *txn, page_t *mp);
+static int __must_check_result mdbx_page_dirty(MDBX_txn_t *txn, page_t *mp);
 static int page_alloc(cursor_t *mc, unsigned num, page_t **mp, int flags);
 static void page_copy(page_t *dst, page_t *src, unsigned psize);
 static int page_unspill(MDBX_txn_t *txn, page_t *mp, page_t **ret);
 static int page_touch(cursor_t *mc);
+static MDBX_error_t page_befree(cursor_t *mc, page_t *mp);
 
 static txnid_t find_oldest(MDBX_txn_t *txn);
 static int mdbx_mapresize(MDBX_env_t *env, const pgno_t size_pgno, const pgno_t limit_pgno);
@@ -297,14 +307,15 @@ static int mdbx_filesync(MDBX_filehandle_t fd, bool fullsync);
 static int mdbx_filesize_sync(MDBX_filehandle_t fd);
 static int mdbx_ftruncate(MDBX_filehandle_t fd, uint64_t length);
 static int mdbx_filesize(MDBX_filehandle_t fd, uint64_t *length);
-static int mdbx_openfile(const char *pathname, int flags, mode_t mode, MDBX_filehandle_t *fd);
+static int mdbx_openfile(const char *pathname, int flags, mode_t mode, MDBX_filehandle_t *fd, bool exclusive);
 static int mdbx_closefile(MDBX_filehandle_t fd);
+static int mdbx_removefile(const char *pathname);
 
 static int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t must, size_t limit);
 static int mdbx_munmap(mdbx_mmap_t *map);
 static int mdbx_mresize(int flags, mdbx_mmap_t *map, size_t current, size_t wanna);
 static int mdbx_msync(mdbx_mmap_t *map, size_t offset, size_t length, int async);
-static int mdbx_is_file_local(MDBX_filehandle_t handle, int flags);
+static int mdbx_check4nonlocal(MDBX_filehandle_t handle, int flags);
 
 /*----------------------------------------------------------------------------*/
 /* Internal prototypes and inlines */
@@ -330,6 +341,8 @@ static subcur_t *nested_subcursor(const cursor_t *cursor);
 static cursor_t *cursor_nested(const cursor_t *cursor);
 static cursor_t *cursor_nested_or_null(const cursor_t *cursor);
 static void cursor_refresh_subcursor(MDBX_cursor_t *cursor, const unsigned top, page_t *page);
+static inline aht_t *cursor_nested2primal_aht(cursor_t *cursor);
+
 typedef struct copy_ctx_ copy_ctx_t;
 static int bk_copy_compact(MDBX_env_t *env, MDBX_filehandle_t fd);
 static int bk_copy_asis(MDBX_env_t *env, MDBX_filehandle_t fd);
@@ -340,7 +353,7 @@ typedef struct walk_ctx_ {
   void *mw_user;
   MDBX_walk_func_t *mw_visitor;
 } walk_ctx_t;
-static int do_walk(walk_ctx_t *ctx, const MDBX_iov_t ident, pgno_t pg, int deep);
+static MDBX_error_t do_walk(walk_ctx_t *ctx, const MDBX_iov_t ident, pgno_t pgno, int deep);
 
 /* Perform act while tracking temporary cursor mn */
 #define WITH_CURSOR_TRACKING(mn, act)                                                                         \
@@ -361,14 +374,14 @@ static pgno_t pgno_add(pgno_t base, pgno_t augend);
 static pgno_t pgno_sub(pgno_t base, pgno_t subtrahend);
 static size_t pgno_align2os_bytes(const MDBX_env_t *env, pgno_t pgno);
 static pgno_t pgno_align2os_pgno(const MDBX_env_t *env, pgno_t pgno);
-static void set_pgno_aligned2(void *ptr, pgno_t pgno);
-static pgno_t get_pgno_aligned2(void *ptr);
+static void set_pgno(void *ptr, pgno_t pgno);
+static pgno_t get_pgno(void *ptr);
 
 static ptrdiff_t cmp_none(const MDBX_iov_t a, const MDBX_iov_t b);
 
-#define mdbx_nodemax(pagesize) (((((pagesize)-PAGEHDRSZ) / MDBX_MINKEYS) & -(intptr_t)2) - sizeof(indx_t))
+#define mdbx_nodemax(pagesize) (((((pagesize)-PAGEHDRSZ) / MDBX_MINKEYS) & ~(uintptr_t)1) - sizeof(indx_t))
 
-#define mdbx_maxkey(nodemax) ((nodemax) - (NODESIZE + sizeof(aatree_t)))
+#define mdbx_maxkey(nodemax) (((nodemax)-NODESIZE - sizeof(aatree_t)) / 2)
 
 #define mdbx_maxfree1pg(pagesize) (((pagesize)-PAGEHDRSZ) / sizeof(pgno_t) - 1)
 

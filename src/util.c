@@ -102,18 +102,18 @@ static inline pgno_t pgno_align2os_pgno(const MDBX_env_t *env, pgno_t pgno) {
   return bytes2pgno(env, pgno_align2os_bytes(env, pgno));
 }
 
-static inline void set_pgno_aligned2(void *ptr, pgno_t pgno) {
+static inline void set_pgno(void *ptr, pgno_t pgno) {
   if (sizeof(pgno_t) == 4)
-    set_le32_aligned2(ptr, (uint32_t)pgno);
+    set_le32_unaligned(ptr, (uint32_t)pgno);
   else
-    set_le64_aligned2(ptr, (uint64_t)pgno);
+    set_le64_unaligned(ptr, (uint64_t)pgno);
 }
 
-static inline pgno_t get_pgno_aligned2(void *ptr) {
+static inline pgno_t get_pgno(void *ptr) {
   if (sizeof(pgno_t) == 4)
-    return (pgno_t)get_le32_aligned2(ptr);
+    return (pgno_t)get_le32_unaligned(ptr);
   else
-    return (pgno_t)get_le64_aligned2(ptr);
+    return (pgno_t)get_le64_unaligned(ptr);
 }
 
 /*----------------------------------------------------------------------------*/

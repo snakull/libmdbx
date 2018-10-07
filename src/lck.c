@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -57,11 +57,11 @@ static void lck_writer_set_free(MDBX_env_t *env) {
 }
 
 MDBX_INTERNAL MDBX_error_t lck_writer_acquire(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
-  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0);
   MDBX_error_t rc = env->ops.locking.ops_writer_lock(env, flags);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
 
+  if (env->me_lck) {
 #if 0 /* LY: excessive, because (in general) previous owner could dead */
   lck_writer_ensure_free(env);
   if (unlikely(MDBX_DBG_JITTER & mdbx_debug_bits)) {
@@ -70,46 +70,52 @@ MDBX_INTERNAL MDBX_error_t lck_writer_acquire(MDBX_env_t *env, MDBX_flags_t flag
   }
 #endif
 
-  lck_writer_set_owned(env);
-  if (unlikely(MDBX_DBG_JITTER & mdbx_debug_bits)) {
-    mdbx_jitter(false);
-    lck_writer_ensure_owned(env);
+    lck_writer_set_owned(env);
+    if (unlikely(MDBX_DBG_JITTER & mdbx_debug_bits)) {
+      mdbx_jitter(false);
+      lck_writer_ensure_owned(env);
+    }
   }
   return MDBX_SUCCESS;
 }
 
 MDBX_INTERNAL void lck_writer_release(MDBX_env_t *env) {
-  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0);
-  lck_writer_ensure_owned(env);
-  lck_writer_set_free(env);
+  if (env->me_lck) {
+    lck_writer_ensure_owned(env);
+    lck_writer_set_free(env);
+  }
   env->ops.locking.ops_writer_unlock(env);
 }
 
 /*----------------------------------------------------------------------------*/
 
 static void lck_reader_registration_ensure_owned(MDBX_env_t *env) {
+  mdbx_ensure(env, env->me_lck != NULL);
   mdbx_ensure(env, env->me_lck->li_rowner_pid == env->me_pid);
   mdbx_ensure(env, env->me_lck->li_rowner_tid == mdbx_thread_self());
 }
 
 static void lck_reader_registration_ensure_free(MDBX_env_t *env) {
+  mdbx_ensure(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0 && env->me_lck != NULL);
   mdbx_ensure(env, env->me_lck->li_rowner_pid == 0);
   mdbx_ensure(env, env->me_lck->li_rowner_tid == 0);
 }
 
 MDBX_INTERNAL void lck_reader_registration_set_owned(MDBX_env_t *env) {
+  mdbx_ensure(env, env->me_lck != NULL);
   env->me_lck->li_rowner_pid = env->me_pid;
   env->me_lck->li_rowner_tid = mdbx_thread_self();
 }
 
 static void lck_reader_registration_set_free(MDBX_env_t *env) {
+  mdbx_ensure(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0 && env->me_lck != NULL);
   env->me_lck->li_rowner_pid = 0;
   env->me_lck->li_rowner_tid = 0;
 }
 
 MDBX_INTERNAL MDBX_error_t lck_reader_registration_acquire(MDBX_env_t *env,
                                                            MDBX_flags_t flags /* MDBX_NONBLOCK */) {
-  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0);
+  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0 && env->me_lck != NULL);
   MDBX_error_t rc = env->ops.locking.ops_reader_registration_lock(env, flags);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
@@ -133,7 +139,7 @@ MDBX_INTERNAL MDBX_error_t lck_reader_registration_acquire(MDBX_env_t *env,
 
 MDBX_INTERNAL void lck_reader_registration_release(MDBX_env_t *env) {
   lck_trace(">>");
-  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0);
+  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0 && env->me_lck != NULL);
   lck_reader_registration_ensure_owned(env);
   lck_reader_registration_set_free(env);
   env->ops.locking.ops_reader_registration_unlock(env);
@@ -149,6 +155,7 @@ MDBX_INTERNAL MDBX_error_t lck_reader_alive_set(MDBX_env_t *env, MDBX_pid_t pid)
 
 MDBX_INTERNAL void lck_reader_alive_clear(MDBX_env_t *env, MDBX_pid_t pid) {
   lck_trace(">>");
+  mdbx_assert(env, env->me_lck != NULL);
   int err = env->ops.locking.ops_reader_alive_clear(env, pid);
   if (unlikely(err != MDBX_SUCCESS))
     lck_warning("unexpected reader_alive_clear() error %d", err);
@@ -159,6 +166,7 @@ MDBX_INTERNAL void lck_reader_alive_clear(MDBX_env_t *env, MDBX_pid_t pid) {
 
 MDBX_INTERNAL void lck_seized_exclusive(MDBX_env_t *env) {
   lck_trace(">>");
+  mdbx_assert(env, env->me_lck != NULL);
   lck_writer_set_owned(env);
   lck_reader_registration_set_owned(env);
 
@@ -170,7 +178,8 @@ MDBX_INTERNAL void lck_seized_exclusive(MDBX_env_t *env) {
   lck_trace("<<");
 }
 
-MDBX_INTERNAL MDBX_error_t lck_upgrade(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
+__cold MDBX_INTERNAL MDBX_error_t lck_upgrade(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
+  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0 && env->me_lck);
   int rc = env->ops.locking.ops_upgrade(env, flags);
   if (unlikely(rc != MDBX_SUCCESS))
     return rc;
@@ -187,7 +196,8 @@ MDBX_INTERNAL MDBX_error_t lck_upgrade(MDBX_env_t *env, MDBX_flags_t flags /* MD
   return MDBX_SUCCESS;
 }
 
-MDBX_INTERNAL MDBX_error_t lck_downgrade(MDBX_env_t *env) {
+__cold MDBX_INTERNAL MDBX_error_t lck_downgrade(MDBX_env_t *env) {
+  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0 && env->me_lck);
   lck_writer_ensure_owned(env);
   lck_reader_registration_ensure_owned(env);
   if (unlikely(MDBX_DBG_JITTER & mdbx_debug_bits)) {

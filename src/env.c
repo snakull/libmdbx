@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -51,7 +51,83 @@
 
 //-----------------------------------------------------------------------------
 
+static MDBX_error_t __cold env_init(MDBX_env_t *env, void *user_ctx, MDBX_ops_t *ops) {
+  env->me_userctx = user_ctx;
+  env->me_pid = mdbx_getpid();
+
+  env->ops.memory.ops_malloc = mdbx_malloc;
+  env->ops.memory.ops_free = mdbx_free;
+  env->ops.memory.ops_calloc = mdbx_calloc;
+  env->ops.memory.ops_realloc = mdbx_realloc;
+  env->ops.memory.ops_aligned_alloc = mdbx_aligned_alloc;
+  env->ops.memory.ops_aligned_free = mdbx_aligned_free;
+  if (ops && ops->memory.ops_malloc)
+    env->ops.memory = ops->memory;
+
+  env->ops.locking.ops_init = mdbx_lck_init;
+  env->ops.locking.ops_seize = mdbx_lck_seize;
+  env->ops.locking.ops_downgrade = mdbx_lck_downgrade;
+  env->ops.locking.ops_upgrade = mdbx_lck_upgrade;
+  env->ops.locking.ops_detach = mdbx_lck_detach;
+  env->ops.locking.ops_reader_registration_lock = mdbx_lck_reader_registration_lock;
+  env->ops.locking.ops_reader_registration_unlock = mdbx_lck_reader_registration_unlock;
+  env->ops.locking.ops_reader_alive_set = mdbx_lck_reader_alive_set;
+  env->ops.locking.ops_reader_alive_clear = mdbx_lck_reader_alive_clear;
+  env->ops.locking.ops_reader_alive_check = mdbx_lck_reader_alive_check;
+  env->ops.locking.ops_writer_lock = mdbx_lck_writer_lock;
+  env->ops.locking.ops_writer_unlock = mdbx_lck_writer_unlock;
+  if (ops && ops->locking.ops_init)
+    env->ops.locking = ops->locking;
+
+  env->me_maxreaders = DEFAULT_READERS;
+  env->env_ah_max = env->env_ah_num = CORE_AAH;
+  env->me_dxb_fd = MDBX_INVALID_FD;
+  env->me_lck_fd = MDBX_INVALID_FD;
+  setup_pagesize(env, osal_syspagesize);
+
+  MDBX_error_t err = mdbx_fastmutex_init(&env->me_aah_lock);
+  if (unlikely(err != MDBX_SUCCESS))
+    return err;
+
+#if defined(_WIN32) || defined(_WIN64)
+  mdbx_srwlock_Init(&env->me_remap_guard);
+  InitializeCriticalSection(&env->me_windowsbug_lock);
+#else
+  err = mdbx_fastmutex_init(&env->me_remap_guard);
+  if (unlikely(err != MDBX_SUCCESS)) {
+    mdbx_fastmutex_destroy(&env->me_aah_lock);
+    return err;
+  }
+  err = mdbx_fastmutex_init(&env->me_lckless_wmutex);
+  if (unlikely(err != MDBX_SUCCESS)) {
+    mdbx_fastmutex_destroy(&env->me_remap_guard);
+    mdbx_fastmutex_destroy(&env->me_aah_lock);
+    return err;
+  }
+#endif /* Windows */
+
+  VALGRIND_CREATE_MEMPOOL(env, 0, 0);
+  set_signature(&env->me_signature, MDBX_ME_SIGNATURE);
+  return MDBX_SUCCESS;
+}
+
 static void __cold env_destroy(MDBX_env_t *env) {
+  void (*free4use)(void *ptr, MDBX_env_t *env) = env->ops.memory.ops_free;
+  VALGRIND_DESTROY_MEMPOOL(env);
+  mdbx_ensure(env, mdbx_fastmutex_destroy(&env->me_aah_lock) == MDBX_SUCCESS);
+#if defined(_WIN32) || defined(_WIN64)
+  /* me_remap_guard don't have destructor (Slim Reader/Writer Lock) */
+  DeleteCriticalSection(&env->me_windowsbug_lock);
+#else
+  mdbx_ensure(env, mdbx_fastmutex_destroy(&env->me_lckless_wmutex) == MDBX_SUCCESS);
+  mdbx_ensure(env, mdbx_fastmutex_destroy(&env->me_remap_guard) == MDBX_SUCCESS);
+#endif /* Windows */
+  set_signature(&env->me_signature, ~0u);
+  env->me_pid = 0;
+  free4use(env, env);
+}
+
+static void __cold env_release(MDBX_env_t *env) {
   if (env->me_flags32 & MDBX_ENV_ACTIVE) {
     env->me_flags32 &= ~MDBX_ENV_ACTIVE;
 
@@ -81,6 +157,8 @@ static void __cold env_destroy(MDBX_env_t *env) {
       rthc_release(env->me_txkey);
       env->me_flags32 &= ~MDBX_ENV_TXKEY;
     }
+    if (env->me_live_reader)
+      (void)env->ops.locking.ops_reader_alive_clear(env, env->me_pid);
 
     if (env->me_map) {
       mdbx_munmap(&env->me_dxb_mmap);
@@ -113,15 +191,6 @@ static void __cold env_destroy(MDBX_env_t *env) {
     free(env->me_pathname_buf);
     env->me_pathname_buf = nullptr;
   }
-
-  VALGRIND_DESTROY_MEMPOOL(env);
-  mdbx_ensure(env, mdbx_fastmutex_destroy(&env->me_aah_lock) == MDBX_SUCCESS);
-#if defined(_WIN32) || defined(_WIN64)
-  /* me_remap_guard don't have destructor (Slim Reader/Writer Lock) */
-  DeleteCriticalSection(&env->me_windowsbug_lock);
-#else
-  mdbx_ensure(env, mdbx_fastmutex_destroy(&env->me_remap_guard) == MDBX_SUCCESS);
-#endif /* Windows */
 }
 
 static __cold int env_shutdown(MDBX_env_t *env, MDBX_shutdown_mode_t mode) {
@@ -195,7 +264,7 @@ static int __cold mdbx_pid_insert(MDBX_pid_t *ids, MDBX_pid_t pid) {
   unsigned base = 0;
   unsigned cursor = 1;
   int val = 0;
-  unsigned n = ids[0];
+  unsigned n = MDBX_PNL_SIZE(ids);
 
   while (n > 0) {
     unsigned pivot = n >> 1;
@@ -216,8 +285,8 @@ static int __cold mdbx_pid_insert(MDBX_pid_t *ids, MDBX_pid_t pid) {
   if (val > 0)
     ++cursor;
 
-  ids[0]++;
-  for (n = ids[0]; n > cursor; n--)
+  MDBX_PNL_SIZE(ids)++;
+  for (n = MDBX_PNL_SIZE(ids); n > cursor; n--)
     ids[n] = ids[n - 1];
   ids[n] = pid;
   return 0;
@@ -228,7 +297,6 @@ static int __cold mdbx_pid_insert(MDBX_pid_t *ids, MDBX_pid_t pid) {
  *  MDBX_SUCCESS     - done
  *  Otherwise errcode. */
 MDBX_numeric_result_t __cold check_registered_readers(MDBX_env_t *env, int rdt_locked) {
-  assert(rdt_locked >= 0);
   MDBX_numeric_result_t result;
   result.value = 0;
 
@@ -239,9 +307,16 @@ MDBX_numeric_result_t __cold check_registered_readers(MDBX_env_t *env, int rdt_l
   }
 
   MDBX_lockinfo_t *const lck = env->me_lck;
+  if (unlikely(lck == NULL)) {
+    /* exclusive mode */
+    result.err = MDBX_SUCCESS;
+    return result;
+  }
+
+  assert(rdt_locked >= 0);
   const unsigned snap_nreaders = lck->li_numreaders;
   MDBX_pid_t *pids = alloca((snap_nreaders + 1) * sizeof(MDBX_pid_t));
-  pids[0] = 0;
+  MDBX_PNL_SIZE(pids) = 0;
 
   result.err = MDBX_SUCCESS;
   for (unsigned i = 0; i < snap_nreaders; i++) {
@@ -318,8 +393,8 @@ static txnid_t __cold rbr(MDBX_env_t *env, const txnid_t laggard) {
     txnid_t oldest = reclaiming_detent(env);
     mdbx_assert(env, oldest < env->me_wpa_txn->mt_txnid);
     mdbx_assert(env, oldest >= laggard);
-    mdbx_assert(env, oldest >= env->me_oldest[0]);
-    if (oldest == laggard)
+    mdbx_assert(env, oldest >= *env->me_oldest);
+    if (oldest == laggard || unlikely(env->me_lck == NULL /* exclusive mode */))
       return oldest;
 
     if (MDBX_IS_ERROR(check_registered_readers(env, false).err))
@@ -344,9 +419,9 @@ static txnid_t __cold rbr(MDBX_env_t *env, const txnid_t laggard) {
         const txnid_t gap = oldest - laggard;
         env->me_callback_rbr(env, 0, 0, laggard, (gap < UINT_MAX) ? (unsigned)gap : UINT_MAX, -retry);
       }
-      env_notice("RBR-kick: update oldest %" PRIaTXN " -> %" PRIaTXN, env->me_oldest[0], oldest);
-      mdbx_assert(env, env->me_oldest[0] <= oldest);
-      return env->me_oldest[0] = oldest;
+      env_notice("RBR-kick: update oldest %" PRIaTXN " -> %" PRIaTXN, *env->me_oldest, oldest);
+      mdbx_assert(env, *env->me_oldest <= oldest);
+      return *env->me_oldest = oldest;
     }
 
     MDBX_tid_t tid;

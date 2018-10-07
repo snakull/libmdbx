@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -41,7 +41,7 @@ static const char *leafnode_type(node_t *n) {
 /* Display all the keys in the page. */
 __maybe_unused static void page_list(const MDBX_env_t *env, page_t *mp) {
   pgno_t pgno = mp->mp_pgno;
-  const char *type, *state = (mp->mp_flags16 & P_DIRTY) ? ", dirty" : "";
+  const char *type, *state = IS_DIRTY(mp) ? ", dirty" : "";
   node_t *node;
   unsigned i, nkeys;
   MDBX_iov_t key;
@@ -50,34 +50,34 @@ __maybe_unused static void page_list(const MDBX_env_t *env, page_t *mp) {
 
   switch (mp->mp_flags16 & (P_BRANCH | P_LEAF | P_DFL | P_META | P_OVERFLOW | P_SUBP)) {
   case P_BRANCH:
-    type = "Branch page";
+    type = "branch";
     break;
   case P_LEAF:
-    type = "Leaf page";
-    break;
-  case P_LEAF | P_SUBP:
-    type = "Sub-page";
+    type = "leaf";
     break;
   case P_LEAF | P_DFL:
-    type = "DFL page";
+    type = "leaf-dupfixed";
+    break;
+  case P_LEAF | P_SUBP:
+    type = "subleaf-dupsort";
     break;
   case P_LEAF | P_DFL | P_SUBP:
-    type = "DFL sub-page";
+    type = "subleaf-dupfixed";
     break;
   case P_OVERFLOW:
-    audit_verbose("Overflow page %" PRIaPGNO " pages %u%s\n", pgno, mp->mp_pages, state);
+    audit_verbose("large-page #%" PRIaPGNO " *%u%s\n", pgno, mp->mp_pages, state);
     return;
   case P_META:
-    audit_verbose("Meta-page %" PRIaPGNO " txnid %" PRIaTXN "\n", pgno,
+    audit_verbose("meta-page #%" PRIaPGNO " txnid %" PRIaTXN "\n", pgno,
                   meta_txnid_fluid(env, (const meta_t *)page_data(mp)));
     return;
   default:
-    audit_error("Bad page %" PRIaPGNO " flags 0x%X\n", pgno, mp->mp_flags16);
+    audit_error("unknown-type-page %" PRIaPGNO " flags 0x%X\n", pgno, mp->mp_flags16);
     return;
   }
 
   nkeys = page_numkeys(mp);
-  audit_info("%s %" PRIaPGNO " page_numkeys %u%s\n", type, pgno, nkeys, state);
+  audit_info("%s page #%" PRIaPGNO " numkeys %u%s\n", type, pgno, nkeys, state);
 
   for (i = 0; i < nkeys; i++) {
     if (IS_DFL(mp)) { /* DFL pages have no mp_ptrs[] or node headers */
@@ -109,38 +109,68 @@ __maybe_unused static void page_list(const MDBX_env_t *env, page_t *mp) {
              IS_DFL(mp) ? PAGEHDRSZ : PAGEHDRSZ + mp->mp_lower, total, page_spaceleft(mp));
 }
 
-__maybe_unused static void cursor_check(MDBX_cursor_t *mc) {
-  unsigned i;
-  node_t *node;
-  page_t *mp;
-
-  if (!mc->primal.mc_snum || !(mc->primal.mc_state8 & C_INITIALIZED))
-    return;
-  for (i = 0; i < mc->primal.mc_top; i++) {
-    mp = mc->primal.mc_pg[i];
-    node = node_ptr(mp, mc->primal.mc_ki[i]);
-    if (unlikely(node_get_pgno(node) != mc->primal.mc_pg[i + 1]->mp_pgno))
-      audit_error("oops: node_get_pgno(node) {%" PRIaPGNO "} != {%" PRIaPGNO
-                  "} mc->primal.mc_pg[i + 1]->mp_pgno",
-                  node_get_pgno(node), mc->primal.mc_pg[i + 1]->mp_pgno);
+static __cold MDBX_error_t cursor_check(cursor_t *mc, bool pending) {
+  if (unlikely((mc->mc_state8 & C_INITIALIZED) == 0))
+    return MDBX_SUCCESS;
+  if (likely((mc->mc_kind8 & S_STASH) == 0)) {
+    assert(((mc->mc_aht->aa.flags16 & MDBX_DUPSORT) != 0) == ((mc->mc_kind8 & S_HAVESUB) != 0));
+    if (((mc->mc_aht->aa.flags16 & MDBX_DUPSORT) != 0) != ((mc->mc_kind8 & S_HAVESUB) != 0))
+      return MDBX_CURSOR_FULL;
   }
-  if (unlikely(mc->primal.mc_ki[i] >= page_numkeys(mc->primal.mc_pg[i])))
-    audit_error("oops: mc->primal.mc_ki[i] {%u} >= {%u} page_numkeys(mc->primal.mc_pg[i]", mc->primal.mc_ki[i],
-                page_numkeys(mc->primal.mc_pg[i]));
-  if (cursor_is_nested_inited(mc)) {
-    node = node_ptr(mc->primal.mc_pg[mc->primal.mc_top], mc->primal.mc_ki[mc->primal.mc_top]);
-    if (((node->node_flags8 & (NODE_DUP | NODE_SUBTREE)) == NODE_DUP) &&
-        mc->subcursor.mx_cursor.mc_pg[0] != NODEDATA(node)) {
-      audit_error("oops: mc->subcursor.mx_cursor.mc_pg[0] != NODEDATA(node)");
+  assert(mc->mc_top == mc->mc_snum - 1);
+  if (unlikely(mc->mc_top != mc->mc_snum - 1))
+    return MDBX_CURSOR_FULL;
+  assert(pending ? mc->mc_snum <= mc->mc_aht->aa.depth16 : mc->mc_snum == mc->mc_aht->aa.depth16);
+  if (unlikely(pending ? mc->mc_snum > mc->mc_aht->aa.depth16 : mc->mc_snum != mc->mc_aht->aa.depth16))
+    return MDBX_CURSOR_FULL;
+
+  for (unsigned n = 0; n < mc->mc_snum; ++n) {
+    page_t *mp = mc->mc_pg[n];
+    const unsigned numkeys = page_numkeys(mp);
+    const bool expect_branch = (n < mc->mc_aht->aa.depth16 - 1u) ? true : false;
+    const bool expect_nested_leaf = (n + 1 == mc->mc_aht->aa.depth16 - 1u) ? true : false;
+    const bool branch = IS_BRANCH(mp) ? true : false;
+    assert(branch == expect_branch);
+    if (unlikely(branch != expect_branch))
+      return MDBX_CURSOR_FULL;
+    if (!pending) {
+      assert(numkeys > mc->mc_ki[n] || (!branch && numkeys == mc->mc_ki[n] && (mc->mc_state8 & C_EOF) != 0));
+      if (unlikely(numkeys <= mc->mc_ki[n] &&
+                   !(!branch && numkeys == mc->mc_ki[n] && (mc->mc_state8 & C_EOF) != 0)))
+        return MDBX_CURSOR_FULL;
+    } else {
+      assert(numkeys + 1 >= mc->mc_ki[n]);
+      if (unlikely(numkeys + 1 < mc->mc_ki[n]))
+        return MDBX_CURSOR_FULL;
+    }
+
+    for (unsigned i = 0; i < numkeys; ++i) {
+      node_t *node = node_ptr(mp, i);
+      if (branch) {
+        assert(node->node_flags8 == 0);
+        if (unlikely(node->node_flags8 != 0))
+          return MDBX_CURSOR_FULL;
+        pgno_t pgno = node_get_pgno(node);
+        page_t *np;
+        int rc = page_get(mc->mc_txn, pgno, &np, NULL);
+        assert(rc == MDBX_SUCCESS);
+        if (unlikely(rc != MDBX_SUCCESS))
+          return rc;
+        const bool nested_leaf = IS_LEAF(np) ? true : false;
+        assert(nested_leaf == expect_nested_leaf);
+        if (unlikely(nested_leaf != expect_nested_leaf))
+          return MDBX_CURSOR_FULL;
+      }
     }
   }
+  return MDBX_SUCCESS;
 }
 #endif /* MDBX_CONFIG_DBG_AUDIT */
 
 /* Count all the pages in each AA and in the GACO and make sure
  * it matches the actual number of pages being used.
  * All named AAs must be open for a correct count. */
-static int audit(MDBX_txn_t *txn) {
+static int audit(MDBX_txn_t *txn, unsigned befree_stored) {
   MDBX_cursor_t mc;
   int rc = cursor_init(&mc, txn, aht_gaco(txn));
   if (unlikely(rc != MDBX_SUCCESS)) {
@@ -148,12 +178,26 @@ static int audit(MDBX_txn_t *txn) {
     return rc;
   }
 
-  uint64_t caco = 0, tree = 0;
+  const uint64_t pending =
+      (txn->mt_flags & MDBX_RDONLY)
+          ? 0
+          : txn->mt_loose_count +
+                (txn->mt_env->me_reclaimed_pglist ? MDBX_PNL_SIZE(txn->mt_env->me_reclaimed_pglist) : 0) +
+                (txn->mt_befree_pages ? MDBX_PNL_SIZE(txn->mt_befree_pages) - befree_stored : 0);
+
+  uint64_t gaco = 0, tree = 0;
   aht_t *gaco_aht = aht_gaco(txn);
   if (gaco_aht->aa.root != P_INVALID) {
     MDBX_iov_t key, data;
-    while ((rc = mdbx_cursor_get(&mc, &key, &data, MDBX_NEXT)) == MDBX_SUCCESS)
-      caco += *(pgno_t *)data.iov_base;
+    while ((rc = mdbx_cursor_get(&mc, &key, &data, MDBX_NEXT)) == MDBX_SUCCESS) {
+      pgno_t count;
+      if (unlikely(data.iov_len < sizeof(pgno_t) || data.iov_len % sizeof(pgno_t) != 0))
+        return MDBX_CORRUPTED;
+      memcpy(&count, data.iov_base, sizeof(pgno_t));
+      if (unlikely(data.iov_len < sizeof(pgno_t) * (count + 1)))
+        return MDBX_CORRUPTED;
+      gaco += count;
+    }
     if (unlikely(rc != MDBX_NOTFOUND)) {
       audit_error("%s failed %d\n", "mdbx_cursor_get(GACO, MDBX_NEXT)", rc);
       return rc;
@@ -181,15 +225,28 @@ static int audit(MDBX_txn_t *txn) {
       page_t *mp = mc.primal.mc_pg[mc.primal.mc_top];
       for (unsigned n = 0; n < page_numkeys(mp); n++) {
         node_t *leaf = node_ptr(mp, n);
-        if (leaf->node_flags8 == NODE_SUBTREE) {
-          aatree_t *entry = NODEDATA(leaf);
-          if (sizeof(pgno_t) == 4) {
-            tree += get_le32_unaligned(&entry->aa_branch_pages) + get_le32_unaligned(&entry->aa_leaf_pages) +
-                    get_le32_unaligned(&entry->aa_overflow_pages);
-          } else {
-            tree += get_le64_unaligned(&entry->aa_branch_pages) + get_le64_unaligned(&entry->aa_leaf_pages) +
-                    get_le64_unaligned(&entry->aa_overflow_pages);
+        if (leaf->node_flags8 != NODE_SUBTREE)
+          continue;
+
+        aatree_t *entry = NODEDATA(leaf);
+        if ((txn->mt_flags & MDBX_RDONLY) == 0) {
+          const MDBX_iov_t aa_ident = {NODEKEY(leaf), node_get_keysize(leaf)};
+          ahe_rc_t rp = aa_lookup(txn->mt_env, txn, aa_ident);
+          if (rp.err == MDBX_SUCCESS) {
+            aht_t *aht = txn_ahe2aht(txn, rp.ahe);
+            tree += aht->aa.branch_pages + aht->aa.leaf_pages + aht->aa.overflow_pages;
+            continue;
           }
+          if (rp.err != MDBX_EOF)
+            return rp.err;
+        }
+
+        if (sizeof(pgno_t) == 4) {
+          tree += get_le32_unaligned(&entry->aa_branch_pages) + get_le32_unaligned(&entry->aa_leaf_pages) +
+                  get_le32_unaligned(&entry->aa_overflow_pages);
+        } else {
+          tree += get_le64_unaligned(&entry->aa_branch_pages) + get_le64_unaligned(&entry->aa_leaf_pages) +
+                  get_le64_unaligned(&entry->aa_overflow_pages);
         }
       }
       rc = cursor_sibling(&mc.primal, true);
@@ -201,11 +258,44 @@ static int audit(MDBX_txn_t *txn) {
     }
   }
 
-  if (caco + tree + MDBX_NUM_METAS != txn->mt_next_pgno) {
-    audit_error("mismatch txn#%" PRIaTXN ": gaco %" PRIu64 ", data %" PRIu64 ", total %" PRIu64
-                " != next %" PRIaPGNO,
-                txn->mt_txnid, caco, tree, caco + tree + MDBX_NUM_METAS, txn->mt_next_pgno);
-    return MDBX_SIGN;
-  }
-  return MDBX_SUCCESS;
+  if (pending + gaco + tree + MDBX_NUM_METAS == txn->mt_next_pgno)
+    return MDBX_SUCCESS;
+
+  if ((txn->mt_flags & MDBX_RDONLY) == 0)
+    audit_error("@%" PRIaTXN ": %" PRIu64 "(pending) = %u(loose-count) + "
+                "%u(reclaimed-list) + %u(befree-pending) - %u(befree-stored)",
+                txn->mt_txnid, pending, txn->mt_loose_count,
+                txn->mt_env->me_reclaimed_pglist ? MDBX_PNL_SIZE(txn->mt_env->me_reclaimed_pglist) : 0,
+                txn->mt_befree_pages ? MDBX_PNL_SIZE(txn->mt_befree_pages) : 0, befree_stored);
+  audit_error("@%" PRIaTXN ": %" PRIu64 "(pending) + %" PRIu64 "(free) + %" PRIu64 "(count) = %" PRIu64
+              "(total) <> %" PRIaPGNO "(next-pgno)",
+              txn->mt_txnid, pending, gaco, tree + MDBX_NUM_METAS, pending + gaco + tree + MDBX_NUM_METAS,
+              txn->mt_next_pgno);
+  return MDBX_PROBLEM;
+}
+
+__cold MDBX_error_t mdbx_get4testing(MDBX_txn_t *txn, MDBX_aah_t aah, MDBX_iov_t *key, MDBX_iov_t *data) {
+  if (unlikely(!key || !data))
+    return MDBX_EINVAL;
+
+  MDBX_error_t rc = validate_txn_ro(txn);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  DKBUF;
+  mdbx_debug("===> get db %" PRIuFAST32 " key [%s]", aah, DKEY(key));
+
+  const aht_rc_t rp = aa_take(txn, aah);
+  if (unlikely(rp.err != MDBX_SUCCESS))
+    return rp.err;
+
+  MDBX_cursor_t mc;
+  rc = cursor_init(&mc, txn, rp.aht);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  int exact = false;
+  rc = cursor_set(&mc.primal, key, data, (rp.aht->aa.flags16 & MDBX_DUPSORT) ? MDBX_GET_BOTH : MDBX_SET_KEY,
+                  &exact);
+  return (rc == MDBX_SUCCESS && !exact) ? MDBX_SIGN : rc;
 }

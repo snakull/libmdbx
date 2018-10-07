@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -64,6 +64,8 @@ MDBX_INTERNAL void __cold mdbx_assert_fail(const MDBX_env_t *env, const char *ms
   } while (0)
 
 #define mdbx_assert(env, expr) mdbx_assert_msg(env, expr, #expr)
+#undef assert
+#define assert(expr) mdbx_assert(NULL, expr)
 
 /*----------------------------------------------------------------------------*/
 

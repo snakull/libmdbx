@@ -122,6 +122,12 @@
 /* *INDENT-ON* */
 /* clang-format on */
 
+#if UINTPTR_MAX > 0xffffFFFFul || ULONG_MAX > 0xffffFFFFul
+#define MDBX_WORDBITS 64
+#else
+#define MDBX_WORDBITS 32
+#endif /* MDBX_WORDBITS */
+
 /*----------------------------------------------------------------------------*/
 /* Basic constants and types */
 
@@ -158,19 +164,13 @@
  * size up to 2^44 bytes, in case of 4K pages. */
 typedef uint32_t pgno_t;
 #define PRIaPGNO PRIu32
-#define MAX_PAGENO ((pgno_t)UINT64_C(0xffffFFFFffff))
+#define MAX_PAGENO UINT32_C(0x7FFFffff)
 #define MIN_PAGENO MDBX_NUM_METAS
 
 /* A transaction ID. */
 typedef uint64_t txnid_t;
 #define PRIaTXN PRIi64
-#if MDBX_DEVEL
-#define MIN_TXNID (UINT64_MAX >> 1)
-#elif MDBX_DEBUG
-#define MIN_TXNID UINT64_C(0x100000000)
-#else
 #define MIN_TXNID UINT64_C(1)
-#endif /* MIN_TXNID */
 #define MAX_TXNID UINT64_MAX
 
 /* Used for offsets within a single page.
@@ -206,10 +206,13 @@ typedef uint64_t checksum_t;
 #else
 #define MAX_MAPSIZE32 UINT32_C(0x7ff80000)
 #endif
-#define MAX_MAPSIZE64                                                                                         \
-  ((sizeof(pgno_t) > 4) ? UINT64_C(0x7fffFFFFfff80000) : MAX_PAGENO * (uint64_t)MAX_PAGESIZE)
+#define MAX_MAPSIZE64 (MAX_PAGENO * (uint64_t)MAX_PAGESIZE)
 
-#define MAX_MAPSIZE ((sizeof(size_t) < 8) ? MAX_MAPSIZE32 : MAX_MAPSIZE64)
+#if MDBX_WORDBITS >= 64
+#define MAX_MAPSIZE MAX_MAPSIZE64
+#else
+#define MAX_MAPSIZE MAX_MAPSIZE32
+#endif /* MDBX_WORDBITS */
 
 /*----------------------------------------------------------------------------*/
 /* Core structures for databook and shared memory (i.e. format definition) */
@@ -332,7 +335,7 @@ typedef enum mp_flags {
  * omit mp_ptrs and pack sorted MDBX_DUPFIXED values after the page header.
  *
  * P_OVERFLOW records occupy one or more contiguous pages where only the
- * first has a page header. They hold the real data of NODE_BIGDATA nodes.
+ * first has a page header. They hold the real data of NODE_BIG nodes.
  *
  * P_SUBP sub-pages are small leaf "pages" with duplicate data.
  * A node with flag NODE_DUP but not NODE_SUBTREE contains a
@@ -345,8 +348,7 @@ typedef enum mp_flags {
  * record. */
 typedef struct page {
   union {
-    struct page *mp_next;     /* for in-memory list of freed pages,
-                               * must be first field, see NEXT_LOOSE_PAGE */
+    struct page *mp_next;     /* for in-memory list of freed pages, must be first field */
     checksum_t page_checksum; /* checksum of page content or a txnid during
                                * which the page has been updated */
   };
@@ -541,6 +543,10 @@ typedef struct MDBX_lockinfo {
 
 #define MDBX_LOCK_MAGIC ((MDBX_MAGIC << 8) + MDBX_LOCK_VERSION)
 
+#ifndef MDBX_ASSUME_MALLOC_OVERHEAD
+#define MDBX_ASSUME_MALLOC_OVERHEAD (sizeof(void *) * 2u)
+#endif /* MDBX_ASSUME_MALLOC_OVERHEAD */
+
 /*----------------------------------------------------------------------------*/
 /* Two kind lists of pages (aka PNL) */
 
@@ -562,37 +568,42 @@ typedef pgno_t *MDBX_PNL;
 /* List of txnid, only for MDBX_env_t.mt_lifo_reclaimed */
 typedef txnid_t *MDBX_TXL;
 
-/* An ID2 is an ID/pointer pair. */
-typedef struct MDBX_ID2 {
-  pgno_t mid;   /* The ID */
-  page_t *mptr; /* The pointer */
-} MDBX_ID2;
+/* An Dirty-Page list item is an pgno/pointer pair. */
+typedef union MDBX_DP {
+  struct {
+    pgno_t pgno;
+    page_t *ptr;
+  };
+  struct {
+    unsigned limit, length;
+  };
+} MDBX_DP;
 
-/* An ID2L is an ID2 List, a sorted array of ID2s.
- * The first element's mid member is a count of how many actual
- * elements are in the array. The mptr member of the first element is
- * unused. The array is sorted in ascending order by mid. */
-typedef MDBX_ID2 *MDBX_ID2L;
+/* An DPL (dirty-page list) is a sorted array of MDBX_DPs.
+ * The first element's length member is a count of how many actual
+ * elements are in the array. */
+typedef MDBX_DP *MDBX_DPL;
 
-/* PNL sizes - likely should be even bigger
- * limiting factors: sizeof(pgno_t), thread stack size */
-#define MDBX_PNL_LOGN                                                                                         \
-  16 /* MDBX_PNL_DB_SIZE = 2^16, MDBX_PNL_UM_SIZE = 2^17                                                      \
-      */
-#define MDBX_PNL_DB_SIZE (1 << MDBX_PNL_LOGN)
-#define MDBX_PNL_UM_SIZE (1 << (MDBX_PNL_LOGN + 1))
+/* PNL sizes - likely should be even bigger */
+#define MDBX_PNL_GRANULATE 1024
+#define MDBX_PNL_INITIAL (MDBX_PNL_GRANULATE - 2 - MDBX_ASSUME_MALLOC_OVERHEAD / sizeof(pgno_t))
+#define MDBX_PNL_MAX ((1u << 24) - 2 - MDBX_ASSUME_MALLOC_OVERHEAD / sizeof(pgno_t))
+#define MDBX_DPL_TXNFULL (MDBX_PNL_MAX / 4)
 
-#define MDBX_PNL_DB_MAX (MDBX_PNL_DB_SIZE - 1)
-#define MDBX_PNL_UM_MAX (MDBX_PNL_UM_SIZE - 1)
+#define MDBX_TXL_GRANULATE 32
+#define MDBX_TXL_INITIAL (MDBX_TXL_GRANULATE - 2 - MDBX_ASSUME_MALLOC_OVERHEAD / sizeof(txnid_t))
+#define MDBX_TXL_MAX ((1u << 17) - 2 - MDBX_ASSUME_MALLOC_OVERHEAD / sizeof(txnid_t))
 
-#define MDBX_PNL_SIZEOF(pl) (((pl)[0] + 1) * sizeof(pgno_t))
-#define MDBX_PNL_IS_ZERO(pl) ((pl)[0] == 0)
-#define MDBX_PNL_CPY(dst, src) (memcpy(dst, src, MDBX_PNL_SIZEOF(src)))
-#define MDBX_PNL_FIRST(pl) ((pl)[1])
-#define MDBX_PNL_LAST(pl) ((pl)[(pl)[0]])
-
-/* Current max length of an mdbx_pnl_alloc()ed PNL */
+/* Actual max length of an mdbx_pnl_alloc()ed PNL */
 #define MDBX_PNL_ALLOCLEN(pl) ((pl)[-1])
+#define MDBX_PNL_SIZE(pl) ((pl)[0])
+#define MDBX_PNL_FIRST(pl) ((pl)[1])
+#define MDBX_PNL_LAST(pl) ((pl)[MDBX_PNL_SIZE(pl)])
+#define MDBX_PNL_BEGIN(pl) (&(pl)[1])
+#define MDBX_PNL_END(pl) (&(pl)[MDBX_PNL_SIZE(pl) + 1])
+
+#define MDBX_PNL_SIZEOF(pl) ((MDBX_PNL_SIZE(pl) + 1) * sizeof(pgno_t))
+#define MDBX_PNL_IS_EMPTY(pl) (MDBX_PNL_SIZE(pl) == 0)
 
 /*----------------------------------------------------------------------------*/
 /* Internal structures */
@@ -699,7 +710,7 @@ struct MDBX_txn {
   /* The list of pages that became unused during this transaction. */
   MDBX_PNL mt_befree_pages;
   /* The list of loose pages that became unused and may be reused
-   * in this transaction, linked through NEXT_LOOSE_PAGE(page). */
+   * in this transaction, linked through page.mp_next */
   page_t *mt_loose_pages;
   /* Number of loose pages (mt_loose_pages) */
   unsigned mt_loose_count;
@@ -709,7 +720,7 @@ struct MDBX_txn {
   MDBX_PNL mt_spill_pages;
   union {
     /* For write txns: Modified pages. Sorted when not MDBX_WRITEMAP. */
-    MDBX_ID2L mt_rw_dirtylist;
+    MDBX_DPL mt_rw_dirtylist;
     /* For read txns: This thread/txn's reader table slot, or NULL. */
     MDBX_reader_t *mt_ro_reader;
   };
@@ -786,10 +797,13 @@ enum /* Cursor flags. */ {
   C_AFTERDELETE = 1 << 2 /* last op was a cursor_del */,
   C_RECLAIMING = 1 << 3 /* GACO lookup is prohibited */,
   C_UNTRACK = 1 << 4 /* Un-track cursor when closing */,
+  C_GCFREEZE = 1 << 5 /* me_reclaimed_pglist must not be updated */,
 
-  S_SUBCURSOR = 1 << 5 /* Cursor is a sub-cursor */,
-  S_HAVESUB = 1 << 6 /* Cursor have a sub-cursor */,
-  S_DUPFIXED = 1 << 7,
+  S_SUBCURSOR = 1 << 0 /* Cursor is a sub-cursor */,
+  S_HAVESUB = 1 << 1 /* Cursor have a sub-cursor */,
+  S_SUBDUPFIXED = 1 << 2,
+  S_DUPFIXED = 1 << 3,
+  S_STASH = 1 << 4,
 };
 
 /* Context for sorted-dup records.
@@ -851,21 +865,24 @@ struct MDBX_env {
   MDBX_txn_t *me_wpa_txn;      /* prealloc'd write transaction */
   ahe_t *env_ahe_array;        /* array of AA-handles info */
   volatile txnid_t *me_oldest; /* ID of oldest reader last time we looked */
-  pgstate_t me_pgstate;        /* state of old pages from GACO */
+  volatile uint64_t *me_dirty_volume;
+  pgstate_t me_pgstate; /* state of old pages from GACO */
 #define me_last_reclaimed me_pgstate.mf_last_reclaimed
 #define me_reclaimed_pglist me_pgstate.mf_reclaimed_pglist
   page_t *me_dpages; /* list of malloc'd blocks for re-use */
                      /* PNL of pages that became unused in a write txn */
   MDBX_PNL me_free_pgs;
-  /* ID2L of pages written during a write txn. Length MDBX_PNL_UM_SIZE. */
-  MDBX_ID2L me_dirtylist;
+  /* List of dirty-pages written during a write txn. Length MDBX_LIST_MAX. */
+  MDBX_DPL me_dirtylist;
   /* Max number of freelist items that can fit in a single page */
   unsigned me_maxfree_1pg;
   /* Max size of a node on a page */
   unsigned me_nodemax;
   unsigned me_keymax;        /* max size of a key */
   MDBX_pid_t me_live_reader; /* have liveness lock in reader table */
+  uint32_t me_lckless_autosync_threshold;
   txnid_t me_oldest_stub;
+  uint64_t me_dirty_volume_stub;
   MDBX_rbr_callback_t *me_callback_rbr; /* Callback for kicking laggard readers */
 
   MDBX_ops_t ops;
@@ -884,6 +901,11 @@ struct MDBX_env {
   CRITICAL_SECTION me_windowsbug_lock;
 #else
   mdbx_fastmutex_t me_remap_guard;
+#endif
+
+#ifdef MDBX_OSAL_LOCK
+  MDBX_OSAL_LOCK *me_wmutex; /* actual write-txn mutex */
+  MDBX_OSAL_LOCK me_lckless_wmutex /* write-txn mutex for lck-less mode */;
 #endif
 
   char *me_pathname_lck; /* pathname of the LCK file */
@@ -972,22 +994,22 @@ static inline indx_t page_spaceleft(const page_t *page) {
 #define FILL_THRESHOLD 256
 
 /* Test if a page is a leaf page */
-#define IS_LEAF(p) F_ISSET((p)->mp_flags16, P_LEAF)
-/* Test if a page is a DFL page */
-#define IS_DFL(p) F_ISSET((p)->mp_flags16, P_DFL)
+#define IS_LEAF(p) (((p)->mp_flags16 & P_LEAF) != 0)
+/* Test if a page is a dupfixed-leaf page */
+#define IS_DFL(p) unlikely(((p)->mp_flags16 & P_DFL) != 0)
 /* Test if a page is a branch page */
-#define IS_BRANCH(p) F_ISSET((p)->mp_flags16, P_BRANCH)
+#define IS_BRANCH(p) likely(((p)->mp_flags16 & P_BRANCH) != 0)
 /* Test if a page is an overflow page */
-#define IS_OVERFLOW(p) unlikely(F_ISSET((p)->mp_flags16, P_OVERFLOW))
+#define IS_OVERFLOW(p) unlikely(((p)->mp_flags16 & P_OVERFLOW) != 0)
 /* Test if a page is a sub page */
-#define IS_SUBP(p) F_ISSET((p)->mp_flags16, P_SUBP)
+#define IS_SUBP(p) (((p)->mp_flags16 & P_SUBP) != 0)
+/* Test if a page is dirty */
+#define IS_DIRTY(p) (((p)->mp_flags16 & P_DIRTY) != 0)
+
+#define PAGETYPE(p) ((p)->mp_flags16 & (P_BRANCH | P_LEAF | P_DFL | P_OVERFLOW))
 
 /* The number of overflow pages needed to store the given size. */
 #define OVPAGES(env, size) (bytes2pgno(env, PAGEHDRSZ - 1 + (size)) + 1)
-
-/* Link in MDBX_txn_t.mt_loose_pages list.
- * Kept outside the page header, which is needed when reusing the page. */
-#define NEXT_LOOSE_PAGE(p) (*(page_t **)((p) + 2))
 
 /*  node_t Flags, i.e. 16 bit node_flags8 */
 enum mdbx_node_flags {
@@ -1009,7 +1031,7 @@ enum mdbx_node_flags {
  * for pgno.  (Branch nodes have no flags).  Lo and hi are in host byte
  * order in case some accesses can be optimized to 32-bit word access.
  *
- * Leaf node flags describe node contents.  NODE_BIGDATA says the node's
+ * Leaf node flags describe node contents.  NODE_BIG says the node's
  * data part is the page number of an overflow page with actual data.
  * NODE_DUP and NODE_SUBTREE can be combined giving duplicate data
  * in a sub-page/sub-AA, and named AAs (just NODE_SUBTREE). */
@@ -1063,13 +1085,13 @@ static inline pgno_t node_get_pgno(const node_t *node) {
     if (sizeof(pgno_t) > 4)
       pgno &= MAX_PAGENO;
   } else {
-    pgno = get_le32_aligned2(&node->mn_ksize_and_pgno);
+    pgno = get_le32_unaligned(&node->mn_ksize_and_pgno);
     if (sizeof(pgno_t) > 4) {
       uint64_t high = get_le16_aligned((const uint16_t *)&node->mn_ksize_and_pgno + 2);
       pgno |= (pgno_t)(high << 32);
     }
   }
-  assert(pgno == (get_le64_aligned2(&node->mn_ksize_and_pgno) & MAX_PAGENO));
+  assert(pgno == (get_le64_unaligned(&node->mn_ksize_and_pgno) & MAX_PAGENO));
   return pgno;
 }
 
@@ -1082,20 +1104,20 @@ static inline void node_set_pgno(node_t *node, pgno_t pgno) {
       pgno |= (pgno_t)(((uint64_t)node->mn_ksize16) << 48);
     node->mn_ksize_and_pgno = pgno;
   } else {
-    set_le32_aligned2(&node->mn_ksize_and_pgno, (uint32_t)pgno);
+    set_le32_unaligned(&node->mn_ksize_and_pgno, (uint32_t)pgno);
     if (sizeof(pgno_t) > 4)
-      set_le16_aligned((uint16_t *)&node->mn_ksize_and_pgno + 2, (uint16_t)((uint64_t)pgno >> 32));
+      set_le16_unaligned((uint16_t *)&node->mn_ksize_and_pgno + 2, (uint16_t)((uint64_t)pgno >> 32));
   }
-  assert(pgno == (get_le64_aligned2(&node->mn_ksize_and_pgno) & MAX_PAGENO));
+  assert(pgno == (get_le64_unaligned(&node->mn_ksize_and_pgno) & MAX_PAGENO));
 }
 
 /* Get the size of the data in a leaf node */
-static inline size_t node_get_datasize(const node_t *node) { return get_le32_aligned2(&node->mn_dsize); }
+static inline size_t node_get_datasize(const node_t *node) { return get_le32_unaligned(&node->mn_dsize); }
 
 /* Set the size of the data for a leaf node */
 static inline void node_set_datasize(node_t *node, size_t size) {
   assert(size < INT_MAX);
-  set_le32_aligned2(&node->mn_dsize, (uint32_t)size);
+  set_le32_unaligned(&node->mn_dsize, (uint32_t)size);
 }
 
 /* The size of a key in a node */

@@ -159,6 +159,7 @@ static inline BOOL lck_is_collision(MDBX_error_t err) {
 
 MDBX_error_t mdbx_lck_writer_lock(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
   lck_trace(">> flags 0x%x %s", flags, (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "");
+  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0 && env->me_lck);
   if (flags & MDBX_NONBLOCK) {
     if (!TryEnterCriticalSection(&env->me_windowsbug_lock)) {
       lck_trace("<< MDBX_EBUSY");
@@ -180,6 +181,7 @@ MDBX_error_t mdbx_lck_writer_lock(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NO
 }
 
 void mdbx_lck_writer_unlock(MDBX_env_t *env) {
+  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0 && env->me_lck);
   BOOL ok = lck_unlock(env->me_dxb_fd, LCK_DXB_BODY);
   if (!ok)
     lck_panic(env, "dxb-body.unlock", GetLastError());
@@ -270,9 +272,9 @@ static MDBX_error_t mdbx_suspend_threads_before_remap(MDBX_env_t *env, mdbx_hand
         return err;
     }
   } else {
-    /* Without LCK (i.e. read-only mode).
+    /* Without LCK (i.e. read-only or exclusive mode).
      * Walk thougth a snapshot of all running threads */
-    mdbx_assert(env, env->me_wpa_txn == nullptr);
+    mdbx_assert(env, env->me_wpa_txn == nullptr || (env->me_flags32 & MDBX_EXCLUSIVE) != 0);
     HANDLE PrevThreadHandle = NULL;
     while (1) {
       HANDLE NextThreadHandle = INVALID_HANDLE_VALUE;
@@ -436,6 +438,7 @@ static void lck_exclusive2middle(MDBX_env_t *env) {
 
 MDBX_error_t mdbx_lck_reader_registration_lock(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
   lck_trace(">> flags 0x%x %s", flags, (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "");
+  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0 && env->me_lck);
 
   mdbx_srwlock_AcquireShared(&env->me_remap_guard);
   if (env->me_lck_fd == INVALID_HANDLE_VALUE) {
@@ -453,6 +456,7 @@ MDBX_error_t mdbx_lck_reader_registration_lock(MDBX_env_t *env, MDBX_flags_t fla
 }
 
 void mdbx_lck_reader_registration_unlock(MDBX_env_t *env) {
+  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0 && env->me_lck);
   if (env->me_lck_fd != INVALID_HANDLE_VALUE)
     lck_locked2shared(env);
   mdbx_srwlock_ReleaseShared(&env->me_remap_guard);
@@ -466,6 +470,12 @@ MDBX_seize_result_t mdbx_lck_seize(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_N
   assert(env->me_dxb_fd != INVALID_HANDLE_VALUE);
   if (env->me_lck_fd == INVALID_HANDLE_VALUE) {
     /* LY: without-lck mode (e.g. on read-only filesystem) */
+    if (env->me_flags32 & MDBX_EXCLUSIVE) {
+      /* files were must be opened non-shareable */;
+      lck_trace("<< %s", "EXCLUSIVE-NOLCK");
+      return seize_done(MDBX_SEIZE_NOLCK);
+    }
+
     err = lck_shared(env->me_dxb_fd, flags, LCK_DXB_WHOLE);
     if (err != MDBX_SUCCESS) {
       lck_trace("unable got without-lck, error %d", err);
@@ -476,6 +486,12 @@ MDBX_seize_result_t mdbx_lck_seize(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_N
   }
 
   assert(env->me_lck_fd != INVALID_HANDLE_VALUE);
+  if (env->me_flags32 & MDBX_EXCLUSIVE) {
+    /* files were must be opened non-shareable */;
+    lck_trace("<< %s", "EXCLUSIVE");
+    return seize_done(MDBX_SEIZE_EXCLUSIVE_FIRST);
+  }
+
   /* Seize state as 'exclusive' (E-E and returns MDBX_SEIZE_EXCLUSIVE_FIRST)
    * or as 'shared' (S-? and returns MDBX_SUCCESS), otherwise returns an error */
 
@@ -561,6 +577,7 @@ MDBX_error_t mdbx_lck_downgrade(MDBX_env_t *env) {
 MDBX_error_t mdbx_lck_upgrade(MDBX_env_t *env, MDBX_flags_t flags /* MDBX_NONBLOCK */) {
   lck_trace(">> transite-lck: locked (S-E) to exclusive (E-E), flags 0x%x %s", flags,
             (flags & MDBX_NONBLOCK) ? " (MDBX_NONBLOCK)" : "");
+  mdbx_assert(env, (env->me_flags32 & MDBX_EXCLUSIVE) == 0 && env->me_lck);
   assert(env->me_dxb_fd != INVALID_HANDLE_VALUE);
   assert(env->me_lck_fd != INVALID_HANDLE_VALUE);
   /* lck_upgrade MUST returns:

@@ -381,11 +381,6 @@ int mdbx_vasprintf(char **strp, const char *fmt, va_list ap);
 #define vsnprintf(buffer, buffer_size, format, args) _vsnprintf_s(buffer, buffer_size, _TRUNCATE, format, args)
 #endif /* vsnprintf */
 
-#ifdef _ASSERTE
-#undef assert
-#define assert _ASSERTE
-#endif
-
 #endif /* _MSC_VER */
 
 /*----------------------------------------------------------------------------*/

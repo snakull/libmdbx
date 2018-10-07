@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -48,6 +48,9 @@ bool parse_option(int argc, char *const argv[], int &narg, const char *option, c
 bool parse_option(int argc, char *const argv[], int &narg, const char *option, std::string &value,
                   bool allow_empty = false);
 
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, std::string &value,
+                  bool allow_empty, const char *default_value);
+
 bool parse_option(int argc, char *const argv[], int &narg, const char *option, bool &value);
 
 struct option_verb {
@@ -59,14 +62,21 @@ bool parse_option(int argc, char *const argv[], int &narg, const char *option, u
                   const option_verb *verbs);
 
 bool parse_option(int argc, char *const argv[], int &narg, const char *option, uint64_t &value,
-                  const scale_mode scale, const uint64_t minval = 0, const uint64_t maxval = INT64_MAX);
+                  const scale_mode scale, const uint64_t minval = 0, const uint64_t maxval = INT64_MAX,
+                  const uint64_t default_value = 0);
 
 bool parse_option(int argc, char *const argv[], int &narg, const char *option, unsigned &value,
-                  const scale_mode scale, const unsigned minval = 0, const unsigned maxval = INT32_MAX);
+                  const scale_mode scale, const unsigned minval = 0, const unsigned maxval = INT32_MAX,
+                  const unsigned default_value = 0);
 
 bool parse_option(int argc, char *const argv[], int &narg, const char *option, uint8_t &value,
-                  const uint8_t minval = 0, const uint8_t maxval = 255);
+                  const uint8_t minval = 0, const uint8_t maxval = 255, const uint8_t default_value = 0);
 
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, int64_t &value,
+                  const int64_t minval, const int64_t maxval, const int64_t default_value = -1);
+
+bool parse_option(int argc, char *const argv[], int &narg, const char *option, int32_t &value,
+                  const int32_t minval, const int32_t maxval, const int32_t default_value = -1);
 //-----------------------------------------------------------------------------
 
 #pragma pack(push, 1)
@@ -103,6 +113,8 @@ struct keygen_params_pod {
    *    Иначе говоря, нет смысла в со-координации генерации паттернов для
    *    ключей и значений. Более того, генерацию значений всегда необходимо
    *    рассматривать в контексте связки с одним значением ключа.
+   *  - Тем не менее, во всех случаях достаточно важным является равномерная
+   *    всех возможных сочетаний длин ключей и данных.
    *
    * width:
    *  Большинство тестов предполагают создание или итерирование некоторого
@@ -138,7 +150,7 @@ struct keygen_params_pod {
    *  псевдо-случайные значений ключей без псевдо-случайности в значениях.
    *
    *  Такое ограничение соответствуют внутренней алгоритмике libmdbx. Проще
-   *  говоря мы можем проверить движок псевдо-случайной последовательностью
+   *  говоря, мы можем проверить движок псевдо-случайной последовательностью
    *  ключей на таблицах без дубликатов (без multi-value), а затем проверить
    *  корректность работу псевдо-случайной последовательностью значений на
    *  таблицах с дубликатами (с multi-value), опционально добавляя
@@ -183,9 +195,14 @@ struct keygen_params_pod {
 struct actor_params_pod {
   unsigned loglevel;
 
-  uint32_t mode_flags;
-  uint32_t table_flags;
-  uint64_t size;
+  unsigned mode_flags;
+  unsigned table_flags;
+  intptr_t size_lower;
+  intptr_t size_now;
+  intptr_t size_upper;
+  int shrink_threshold;
+  int growth_step;
+  int pagesize;
 
   unsigned test_duration;
   unsigned test_nops;
@@ -228,6 +245,11 @@ struct actor_params : public config::actor_params_pod {
   std::string pathname_log;
   std::string pathname_db;
   void set_defaults(const std::string &tmpdir);
+
+  unsigned mdbx_keylen_min() const;
+  unsigned mdbx_keylen_max() const;
+  unsigned mdbx_datalen_min() const;
+  unsigned mdbx_datalen_max() const;
 };
 
 struct actor_config : public config::actor_config_pod {

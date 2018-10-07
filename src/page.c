@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -88,30 +88,30 @@ static void dpage_free(MDBX_env_t *env, page_t *dp) {
 /* Return all dirty pages to dpage list */
 static void dlist_free(MDBX_txn_t *txn) {
   MDBX_env_t *env = txn->mt_env;
-  MDBX_ID2L dl = txn->mt_rw_dirtylist;
-  size_t i, n = dl[0].mid;
+  MDBX_DPL dl = txn->mt_rw_dirtylist;
+  size_t i, n = dl->length;
 
   for (i = 1; i <= n; i++)
-    dpage_free(env, dl[i].mptr);
+    dpage_free(env, dl[i].ptr);
 
-  dl[0].mid = 0;
+  dl->length = 0;
 }
 
-static void __cold kill_page(MDBX_env_t *env, pgno_t pgno) {
-  const size_t offs = pgno2bytes(env, pgno);
-  const size_t shift = offsetof(page_t, mp_pages);
+static MDBX_error_t page_befree(cursor_t *mc, page_t *mp) {
+  MDBX_txn_t *txn = mc->mc_txn;
 
-  if (env->me_flags32 & MDBX_WRITEMAP) {
-    page_t *mp = (page_t *)(env->me_map + offs);
-    memset(&mp->mp_pages, 0x6F /* 'o', 111 */, env->me_psize - shift);
-    VALGRIND_MAKE_MEM_NOACCESS(&mp->mp_pages, env->me_psize - shift);
-    ASAN_POISON_MEMORY_REGION(&mp->mp_pages, env->me_psize - shift);
+  assert((mc->mc_kind8 & S_SUBCURSOR) == 0);
+  if (IS_BRANCH(mp)) {
+    mc->mc_aht->aa.branch_pages -= 1;
+  } else if (IS_LEAF(mp)) {
+    mc->mc_aht->aa.leaf_pages -= 1;
   } else {
-    intptr_t len = env->me_psize - shift;
-    void *buf = alloca(len);
-    memset(buf, 0x6F /* 'o', 111 */, len);
-    (void)mdbx_pwrite(env->me_dxb_fd, buf, len, offs + shift);
+    assert(IS_OVERFLOW(mp));
+    mc->mc_aht->aa.overflow_pages -= mp->mp_pages;
+    return mdbx_pnl_append_range(&txn->mt_befree_pages, mp->mp_pgno, mp->mp_pages);
   }
+
+  return mdbx_pnl_append(&txn->mt_befree_pages, mp->mp_pgno);
 }
 
 /* Loosen or free a single page.
@@ -129,18 +129,35 @@ static int page_loose(cursor_t *mc, page_t *mp) {
   const pgno_t pgno = mp->mp_pgno;
   MDBX_txn_t *txn = mc->mc_txn;
 
-  if ((mp->mp_flags16 & P_DIRTY) && mc->mc_aht != mc->mc_txn->txn_aht_array) {
+  if (mc->mc_kind8 & S_SUBCURSOR) {
+    aht_t *primal = cursor_nested2primal_aht(mc);
+    if (IS_BRANCH(mp))
+      primal->aa.branch_pages--;
+    else {
+      assert(IS_LEAF(mp));
+      primal->aa.leaf_pages--;
+    }
+  }
+
+  if (IS_BRANCH(mp)) {
+    mc->mc_aht->aa.branch_pages -= 1;
+  } else {
+    assert(IS_LEAF(mp));
+    mc->mc_aht->aa.leaf_pages -= 1;
+  }
+
+  if (IS_DIRTY(mp) /*&& mc->mc_aht != mc->mc_txn->txn_aht_array*/) {
     if (txn->mt_parent) {
+      /* LY: TODO: use dedicated flag for tracking parent's dirty pages */
       mdbx_assert(txn->mt_env, (txn->mt_env->me_flags32 & MDBX_WRITEMAP) == 0);
-      MDBX_ID2 *dl = txn->mt_rw_dirtylist;
-      /* If txn has a parent,
-       * make sure the page is in our dirty list. */
-      if (dl[0].mid) {
-        unsigned x = mdbx_mid2l_search(dl, pgno);
-        if (x <= dl[0].mid && dl[x].mid == pgno) {
-          if (unlikely(mp != dl[x].mptr)) { /* bad cursor? */
-            mdbx_error("wrong page 0x%p #%" PRIaPGNO " in the dirtylist[%d], expecting %p", dl[x].mptr, pgno,
-                       x, mp);
+      MDBX_DPL dl = txn->mt_rw_dirtylist;
+      /* If txn has a parent, make sure the page is in our dirty list. */
+      if (dl->length) {
+        unsigned x = mdbx_dpl_search(dl, pgno);
+        if (x <= dl->length && dl[x].pgno == pgno) {
+          if (unlikely(mp != dl[x].ptr)) { /* bad cursor? */
+            mdbx_error("wrong page 0x%p #%" PRIaPGNO " in the dirtylist[%d], expecting %p", dl[x].ptr, pgno, x,
+                       mp);
             mc->mc_state8 &= ~(C_INITIALIZED | C_EOF);
             txn->mt_flags |= MDBX_TXN_ERROR;
             return MDBX_PROBLEM;
@@ -154,18 +171,25 @@ static int page_loose(cursor_t *mc, page_t *mp) {
       loose = 1;
     }
   }
+
   if (loose) {
     mdbx_debug("loosen db %d page %" PRIaPGNO, DAAH(mc), mp->mp_pgno);
-    page_t **link = &NEXT_LOOSE_PAGE(mp);
-    if (unlikely(txn->mt_env->me_flags32 & MDBX_PAGEPERTURB)) {
-      kill_page(txn->mt_env, pgno);
-      ASAN_UNPOISON_MEMORY_REGION(link, sizeof(page_t *));
-      VALGRIND_MAKE_MEM_UNDEFINED_ERASE(link, sizeof(page_t *));
+    MDBX_env_t *env = txn->mt_env;
+    if (unlikely(env->me_flags32 & MDBX_PAGEPERTURB)) {
+      const size_t len = env->me_psize - PAGEHDRSZ;
+      void *ptr = (env->me_flags32 & MDBX_WRITEMAP) ? &mp->mp_data : alloca(len);
+      memset(ptr, 0x6F /* 'o', 111 */, len);
+      if (ptr != &mp->mp_data)
+        (void)mdbx_pwrite(env->me_dxb_fd, ptr, len, pgno2bytes(env, mp->mp_pgno) + PAGEHDRSZ);
+      VALGRIND_MAKE_MEM_NOACCESS(&mp->mp_data, len);
+      ASAN_POISON_MEMORY_REGION(&mp->mp_data, len);
     }
-    *link = txn->mt_loose_pages;
+    mp->mp_flags16 = P_LOOSE | P_DIRTY;
+    VALGRIND_MAKE_MEM_UNDEFINED(mp, PAGEHDRSZ);
+    VALGRIND_MAKE_MEM_DEFINED(&mp->mp_pgno, sizeof(pgno_t));
+    mp->mp_next = txn->mt_loose_pages;
     txn->mt_loose_pages = mp;
     txn->mt_loose_count++;
-    mp->mp_flags16 |= P_LOOSE;
   } else {
     int rc = mdbx_pnl_append(&txn->mt_befree_pages, pgno);
     if (unlikely(rc != MDBX_SUCCESS))
@@ -236,21 +260,16 @@ static int pages_xkeep(MDBX_txn_t *txn, unsigned pageflags_match, bool all) {
 }
 
 /* Add a page to the txn's dirty list */
-static void mdbx_page_dirty(MDBX_txn_t *txn, page_t *mp) {
-  MDBX_ID2 mid;
-  int rc, (*insert)(MDBX_ID2L, MDBX_ID2 *);
-
-  if (txn->mt_flags & MDBX_WRITEMAP) {
-    insert = mdbx_mid2l_append;
-  } else {
-    insert = mdbx_mid2l_insert;
+static int mdbx_page_dirty(MDBX_txn_t *txn, page_t *mp) {
+  int (*const adder)(MDBX_DPL, pgno_t pgno, page_t * page) =
+      (txn->mt_flags & MDBX_WRITEMAP) ? mdbx_dpl_append : mdbx_dpl_insert;
+  const int rc = adder(txn->mt_rw_dirtylist, mp->mp_pgno, mp);
+  if (unlikely(rc != MDBX_SUCCESS)) {
+    txn->mt_flags |= MDBX_TXN_ERROR;
+    return rc;
   }
-  mid.mid = mp->mp_pgno;
-  mid.mptr = mp;
-  rc = insert(txn->mt_rw_dirtylist, &mid);
-  assert(rc == 0);
-  (void)rc;
   txn->mt_dirtyroom--;
+  return MDBX_SUCCESS;
 }
 
 /* Spill pages from the dirty list back to disk.
@@ -310,18 +329,18 @@ static int page_spill(cursor_t *cursor, MDBX_iov_t *key, MDBX_iov_t *data) {
     return MDBX_SUCCESS;
 
   if (!txn->mt_spill_pages) {
-    txn->mt_spill_pages = mdbx_pnl_alloc(MDBX_PNL_UM_MAX);
+    txn->mt_spill_pages = mdbx_pnl_alloc(MDBX_DPL_TXNFULL);
     if (unlikely(!txn->mt_spill_pages))
       return MDBX_ENOMEM;
   } else {
     /* purge deleted slots */
     MDBX_PNL sl = txn->mt_spill_pages;
-    pgno_t num = sl[0], j = 0;
+    pgno_t num = MDBX_PNL_SIZE(sl), j = 0;
     for (unsigned i = 1; i <= num; i++) {
-      if (!(sl[i] & 1))
+      if ((sl[i] & 1) == 0)
         sl[++j] = sl[i];
     }
-    sl[0] = j;
+    MDBX_PNL_SIZE(sl) = j;
   }
 
   /* Preserve pages which may soon be dirtied again */
@@ -336,16 +355,16 @@ static int page_spill(cursor_t *cursor, MDBX_iov_t *key, MDBX_iov_t *data) {
    * of the dirty pages. Testing revealed this to be a good tradeoff,
    * better than 1/2, 1/4, or 1/10. */
   need += need; /* double it for good measure */
-  if (need < MDBX_PNL_UM_MAX / 8)
-    need = MDBX_PNL_UM_MAX / 8;
+  if (need < MDBX_DPL_TXNFULL / 8)
+    need = MDBX_DPL_TXNFULL / 8;
 
   /* Save the page IDs of all the pages we're flushing */
   /* flush from the tail forward, this saves a lot of shifting later on. */
-  MDBX_ID2L dl = txn->mt_rw_dirtylist;
+  MDBX_DPL dl = txn->mt_rw_dirtylist;
   unsigned left_dirty;
-  for (left_dirty = dl[0].mid; left_dirty && need; left_dirty--) {
-    const pgno_t pgno2 = dl[left_dirty].mid << 1;
-    page_t *dp = dl[left_dirty].mptr;
+  for (left_dirty = dl->length; left_dirty && need; left_dirty--) {
+    const pgno_t pgno2 = dl[left_dirty].pgno << 1;
+    page_t *dp = dl[left_dirty].ptr;
     if (dp->mp_flags16 & (P_LOOSE | P_KEEP))
       continue;
     /* Can't spill twice,
@@ -355,7 +374,7 @@ static int page_spill(cursor_t *cursor, MDBX_iov_t *key, MDBX_iov_t *data) {
       for (tx2 = txn->mt_parent; tx2; tx2 = tx2->mt_parent) {
         if (tx2->mt_spill_pages) {
           size_t pos = mdbx_pnl_search(tx2->mt_spill_pages, pgno2);
-          if (pos <= tx2->mt_spill_pages[0] && tx2->mt_spill_pages[pos] == pgno2) {
+          if (pos <= MDBX_PNL_SIZE(tx2->mt_spill_pages) && tx2->mt_spill_pages[pos] == pgno2) {
             dp->mp_flags16 |= P_KEEP;
             break;
           }
@@ -422,7 +441,7 @@ static int page_unspill(MDBX_txn_t *txn, page_t *mp, page_t **ret) {
     if (!tx2->mt_spill_pages)
       continue;
     size_t pos = mdbx_pnl_search(tx2->mt_spill_pages, pgno2);
-    if (pos <= tx2->mt_spill_pages[0] && tx2->mt_spill_pages[pos] == pgno2) {
+    if (pos <= MDBX_PNL_SIZE(tx2->mt_spill_pages) && tx2->mt_spill_pages[pos] == pgno2) {
       if (txn->mt_dirtyroom == 0)
         return MDBX_TXN_FULL;
       int num = IS_OVERFLOW(mp) ? mp->mp_pages : 1;
@@ -443,14 +462,17 @@ static int page_unspill(MDBX_txn_t *txn, page_t *mp, page_t **ret) {
         /* If in current txn, this page is no longer spilled.
          * If it happens to be the last page, truncate the spill list.
          * Otherwise mark it as deleted by setting the LSB. */
-        if (pos == txn->mt_spill_pages[0])
-          txn->mt_spill_pages[0]--;
+        if (pos == MDBX_PNL_SIZE(txn->mt_spill_pages))
+          MDBX_PNL_SIZE(txn->mt_spill_pages)--;
         else
           txn->mt_spill_pages[pos] |= 1;
       } /* otherwise, if belonging to a parent txn, the
          * page remains spilled until child commits */
 
-      mdbx_page_dirty(txn, np);
+      int rc = mdbx_page_dirty(txn, np);
+      if (unlikely(rc != MDBX_SUCCESS))
+        return rc;
+
       np->mp_flags16 |= P_DIRTY;
       *ret = np;
       break;
@@ -465,8 +487,8 @@ static int page_unspill(MDBX_txn_t *txn, page_t *mp, page_t **ret) {
  * Returns 0 on success, non-zero on failure. */
 static int page_flush(MDBX_txn_t *txn, pgno_t keep) {
   MDBX_env_t *env = txn->mt_env;
-  MDBX_ID2L dl = txn->mt_rw_dirtylist;
-  unsigned i, j, pagecount = dl[0].mid;
+  MDBX_DPL dl = txn->mt_rw_dirtylist;
+  unsigned i, j, pagecount = dl->length;
   int rc;
   size_t size = 0, pos = 0;
   pgno_t pgno = 0;
@@ -481,7 +503,7 @@ static int page_flush(MDBX_txn_t *txn, pgno_t keep) {
   if (env->me_flags32 & MDBX_WRITEMAP) {
     /* Clear dirty flags */
     while (++i <= pagecount) {
-      dp = dl[i].mptr;
+      dp = dl[i].ptr;
       /* Don't flush this page yet */
       if (dp->mp_flags16 & (P_LOOSE | P_KEEP)) {
         dp->mp_flags16 &= ~P_KEEP;
@@ -498,14 +520,15 @@ static int page_flush(MDBX_txn_t *txn, pgno_t keep) {
   /* Write the pages */
   for (;;) {
     if (++i <= pagecount) {
-      dp = dl[i].mptr;
+      dp = dl[i].ptr;
       /* Don't flush this page yet */
       if (dp->mp_flags16 & (P_LOOSE | P_KEEP)) {
         dp->mp_flags16 &= ~P_KEEP;
-        dl[i].mid = 0;
+        dl[i].pgno = 0;
         continue;
       }
-      pgno = dl[i].mid;
+      pgno = dl[i].pgno;
+      mdbx_assert(txn->mt_env, pgno >= MIN_PAGENO);
       /* clear dirty flag */
       dp->mp_flags16 &= ~P_DIRTY;
       dp->page_checksum = 0 /* TODO */;
@@ -529,7 +552,7 @@ static int page_flush(MDBX_txn_t *txn, pgno_t keep) {
       wpos = pos;
       wsize = 0;
     }
-    mdbx_debug("committing page %" PRIaPGNO "", pgno);
+    mdbx_debug("committing page %" PRIaPGNO, pgno);
     next_pos = pos + size;
     iov[n].iov_len = size;
     iov[n].iov_base = (char *)dp;
@@ -540,11 +563,11 @@ static int page_flush(MDBX_txn_t *txn, pgno_t keep) {
   mdbx_invalidate_cache(env->me_map, pgno2bytes(env, txn->mt_next_pgno));
 
   for (i = keep; ++i <= pagecount;) {
-    dp = dl[i].mptr;
+    dp = dl[i].ptr;
     /* This is a page we skipped above */
-    if (!dl[i].mid) {
+    if (!dl[i].pgno) {
       dl[++j] = dl[i];
-      dl[j].mid = dp->mp_pgno;
+      dl[j].pgno = dp->mp_pgno;
       continue;
     }
     dpage_free(env, dp);
@@ -553,6 +576,6 @@ static int page_flush(MDBX_txn_t *txn, pgno_t keep) {
 done:
   i--;
   txn->mt_dirtyroom += i - j;
-  dl[0].mid = j;
+  dl->length = j;
   return MDBX_SUCCESS;
 }

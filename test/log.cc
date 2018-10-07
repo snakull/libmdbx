@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -37,6 +37,21 @@ void __noreturn failure_perror(const char *what, MDBX_error_t errnum) {
 
 //-----------------------------------------------------------------------------
 
+static void mdbx_logger(MDBX_debuglog_subsystem_t subsys, MDBX_debuglog_level_t level, const char *function,
+                        int line, const char *msg, va_list args) {
+  (void)subsys;
+  if (!function)
+    function = "unknown";
+  if (level >= MDBX_LOGLEVEL_FATAL)
+    log_error("mdbx: fatal (assertion failure): %s, %d", function, line);
+
+  if (logging::output((logging::loglevel)level,
+                      strncmp(function, "mdbx_", 5) == 0 ? "%s: " : "mdbx: %s: ", function))
+    logging::feed_ap(msg, args);
+  if (level >= MDBX_LOGLEVEL_FATAL)
+    abort();
+}
+
 namespace logging {
 
 static std::string prefix;
@@ -44,8 +59,16 @@ static std::string suffix;
 static loglevel level;
 static FILE *last;
 
+void setlevel(loglevel _level) {
+  level = _level;
+  mdbx_set_loglevel(MDBX_LOG_ALL, (MDBX_debuglog_level_t)_level);
+  MDBX_debugbits_t mdbx_dbg_opts = MDBX_DBG_ASSERT | MDBX_DBG_JITTER | MDBX_DBG_DUMP | MDBX_DBG_AUDIT;
+  MDBX_debug_result_t prev_dbg = mdbx_set_debug(mdbx_dbg_opts, mdbx_logger);
+  log_trace("prev mdbx-debug-bits 0x%02x", prev_dbg.bits);
+}
+
 void setup(loglevel _level, const std::string &_prefix) {
-  level = (_level > error) ? failure : _level;
+  setlevel(_level);
   prefix = _prefix;
 }
 
@@ -155,7 +178,7 @@ bool output(const logging::loglevel priority, const char *format, va_list ap) {
   return true;
 }
 
-bool feed(const char *format, va_list ap) {
+bool feed_ap(const char *format, va_list ap) {
   if (!last)
     return false;
 
@@ -174,7 +197,7 @@ bool feed(const char *format, ...) {
 
   va_list ap;
   va_start(ap, format);
-  feed(format, ap);
+  feed_ap(format, ap);
   va_end(ap);
   return true;
 }

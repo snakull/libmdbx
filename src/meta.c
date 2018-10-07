@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -250,9 +250,10 @@ static page_t *__cold init_metas(const MDBX_env_t *env, void *buffer) {
   page_t *page1 = meta_model(env, page0, 0);
   page_t *page2 = meta_model(env, page1, 1);
   meta_model(env, page2, 2);
-  page2->mp_meta.mm_sign_checksum = MDBX_DATASIGN_WEAK;
+  if (MDBX_DEVEL)
+    page2->mp_meta.mm_sign_checksum = MDBX_DATASIGN_WEAK;
   mdbx_assert(env, !meta_eq(env, &page0->mp_meta, &page1->mp_meta));
   mdbx_assert(env, !meta_eq(env, &page1->mp_meta, &page2->mp_meta));
   mdbx_assert(env, !meta_eq(env, &page2->mp_meta, &page0->mp_meta));
-  return page1;
+  return MDBX_DEVEL ? page1 : page2;
 }

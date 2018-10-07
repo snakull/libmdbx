@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -300,7 +300,7 @@ struct simple_checksum {
 
 std::string data2hex(const void *ptr, size_t bytes, simple_checksum &checksum);
 bool hex2data(const char *hex_begin, const char *hex_end, void *ptr, size_t bytes, simple_checksum &checksum);
-
+bool is_samedata(const MDBX_iov_t &a, const MDBX_iov_t &b);
 std::string format(const char *fmt, ...);
 
 uint64_t entropy_ticks(void);

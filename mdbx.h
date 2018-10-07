@@ -386,7 +386,7 @@ typedef enum MDBX_error {
   MDBX_EIO = ERROR_WRITE_FAULT,
   MDBX_EPERM = ERROR_INVALID_FUNCTION,
   MDBX_EINTR = ERROR_CANCELLED,
-  MDBX_ENOENT = ERROR_FILE_NOT_FOUND,
+  MDBX_ENOFILE = ERROR_FILE_NOT_FOUND,
   MDBX_EBUSY = ERROR_BUSY,
   MDBX_EWOULDBLOCK = ERROR_CANT_WAIT,
 #else
@@ -399,7 +399,7 @@ typedef enum MDBX_error {
   MDBX_EIO = EIO,
   MDBX_EPERM = EPERM,
   MDBX_EINTR = EINTR,
-  MDBX_ENOENT = ENOENT,
+  MDBX_ENOFILE = ENOENT,
   MDBX_EBUSY = EBUSY,
   MDBX_EWOULDBLOCK = EWOULDBLOCK,
 #endif
@@ -527,7 +527,7 @@ typedef uint_fast32_t MDBX_aah_t;
 #define MDBX_INVALID_AAH UINT_FAST32_MAX
 
 /* Predefined handle for carbage collector AA. */
-#define MDBX_GACO_AAH 0
+#define MDBX_GACO_AAH 0 /* LY: TODO rename */
 /* Predefined handle for main AA. */
 #define MDBX_MAIN_AAH 1
 
@@ -565,6 +565,7 @@ typedef enum MDBX_flags {
   MDBX_NOFLAGS = 0u,
   /*--------------------------------------------------- Associative Arrays */
 
+  MDBX_FIXEDKEY = 0 /* TODO */,
   MDBX_INTEGERKEY /* numeric keys in native byte order, either uint32_t or uint64_t.
                    * The keys must all be of the same size. */
   = 1u << 2,
@@ -714,7 +715,7 @@ typedef struct MDBX_db_info {
     uint64_t lower;       /* lower limit for datafile size */
     uint64_t upper;       /* upper limit for datafile size */
     uint64_t current;     /* current datafile size */
-    uint32_t shrink;      /* shrink theshold for datafile */
+    uint32_t shrink;      /* shrink threshold for datafile */
     uint32_t grow;        /* growth step for datafile */
     uint32_t ioblk;       /* ioblocksize for datafile */
     uint32_t granularity; /* system granularity for datafile */
@@ -1086,7 +1087,7 @@ LIBMDBX_API MDBX_error_t mdbx_init_ex(MDBX_env_t **pbk, void *user_ctx, MDBX_ops
  *   - MDBX_INCOMPATIBLE     - the databook was already opened with
  *                             incompatible mode/flags, e.g. MDBX_WRITEMAP.
  *   - MDBX_INVALID  - the databook file headers are corrupted.
- *   - MDBX_ENOENT   - the directory specified by the path parameter
+ *   - MDBX_ENOFILE  - the directory specified by the path parameter
  *                     doesn't exist.
  *   - MDBX_EACCES   - the user didn't have permission to access
  *                     the databook files.
@@ -1327,7 +1328,13 @@ typedef struct MDBX_numeric_result {
   uintptr_t value;
   MDBX_error_t err;
 } MDBX_numeric_result_t;
-LIBMDBX_API MDBX_numeric_result_t mdbx_pagesize2maxkeylen(size_t pagesize);
+LIBMDBX_API MDBX_numeric_result_t mdbx_env_get_maxkeysize(MDBX_env_t *env);
+LIBMDBX_API MDBX_numeric_result_t mdbx_limits_keysize_max(intptr_t pagesize);
+LIBMDBX_API MDBX_numeric_result_t mdbx_limits_dbsize_max(intptr_t pagesize);
+LIBMDBX_API MDBX_numeric_result_t mdbx_limits_txnsize_max(intptr_t pagesize);
+LIBMDBX_API MDBX_numeric_result_t mdbx_limits_dbsize_min(intptr_t pagesize);
+LIBMDBX_API int mdbx_limits_pgsize_min(void);
+LIBMDBX_API int mdbx_limits_pgsize_max(void);
 
 /* Set application information associated with the MDBX_env_t.
  *
@@ -1386,10 +1393,23 @@ LIBMDBX_API MDBX_error_t mdbx_set_syncbytes(MDBX_env_t *env, size_t bytes);
  * Returns A non-zero error value on failure and 0 on success. */
 LIBMDBX_API MDBX_error_t mdbx_set_rbr(MDBX_env_t *env, MDBX_rbr_callback_t *cb);
 
+typedef enum {
+  MDBX_page_void,
+  MDBX_page_meta,
+  MDBX_page_large,
+  MDBX_page_branch,
+  MDBX_page_leaf,
+  MDBX_page_dupfixed_leaf,
+  MDBX_subpage_leaf,
+  MDBX_subpage_dupfixed_leaf
+} MDBX_page_type_t;
+
 /* FIXME: Describe */
-typedef MDBX_error_t MDBX_walk_func_t(uint_fast64_t pgno, unsigned pgnumber, void *ctx, const MDBX_iov_t ident,
-                                      /* FIXME */ const char *type, size_t nentries, size_t payload_bytes,
-                                      size_t header_bytes, size_t unused_bytes);
+typedef MDBX_error_t MDBX_walk_func_t(uint64_t pgno, unsigned number, void *ctx, int deep,
+                                      const MDBX_iov_t ident, size_t page_size, MDBX_page_type_t type,
+                                      size_t nentries, size_t payload_bytes, size_t header_bytes,
+                                      size_t unused_bytes);
+
 /* FIXME: Describe */
 LIBMDBX_API MDBX_error_t mdbx_walk(MDBX_txn_t *txn, MDBX_walk_func_t *visitor, void *ctx);
 
@@ -1825,7 +1845,8 @@ typedef enum MDBX_aah_flags {
   MDBX_AAH_INTERIM = 1 << 8,
   MDBX_AAH_GACO = 1 << 9,
   MDBX_AAH_MAIN = 1 << 10,
-  MDBX_AAH_DUPS = 1 << 11
+  MDBX_AAH_WITHDUPS = 1 << 11,
+  MDBX_AAH_NESTED = 1 << 12
 } MDBX_aah_flags_t;
 MDBX_ENUM_FLAG_OPERATORS(MDBX_aah_flags)
 
@@ -1908,6 +1929,7 @@ MDBX_ENUM_FLAG_OPERATORS(mdbx_iud_flags)
  *  - MDBX_NOTFOUND  - the key was not in the associative array.
  *  - MDBX_EINVAL    - an invalid parameter was specified. */
 LIBMDBX_API MDBX_error_t mdbx_get(MDBX_txn_t *txn, MDBX_aah_t aah, MDBX_iov_t *key, MDBX_iov_t *data);
+LIBMDBX_API MDBX_error_t mdbx_get4testing(MDBX_txn_t *txn, MDBX_aah_t aah, MDBX_iov_t *key, MDBX_iov_t *data);
 
 /* Store items into an associative array.
  *

@@ -411,19 +411,27 @@ static int mdbx_fastmutex_release(mdbx_fastmutex_t *fastmutex) {
 
 /*----------------------------------------------------------------------------*/
 
-static int mdbx_openfile(const char *pathname, int flags, mode_t mode, MDBX_filehandle_t *fd) {
+static int mdbx_removefile(const char *pathname) {
+#if defined(_WIN32) || defined(_WIN64)
+  return DeleteFileA(pathname) ? MDBX_SUCCESS : GetLastError();
+#else
+  return unlink(pathname) ? errno : MDBX_SUCCESS;
+#endif
+}
+
+static int mdbx_openfile(const char *pathname, int flags, mode_t mode, MDBX_filehandle_t *fd, bool exclusive) {
   *fd = MDBX_INVALID_FD;
 #if defined(_WIN32) || defined(_WIN64)
   (void)mode;
 
-  DWORD DesiredAccess;
-  DWORD ShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE;
+  DWORD DesiredAccess, ShareMode;
   DWORD FlagsAndAttributes = FILE_ATTRIBUTE_NORMAL;
   switch (flags & (O_RDONLY | O_WRONLY | O_RDWR)) {
   default:
     return ERROR_INVALID_PARAMETER;
   case O_RDONLY:
     DesiredAccess = GENERIC_READ;
+    ShareMode = exclusive ? FILE_SHARE_READ : (FILE_SHARE_READ | FILE_SHARE_WRITE);
     break;
   case O_WRONLY: /* assume for MDBX_env_copy() and friends output */
     DesiredAccess = GENERIC_WRITE;
@@ -432,6 +440,7 @@ static int mdbx_openfile(const char *pathname, int flags, mode_t mode, MDBX_file
     break;
   case O_RDWR:
     DesiredAccess = GENERIC_READ | GENERIC_WRITE;
+    ShareMode = exclusive ? 0 : (FILE_SHARE_READ | FILE_SHARE_WRITE);
     break;
   }
 
@@ -468,7 +477,7 @@ static int mdbx_openfile(const char *pathname, int flags, mode_t mode, MDBX_file
     }
   }
 #else
-
+  (void)exclusive;
 #ifdef O_CLOEXEC
   flags |= O_CLOEXEC;
 #endif
@@ -875,7 +884,7 @@ static int mdbx_msync(mdbx_mmap_t *map, size_t offset, size_t length, int async)
 #endif
 }
 
-int mdbx_is_file_local(MDBX_filehandle_t handle, int flags) {
+int mdbx_check4nonlocal(MDBX_filehandle_t handle, int flags) {
 #if defined(_WIN32) || defined(_WIN64)
   if (GetFileType(handle) != FILE_TYPE_DISK)
     return ERROR_FILE_OFFLINE;
@@ -884,10 +893,11 @@ int mdbx_is_file_local(MDBX_filehandle_t handle, int flags) {
     FILE_REMOTE_PROTOCOL_INFO RemoteProtocolInfo;
     if (mdbx_GetFileInformationByHandleEx(handle, FileRemoteProtocolInfo, &RemoteProtocolInfo,
                                           sizeof(RemoteProtocolInfo))) {
-      if ((RemoteProtocolInfo.Flags &
-           (REMOTE_PROTOCOL_INFO_FLAG_LOOPBACK | REMOTE_PROTOCOL_INFO_FLAG_OFFLINE)) !=
-          REMOTE_PROTOCOL_INFO_FLAG_LOOPBACK)
+
+      if ((RemoteProtocolInfo.Flags & REMOTE_PROTOCOL_INFO_FLAG_OFFLINE) && !(flags & MDBX_RDONLY))
         return ERROR_FILE_OFFLINE;
+      if (!(RemoteProtocolInfo.Flags & REMOTE_PROTOCOL_INFO_FLAG_LOOPBACK) && !(flags & MDBX_EXCLUSIVE))
+        return ERROR_REMOTE_STORAGE_MEDIA_ERROR;
     }
   }
 
@@ -904,8 +914,11 @@ int mdbx_is_file_local(MDBX_filehandle_t handle, int flags) {
     IO_STATUS_BLOCK StatusBlock;
     rc = mdbx_NtFsControlFile(handle, NULL, NULL, NULL, &StatusBlock, FSCTL_GET_EXTERNAL_BACKING, NULL, 0,
                               &GetExternalBacking_OutputBuffer, sizeof(GetExternalBacking_OutputBuffer));
-    if (rc != STATUS_OBJECT_NOT_EXTERNALLY_BACKED && rc != STATUS_INVALID_DEVICE_REQUEST)
-      return NT_SUCCESS(rc) ? ERROR_REMOTE_STORAGE_MEDIA_ERROR : ntstatus2errcode(rc);
+    if (NT_SUCCESS(rc)) {
+      if (!(flags & MDBX_EXCLUSIVE))
+        return ERROR_REMOTE_STORAGE_MEDIA_ERROR;
+    } else if (rc != STATUS_OBJECT_NOT_EXTERNALLY_BACKED && rc != STATUS_INVALID_DEVICE_REQUEST)
+      return ntstatus2errcode(rc);
   }
 
   if (mdbx_GetVolumeInformationByHandleW && mdbx_GetFinalPathNameByHandleW) {
@@ -923,11 +936,11 @@ int mdbx_is_file_local(MDBX_filehandle_t handle, int flags) {
     if (!mdbx_GetFinalPathNameByHandleW(handle, PathBuffer, INT16_MAX, FILE_NAME_NORMALIZED | VOLUME_NAME_NT))
       return GetLastError();
 
-    if (_wcsnicmp(PathBuffer, L"\\Device\\Mup\\", 12) == 0)
-      return ERROR_REMOTE_STORAGE_MEDIA_ERROR;
-
-    if (mdbx_GetFinalPathNameByHandleW(handle, PathBuffer, INT16_MAX,
-                                       FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)) {
+    if (_wcsnicmp(PathBuffer, L"\\Device\\Mup\\", 12) == 0) {
+      if (!(flags & MDBX_EXCLUSIVE))
+        return ERROR_REMOTE_STORAGE_MEDIA_ERROR;
+    } else if (mdbx_GetFinalPathNameByHandleW(handle, PathBuffer, INT16_MAX,
+                                              FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)) {
       UINT DriveType = GetDriveTypeW(PathBuffer);
       if (DriveType == DRIVE_NO_ROOT_DIR && wcsncmp(PathBuffer, L"\\\\?\\", 4) == 0 &&
           wcsncmp(PathBuffer + 5, L":\\", 2) == 0) {
@@ -943,7 +956,9 @@ int mdbx_is_file_local(MDBX_filehandle_t handle, int flags) {
       case DRIVE_NO_ROOT_DIR:
       case DRIVE_REMOTE:
       default:
-        return ERROR_REMOTE_STORAGE_MEDIA_ERROR;
+        if (!(flags & MDBX_EXCLUSIVE))
+          return ERROR_REMOTE_STORAGE_MEDIA_ERROR;
+      // fall through
       case DRIVE_REMOVABLE:
       case DRIVE_FIXED:
       case DRIVE_RAMDISK:
@@ -967,7 +982,7 @@ int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t size, size_t limit) {
   map->current = 0;
   map->section = NULL;
 
-  NTSTATUS rc = mdbx_is_file_local(map->fd, flags);
+  NTSTATUS rc = mdbx_check4nonlocal(map->fd, flags);
   if (rc != MDBX_SUCCESS)
     return rc;
 
@@ -1016,7 +1031,7 @@ int mdbx_mmap(int flags, mdbx_mmap_t *map, size_t size, size_t limit) {
   return MDBX_SUCCESS;
 #else
   (void)size;
-  int err = mdbx_is_file_local(map->fd, flags);
+  int err = mdbx_check4nonlocal(map->fd, flags);
   if (unlikely(err != MDBX_SUCCESS))
     return err;
 

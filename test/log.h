@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -17,12 +17,6 @@
 #include "base.h"
 
 void __noreturn usage(void);
-
-#ifdef __GNUC__
-#define __printf_args(format_index, first_arg) __attribute__((format(printf, format_index, first_arg)))
-#else
-#define __printf_args(format_index, first_arg)
-#endif
 
 void __noreturn __printf_args(1, 2) failure(const char *fmt, ...);
 
@@ -48,10 +42,11 @@ enum loglevel {
 const char *level2str(const loglevel level);
 void setup(loglevel level, const std::string &prefix);
 void setup(const std::string &prefix);
+void setlevel(loglevel level);
 
 bool output(const loglevel priority, const char *format, va_list ap);
 bool __printf_args(2, 3) output(const loglevel priority, const char *format, ...);
-bool feed(const char *format, va_list ap);
+bool feed_ap(const char *format, va_list ap);
 bool __printf_args(1, 2) feed(const char *format, ...);
 
 class local_suffix {

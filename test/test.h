@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2017-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -111,6 +111,7 @@ protected:
   void fetch_canary();
   void update_canary(uint64_t increment);
   void kick_progress(bool active) const;
+  void checkdata(const char *step, MDBX_aah_t handle, MDBX_iov_t key2check, MDBX_iov_t expected_value);
 
   MDBX_aah_t db_table_open(bool create);
   void db_table_drop(MDBX_aah_t handle);

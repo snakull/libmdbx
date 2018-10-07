@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2015-2018 Leonid Yuriev <leo@yuriev.ru>
  * and other libmdbx authors: please see AUTHORS file.
  * All rights reserved.
@@ -28,62 +28,167 @@
 
 /*----------------------------------------------------------------------------*/
 
-/* Allocate an PNL.
- * Allocates memory for an PNL of the given size.
- * Returns PNL on succsess, nullptr on failure. */
+static __inline size_t pnl2bytes(const size_t size) {
+  assert(size > 0 && size <= MDBX_PNL_MAX * 2);
+  size_t bytes = mdbx_roundup2(MDBX_ASSUME_MALLOC_OVERHEAD + sizeof(pgno_t) * (size + 2),
+                               MDBX_PNL_GRANULATE * sizeof(pgno_t)) -
+                 MDBX_ASSUME_MALLOC_OVERHEAD;
+  return bytes;
+}
+
+static __inline pgno_t bytes2pnl(const size_t bytes) {
+  size_t size = bytes / sizeof(pgno_t);
+  assert(size > 2 && size <= MDBX_PNL_MAX * 2);
+  return (pgno_t)size - 2;
+}
+
 static MDBX_PNL mdbx_pnl_alloc(size_t size) {
-  MDBX_PNL pl = malloc((size + 2) * sizeof(pgno_t));
+  const size_t bytes = pnl2bytes(size);
+  MDBX_PNL pl = malloc(bytes);
   if (likely(pl)) {
-    *pl++ = (pgno_t)size;
-    *pl = 0;
+#if __GLIBC_PREREQ(2, 12)
+    const size_t bytes = malloc_usable_size(pl);
+#endif
+    pl[0] = bytes2pnl(bytes);
+    assert(pl[0] >= size);
+    pl[1] = 0;
+    pl += 1;
   }
   return pl;
 }
 
-static MDBX_TXL mdbx_txl_alloc(void) {
-  const size_t malloc_overhead = sizeof(void *) * 2;
-  const size_t bytes =
-      mdbx_roundup2(malloc_overhead + sizeof(txnid_t) * 61, MDBX_CACHELINE_SIZE) - malloc_overhead;
-  MDBX_TXL ptr = malloc(bytes);
-  if (likely(ptr)) {
-    *ptr++ = bytes / sizeof(txnid_t) - 2;
-    *ptr = 0;
-  }
-  return ptr;
-}
-
-/* Free an PNL.
- * [in] pl The PNL to free. */
 static void mdbx_pnl_free(MDBX_PNL pl) {
   if (likely(pl))
     free(pl - 1);
 }
 
-static void mdbx_txl_free(MDBX_TXL list) {
-  if (likely(list))
-    free(list - 1);
+/* Shrink the PNL to the default size if it has grown larger */
+static void mdbx_pnl_shrink(MDBX_PNL *ppl) {
+  assert(bytes2pnl(pnl2bytes(MDBX_PNL_INITIAL)) == MDBX_PNL_INITIAL);
+  assert(MDBX_PNL_SIZE(*ppl) <= MDBX_PNL_MAX && MDBX_PNL_ALLOCLEN(*ppl) >= MDBX_PNL_SIZE(*ppl));
+  MDBX_PNL_SIZE(*ppl) = 0;
+  if (unlikely(MDBX_PNL_ALLOCLEN(*ppl) > MDBX_PNL_INITIAL + MDBX_CACHELINE_SIZE / sizeof(pgno_t))) {
+    const size_t bytes = pnl2bytes(MDBX_PNL_INITIAL);
+    MDBX_PNL pl = realloc(*ppl - 1, bytes);
+    if (likely(pl)) {
+#if __GLIBC_PREREQ(2, 12)
+      const size_t bytes = malloc_usable_size(pl);
+#endif
+      *pl = bytes2pnl(bytes);
+      *ppl = pl + 1;
+    }
+  }
 }
 
-/* Append ID to PNL. The PNL must be big enough. */
-static void mdbx_pnl_xappend(MDBX_PNL pl, pgno_t id) {
-  assert(pl[0] + (size_t)1 < MDBX_PNL_ALLOCLEN(pl));
-  pl[pl[0] += 1] = id;
+/* Grow the PNL to the size growed to at least given size */
+static int mdbx_pnl_reserve(MDBX_PNL *ppl, const size_t wanna) {
+  const size_t allocated = MDBX_PNL_ALLOCLEN(*ppl);
+  assert(MDBX_PNL_SIZE(*ppl) <= MDBX_PNL_MAX && MDBX_PNL_ALLOCLEN(*ppl) >= MDBX_PNL_SIZE(*ppl));
+  if (likely(allocated >= wanna))
+    return MDBX_SUCCESS;
+
+  if (unlikely(wanna > /* paranoia */ MDBX_PNL_MAX))
+    return MDBX_TXN_FULL;
+
+  const size_t size = (wanna + wanna - allocated < MDBX_PNL_MAX) ? wanna + wanna - allocated : MDBX_PNL_MAX;
+  const size_t bytes = pnl2bytes(size);
+  MDBX_PNL pl = realloc(*ppl - 1, bytes);
+  if (likely(pl)) {
+#if __GLIBC_PREREQ(2, 12)
+    const size_t bytes = malloc_usable_size(pl);
+#endif
+    *pl = bytes2pnl(bytes);
+    assert(*pl >= wanna);
+    *ppl = pl + 1;
+    return MDBX_SUCCESS;
+  }
+  return MDBX_ENOMEM;
 }
 
-static __maybe_unused bool mdbx_pnl_check(MDBX_PNL pl) {
+/* Make room for num additional elements in an PNL */
+static __inline int __must_check_result mdbx_pnl_need(MDBX_PNL *ppl, size_t num) {
+  assert(MDBX_PNL_SIZE(*ppl) <= MDBX_PNL_MAX && MDBX_PNL_ALLOCLEN(*ppl) >= MDBX_PNL_SIZE(*ppl));
+  assert(num <= MDBX_PNL_MAX);
+  const size_t wanna = MDBX_PNL_SIZE(*ppl) + num;
+  return likely(MDBX_PNL_ALLOCLEN(*ppl) >= wanna) ? MDBX_SUCCESS : mdbx_pnl_reserve(ppl, wanna);
+}
+
+static __inline void mdbx_pnl_xappend(MDBX_PNL pl, pgno_t id) {
+  assert(MDBX_PNL_SIZE(pl) < MDBX_PNL_ALLOCLEN(pl));
+  MDBX_PNL_SIZE(pl) += 1;
+  MDBX_PNL_LAST(pl) = id;
+}
+
+/* Append an ID onto an PNL */
+static int __must_check_result mdbx_pnl_append(MDBX_PNL *ppl, pgno_t id) {
+  /* Too big? */
+  if (unlikely(MDBX_PNL_SIZE(*ppl) == MDBX_PNL_ALLOCLEN(*ppl))) {
+    int rc = mdbx_pnl_need(ppl, MDBX_PNL_GRANULATE);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
+  }
+  mdbx_pnl_xappend(*ppl, id);
+  return MDBX_SUCCESS;
+}
+
+/* Append an PNL onto an PNL */
+static int __must_check_result mdbx_pnl_append_list(MDBX_PNL *ppl, MDBX_PNL append) {
+  int rc = mdbx_pnl_need(ppl, MDBX_PNL_SIZE(append));
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  memcpy(MDBX_PNL_END(*ppl), MDBX_PNL_BEGIN(append), MDBX_PNL_SIZE(append) * sizeof(pgno_t));
+  MDBX_PNL_SIZE(*ppl) += MDBX_PNL_SIZE(append);
+  return MDBX_SUCCESS;
+}
+
+/* Append an ID range onto an PNL */
+static int __must_check_result mdbx_pnl_append_range(MDBX_PNL *ppl, pgno_t id, size_t n) {
+  int rc = mdbx_pnl_need(ppl, n);
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  pgno_t *ap = MDBX_PNL_END(*ppl);
+  MDBX_PNL_SIZE(*ppl) += (unsigned)n;
+  for (pgno_t *const end = MDBX_PNL_END(*ppl); ap < end;)
+    *ap++ = id++;
+  return MDBX_SUCCESS;
+}
+
+__maybe_unused static bool mdbx_pnl_check(MDBX_PNL pl, bool allocated) {
   if (pl) {
-    for (const pgno_t *ptr = pl + pl[0]; --ptr > pl;) {
-      assert(MDBX_PNL_ORDERED(ptr[0], ptr[1]));
-      assert(ptr[0] >= MDBX_NUM_METAS);
-      if (unlikely(MDBX_PNL_DISORDERED(ptr[0], ptr[1]) || ptr[0] < MDBX_NUM_METAS))
+    assert(MDBX_PNL_SIZE(pl) <= MDBX_PNL_MAX);
+    if (allocated) {
+      assert(MDBX_PNL_ALLOCLEN(pl) >= MDBX_PNL_SIZE(pl));
+    }
+    for (const pgno_t *scan = &MDBX_PNL_LAST(pl); --scan > pl;) {
+      assert(MDBX_PNL_ORDERED(scan[0], scan[1]));
+      assert(scan[0] >= MDBX_NUM_METAS);
+      if (unlikely(MDBX_PNL_DISORDERED(scan[0], scan[1]) || scan[0] < MDBX_NUM_METAS))
         return false;
     }
   }
   return true;
 }
 
-/* Sort an PNL.
- * [in,out] pnl The PNL to sort. */
+/* Merge an PNL onto an PNL. The destination PNL must be big enough */
+static void __hot mdbx_pnl_xmerge(MDBX_PNL pnl, MDBX_PNL merge) {
+  assert(mdbx_pnl_check(pnl, true));
+  assert(mdbx_pnl_check(merge, false));
+  pgno_t old_id, merge_id, i = MDBX_PNL_SIZE(merge), j = MDBX_PNL_SIZE(pnl), k = i + j, total = k;
+  pnl[0] = MDBX_PNL_ASCENDING ? 0 : ~(pgno_t)0; /* delimiter for pl scan below */
+  old_id = pnl[j];
+  while (i) {
+    merge_id = merge[i--];
+    for (; MDBX_PNL_ORDERED(merge_id, old_id); old_id = pnl[--j])
+      pnl[k--] = old_id;
+    pnl[k--] = merge_id;
+  }
+  MDBX_PNL_SIZE(pnl) = total;
+  assert(mdbx_pnl_check(pnl, true));
+}
+
+/* Sort an PNL */
 static void __hot mdbx_pnl_sort(MDBX_PNL pnl) {
   /* Max possible depth of int-indexed tree * 2 items/level */
   int istack[sizeof(int) * CHAR_BIT * 2];
@@ -99,7 +204,7 @@ static void __hot mdbx_pnl_sort(MDBX_PNL pnl) {
     (b) = tmp_pgno;                                                                                           \
   } while (0)
 
-  ir = (int)pnl[0];
+  ir = (int)MDBX_PNL_SIZE(pnl);
   l = 1;
   jstack = 0;
   while (1) {
@@ -159,28 +264,28 @@ static void __hot mdbx_pnl_sort(MDBX_PNL pnl) {
   }
 #undef PNL_SMALL
 #undef PNL_SWAP
-  assert(mdbx_pnl_check(pnl));
+  assert(mdbx_pnl_check(pnl, false));
 }
 
 /* Search for an ID in an PNL.
  * [in] pl The PNL to search.
  * [in] id The ID to search for.
  * Returns The index of the first ID greater than or equal to id. */
-static size_t mdbx_pnl_search(MDBX_PNL pnl, pgno_t id) {
-  assert(mdbx_pnl_check(pnl));
+static unsigned __hot mdbx_pnl_search(MDBX_PNL pnl, pgno_t id) {
+  assert(mdbx_pnl_check(pnl, true));
 
   /* binary search of id in pl
    * if found, returns position of id
    * if not found, returns first position greater than id */
-  size_t base = 0;
-  size_t cursor = 1;
+  unsigned base = 0;
+  unsigned cursor = 1;
   int val = 0;
-  size_t n = pnl[0];
+  unsigned n = MDBX_PNL_SIZE(pnl);
 
   while (n > 0) {
-    size_t pivot = n >> 1;
+    unsigned pivot = n >> 1;
     cursor = base + pivot + 1;
-    val = MDBX_PNL_ASCENDING ? mdbx_cmp2int(pnl[cursor], id) : mdbx_cmp2int(id, pnl[cursor]);
+    val = MDBX_PNL_ASCENDING ? mdbx_cmp2int(id, pnl[cursor]) : mdbx_cmp2int(pnl[cursor], id);
 
     if (val < 0) {
       n = pivot;
@@ -198,188 +303,134 @@ static size_t mdbx_pnl_search(MDBX_PNL pnl, pgno_t id) {
   return cursor;
 }
 
-/* Shrink an PNL.
- * Return the PNL to the default size if it has grown larger.
- * [in,out] ppl Address of the PNL to shrink. */
-static void mdbx_pnl_shrink(MDBX_PNL *ppl) {
-  MDBX_PNL pl = *ppl - 1;
-  if (unlikely(*pl > MDBX_PNL_UM_MAX)) {
-    /* shrink to MDBX_PNL_UM_MAX */
-    pl = realloc(pl, (MDBX_PNL_UM_MAX + 2) * sizeof(pgno_t));
-    if (likely(pl)) {
-      *pl++ = MDBX_PNL_UM_MAX;
-      *ppl = pl;
-    }
+/*----------------------------------------------------------------------------*/
+
+static __inline size_t txl2bytes(const size_t size) {
+  assert(size > 0 && size <= MDBX_TXL_MAX * 2);
+  size_t bytes = mdbx_roundup2(MDBX_ASSUME_MALLOC_OVERHEAD + sizeof(txnid_t) * (size + 2),
+                               MDBX_TXL_GRANULATE * sizeof(txnid_t)) -
+                 MDBX_ASSUME_MALLOC_OVERHEAD;
+  return bytes;
+}
+
+static __inline size_t bytes2txl(const size_t bytes) {
+  size_t size = bytes / sizeof(txnid_t);
+  assert(size > 2 && size <= MDBX_TXL_MAX * 2);
+  return size - 2;
+}
+
+static MDBX_TXL mdbx_txl_alloc(void) {
+  const size_t bytes = txl2bytes(MDBX_TXL_INITIAL);
+  MDBX_TXL tl = malloc(bytes);
+  if (likely(tl)) {
+#if __GLIBC_PREREQ(2, 12)
+    const size_t bytes = malloc_usable_size(tl);
+#endif
+    tl[0] = bytes2txl(bytes);
+    assert(tl[0] >= MDBX_TXL_INITIAL);
+    tl[1] = 0;
+    tl += 1;
   }
+  return tl;
 }
 
-/* Grow an PNL.
- * Return the PNL to the size growed by given number.
- * [in,out] ppl Address of the PNL to grow. */
-static int mdbx_pnl_grow(MDBX_PNL *ppl, size_t num) {
-  MDBX_PNL idn = *ppl - 1;
-  /* grow it */
-  idn = realloc(idn, (*idn + num + 2) * sizeof(pgno_t));
-  if (unlikely(!idn))
-    return MDBX_ENOMEM;
-  *idn++ += (pgno_t)num;
-  *ppl = idn;
-  return 0;
+static void mdbx_txl_free(MDBX_TXL tl) {
+  if (likely(tl))
+    free(tl - 1);
 }
 
-static int mdbx_txl_grow(MDBX_TXL *ptr, size_t num) {
-  MDBX_TXL list = *ptr - 1;
-  /* grow it */
-  list = realloc(list, ((size_t)*list + num + 2) * sizeof(txnid_t));
-  if (unlikely(!list))
-    return MDBX_ENOMEM;
-  *list++ += num;
-  *ptr = list;
-  return 0;
-}
+static int mdbx_txl_reserve(MDBX_TXL *ptl, const size_t wanna) {
+  const size_t allocated = (size_t)MDBX_PNL_ALLOCLEN(*ptl);
+  assert(MDBX_PNL_SIZE(*ptl) <= MDBX_TXL_MAX && MDBX_PNL_ALLOCLEN(*ptl) >= MDBX_PNL_SIZE(*ptl));
+  if (likely(allocated >= wanna))
+    return MDBX_SUCCESS;
 
-/* Make room for num additional elements in an PNL.
- * [in,out] ppl Address of the PNL.
- * [in] num Number of elements to make room for.
- * Returns 0 on success, MDBX_ENOMEM on failure. */
-static int mdbx_pnl_need(MDBX_PNL *ppl, size_t num) {
-  MDBX_PNL pl = *ppl;
-  num += pl[0];
-  if (unlikely(num > pl[-1])) {
-    num = (num + num / 4 + (256 + 2)) & -256;
-    pl = realloc(pl - 1, num * sizeof(pgno_t));
-    if (unlikely(!pl))
-      return MDBX_ENOMEM;
-    *pl++ = (pgno_t)num - 2;
-    *ppl = pl;
+  if (unlikely(wanna > /* paranoia */ MDBX_TXL_MAX))
+    return MDBX_TXN_FULL;
+
+  const size_t size = (wanna + wanna - allocated < MDBX_TXL_MAX) ? wanna + wanna - allocated : MDBX_TXL_MAX;
+  const size_t bytes = txl2bytes(size);
+  MDBX_TXL tl = realloc(*ptl - 1, bytes);
+  if (likely(tl)) {
+#if __GLIBC_PREREQ(2, 12)
+    const size_t bytes = malloc_usable_size(tl);
+#endif
+    *tl = bytes2txl(bytes);
+    assert(*tl >= wanna);
+    *ptl = tl + 1;
+    return MDBX_SUCCESS;
   }
-  return 0;
+  return MDBX_ENOMEM;
 }
 
-/* Append an ID onto an PNL.
- * [in,out] ppl Address of the PNL to append to.
- * [in] id The ID to append.
- * Returns 0 on success, MDBX_ENOMEM if the PNL is too large. */
-static int mdbx_pnl_append(MDBX_PNL *ppl, pgno_t id) {
-  MDBX_PNL pl = *ppl;
-  /* Too big? */
-  if (unlikely(pl[0] >= pl[-1])) {
-    if (mdbx_pnl_grow(ppl, MDBX_PNL_UM_MAX))
-      return MDBX_ENOMEM;
-    pl = *ppl;
+static __inline int __must_check_result mdbx_txl_need(MDBX_TXL *ptl, size_t num) {
+  assert(MDBX_PNL_SIZE(*ptl) <= MDBX_TXL_MAX && MDBX_PNL_ALLOCLEN(*ptl) >= MDBX_PNL_SIZE(*ptl));
+  assert(num <= MDBX_PNL_MAX);
+  const size_t wanna = (size_t)MDBX_PNL_SIZE(*ptl) + num;
+  return likely(MDBX_PNL_ALLOCLEN(*ptl) >= wanna) ? MDBX_SUCCESS : mdbx_txl_reserve(ptl, wanna);
+}
+
+static __inline void mdbx_txl_xappend(MDBX_TXL tl, txnid_t id) {
+  assert(MDBX_PNL_SIZE(tl) < MDBX_PNL_ALLOCLEN(tl));
+  MDBX_PNL_SIZE(tl) += 1;
+  MDBX_PNL_LAST(tl) = id;
+}
+
+static int mdbx_txl_cmp(const void *pa, const void *pb) {
+  const txnid_t a = *(MDBX_TXL)pa;
+  const txnid_t b = *(MDBX_TXL)pb;
+  return mdbx_cmp2int(b, a);
+}
+
+static void mdbx_txl_sort(MDBX_TXL ptr) {
+  /* LY: temporary */
+  qsort(ptr + 1, (size_t)ptr[0], sizeof(*ptr), mdbx_txl_cmp);
+}
+
+static int __must_check_result mdbx_txl_append(MDBX_TXL *ptl, txnid_t id) {
+  if (unlikely(MDBX_PNL_SIZE(*ptl) == MDBX_PNL_ALLOCLEN(*ptl))) {
+    int rc = mdbx_txl_need(ptl, MDBX_TXL_GRANULATE);
+    if (unlikely(rc != MDBX_SUCCESS))
+      return rc;
   }
-  pl[0]++;
-  pl[pl[0]] = id;
-  return 0;
+  mdbx_txl_xappend(*ptl, id);
+  return MDBX_SUCCESS;
 }
 
-static int mdbx_txl_append(MDBX_TXL *ptr, txnid_t id) {
-  MDBX_TXL list = *ptr;
-  /* Too big? */
-  if (unlikely(list[0] >= list[-1])) {
-    if (mdbx_txl_grow(ptr, (size_t)list[0]))
-      return MDBX_ENOMEM;
-    list = *ptr;
-  }
-  list[0]++;
-  list[list[0]] = id;
-  return 0;
+static int __must_check_result mdbx_txl_append_list(MDBX_TXL *ptl, MDBX_TXL append) {
+  int rc = mdbx_txl_need(ptl, (size_t)MDBX_PNL_SIZE(append));
+  if (unlikely(rc != MDBX_SUCCESS))
+    return rc;
+
+  memcpy(MDBX_PNL_END(*ptl), MDBX_PNL_BEGIN(append), (size_t)MDBX_PNL_SIZE(append) * sizeof(txnid_t));
+  MDBX_PNL_SIZE(*ptl) += MDBX_PNL_SIZE(append);
+  return MDBX_SUCCESS;
 }
 
-/* Append an PNL onto an PNL.
- * [in,out] ppl Address of the PNL to append to.
- * [in] app The PNL to append.
- * Returns 0 on success, MDBX_ENOMEM if the PNL is too large. */
-static int mdbx_pnl_append_list(MDBX_PNL *ppl, MDBX_PNL app) {
-  MDBX_PNL pnl = *ppl;
-  /* Too big? */
-  if (unlikely(pnl[0] + app[0] >= pnl[-1])) {
-    if (mdbx_pnl_grow(ppl, app[0]))
-      return MDBX_ENOMEM;
-    pnl = *ppl;
-  }
-  memcpy(&pnl[pnl[0] + 1], &app[1], app[0] * sizeof(pgno_t));
-  pnl[0] += app[0];
-  return 0;
-}
+/*----------------------------------------------------------------------------*/
 
-static int mdbx_txl_append_list(MDBX_TXL *ptr, MDBX_TXL append) {
-  MDBX_TXL list = *ptr;
-  /* Too big? */
-  if (unlikely(list[0] + append[0] >= list[-1])) {
-    if (mdbx_txl_grow(ptr, (size_t)append[0]))
-      return MDBX_ENOMEM;
-    list = *ptr;
-  }
-  memcpy(&list[list[0] + 1], &append[1], (size_t)append[0] * sizeof(txnid_t));
-  list[0] += append[0];
-  return 0;
-}
-
-/* Append an ID range onto an PNL.
- * [in,out] ppl Address of the PNL to append to.
- * [in] id The lowest ID to append.
- * [in] n Number of IDs to append.
- * Returns 0 on success, MDBX_ENOMEM if the PNL is too large. */
-static int mdbx_pnl_append_range(MDBX_PNL *ppl, pgno_t id, size_t n) {
-  pgno_t *pnl = *ppl, len = pnl[0];
-  /* Too big? */
-  if (unlikely(len + n > pnl[-1])) {
-    if (mdbx_pnl_grow(ppl, n | MDBX_PNL_UM_MAX))
-      return MDBX_ENOMEM;
-    pnl = *ppl;
-  }
-  pnl[0] = len + (pgno_t)n;
-  pnl += len;
-  while (n)
-    pnl[n--] = id++;
-  return 0;
-}
-
-/* Merge an PNL onto an PNL. The destination PNL must be big enough.
- * [in] pl The PNL to merge into.
- * [in] merge The PNL to merge. */
-static void __hot mdbx_pnl_xmerge(MDBX_PNL pnl, MDBX_PNL merge) {
-  assert(mdbx_pnl_check(pnl));
-  assert(mdbx_pnl_check(merge));
-  pgno_t old_id, merge_id, i = merge[0], j = pnl[0], k = i + j, total = k;
-  pnl[0] = MDBX_PNL_ASCENDING ? 0 : ~(pgno_t)0; /* delimiter for pl scan below */
-  old_id = pnl[j];
-  while (i) {
-    merge_id = merge[i--];
-    for (; MDBX_PNL_ORDERED(merge_id, old_id); old_id = pnl[--j])
-      pnl[k--] = old_id;
-    pnl[k--] = merge_id;
-  }
-  pnl[0] = total;
-  assert(mdbx_pnl_check(pnl));
-}
-
-/* Search for an ID in an ID2L.
- * [in] pnl The ID2L to search.
- * [in] id The ID to search for.
- * Returns The index of the first ID2 whose mid member is greater than
- * or equal to id. */
-static unsigned __hot mdbx_mid2l_search(MDBX_ID2L pnl, pgno_t id) {
-  /* binary search of id in pnl
+/* Returns the index of the first dirty-page whose pgno
+ * member is greater than or equal to id. */
+static unsigned __hot mdbx_dpl_search(MDBX_DPL dl, pgno_t id) {
+  /* binary search of id in array
    * if found, returns position of id
    * if not found, returns first position greater than id */
   unsigned base = 0;
   unsigned cursor = 1;
   int val = 0;
-  unsigned n = (unsigned)pnl[0].mid;
+  unsigned n = dl->length;
 
 #if MDBX_DEBUG
-  for (const MDBX_ID2 *ptr = pnl + pnl[0].mid; --ptr > pnl;) {
-    assert(ptr[0].mid < ptr[1].mid);
-    assert(ptr[0].mid >= MDBX_NUM_METAS);
+  for (const MDBX_DP *ptr = dl + dl->length; --ptr > dl;) {
+    assert(ptr[0].pgno < ptr[1].pgno);
+    assert(ptr[0].pgno >= MDBX_NUM_METAS);
   }
 #endif
 
   while (n > 0) {
     unsigned pivot = n >> 1;
     cursor = base + pivot + 1;
-    val = mdbx_cmp2int(id, pnl[cursor].mid);
+    val = mdbx_cmp2int(id, dl[cursor].pgno);
 
     if (val < 0) {
       n = pivot;
@@ -397,47 +448,53 @@ static unsigned __hot mdbx_mid2l_search(MDBX_ID2L pnl, pgno_t id) {
   return cursor;
 }
 
-/* Insert an ID2 into a ID2L.
- * [in,out] pnl The ID2L to insert into.
- * [in] id The ID2 to insert.
- * Returns 0 on success, -1 if the ID was already present in the ID2L. */
-static int mdbx_mid2l_insert(MDBX_ID2L pnl, MDBX_ID2 *id) {
-  unsigned x = mdbx_mid2l_search(pnl, id->mid);
-  if (unlikely(x < 1))
-    return /* internal error */ -2;
-
-  if (x <= pnl[0].mid && pnl[x].mid == id->mid)
-    return /* duplicate */ -1;
-
-  if (unlikely(pnl[0].mid >= MDBX_PNL_UM_MAX))
-    return /* too big */ -2;
-
-  /* insert id */
-  pnl[0].mid++;
-  for (unsigned i = (unsigned)pnl[0].mid; i > x; i--)
-    pnl[i] = pnl[i - 1];
-  pnl[x] = *id;
-  return 0;
+static int mdbx_dpl_cmp(const void *pa, const void *pb) {
+  const MDBX_DP a = *(MDBX_DPL)pa;
+  const MDBX_DP b = *(MDBX_DPL)pb;
+  return mdbx_cmp2int(a.pgno, b.pgno);
 }
 
-/* Append an ID2 into a ID2L.
- * [in,out] pnl The ID2L to append into.
- * [in] id The ID2 to append.
- * Returns 0 on success, -2 if the ID2L is too big. */
-static int mdbx_mid2l_append(MDBX_ID2L pnl, MDBX_ID2 *id) {
+static void mdbx_dpl_sort(MDBX_DPL dl) {
+  assert(dl->length <= MDBX_DPL_TXNFULL);
+  /* LY: temporary */
+  qsort(dl + 1, dl->length, sizeof(*dl), mdbx_dpl_cmp);
+}
+
+static int __must_check_result mdbx_dpl_insert(MDBX_DPL dl, pgno_t pgno, page_t *page) {
+  assert(dl->length <= MDBX_DPL_TXNFULL);
+  unsigned x = mdbx_dpl_search(dl, pgno);
+  assert((int)x > 0);
+  if (unlikely(dl[x].pgno == pgno && x <= dl->length))
+    return /* duplicate */ MDBX_PROBLEM;
+
+  if (unlikely(dl->length == MDBX_DPL_TXNFULL))
+    return MDBX_TXN_FULL;
+
+  /* insert page */
+  for (unsigned i = dl->length += 1; i > x; --i)
+    dl[i] = dl[i - 1];
+
+  dl[x].pgno = pgno;
+  dl[x].ptr = page;
+  return MDBX_SUCCESS;
+}
+
+static int __must_check_result mdbx_dpl_append(MDBX_DPL dl, pgno_t pgno, page_t *page) {
+  assert(dl->length <= MDBX_DPL_TXNFULL);
 #if MDBX_DEBUG
-  for (unsigned i = pnl[0].mid; i > 0; --i) {
-    assert(pnl[i].mid != id->mid);
-    if (unlikely(pnl[i].mid == id->mid))
-      return -1;
+  for (unsigned i = dl->length; i > 0; --i) {
+    assert(dl[i].pgno != pgno);
+    if (unlikely(dl[i].pgno == pgno))
+      return MDBX_PROBLEM;
   }
 #endif
 
-  /* Too big? */
-  if (unlikely(pnl[0].mid >= MDBX_PNL_UM_MAX))
-    return -2;
+  if (unlikely(dl->length == MDBX_DPL_TXNFULL))
+    return MDBX_TXN_FULL;
 
-  pnl[0].mid++;
-  pnl[pnl[0].mid] = *id;
-  return 0;
+  /* append page */
+  const unsigned i = dl->length += 1;
+  dl[i].pgno = pgno;
+  dl[i].ptr = page;
+  return MDBX_SUCCESS;
 }
