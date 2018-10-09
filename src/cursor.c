@@ -78,7 +78,7 @@ static inline MDBX_cursor_t **cursor_tracking_head(const MDBX_cursor_t *bundle) 
   MDBX_txn_t *txn = bundle->primal.mc_txn;
   assert(txn->mt_cursors != nullptr /* must be not rdonly txt */);
   aht_t *aht = bundle->primal.mc_aht;
-  assert(aht->ahe->ax_ord16 >= 0 && aht->ahe->ax_ord16 < txn->mt_env->env_ah_max);
+  assert(aht->ahe->ax_ord16 < txn->mt_env->env_ah_max);
   return &txn->mt_cursors[aht->ahe->ax_ord16];
 }
 
